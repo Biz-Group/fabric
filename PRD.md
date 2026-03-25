@@ -59,7 +59,7 @@ When a user selects a process, they see:
    - Contributor name (manually entered before recording, since there's no auth in POC)
    - Date and time
    - AI-generated summary (collapsible)
-   - **Audio player** — inline playback of the recorded conversation (MP3 from Supabase Storage, using ElevenLabs UI Audio Player / Scrub Bar component)
+   - **Audio player** — inline playback of the recorded conversation (MP3 streamed from ElevenLabs, using ElevenLabs UI Audio Player / Scrub Bar component)
    - Full transcript (collapsible, nested under summary, using ElevenLabs UI Transcript Viewer)
 
 ### 2.3 Conversation Flow
@@ -70,9 +70,9 @@ When a user selects a process, they see:
 4. The agent greets the user by name (passed via dynamic context) and asks them to describe what they do as part of this process.
 5. The agent conducts a semi-structured interview — asking follow-up questions, clarifying steps, probing for edge cases and exceptions.
 6. The user ends the conversation when they're done.
-7. Post-call, the frontend triggers a Supabase Edge Function that polls the ElevenLabs Conversations API until the transcript and analysis are ready, then stores everything in the database.
-8. The Edge Function calls Claude API for summarization, updates the conversation record, and regenerates the process-level rolling summary.
-9. Supabase Realtime pushes the update to the UI — the new conversation appears in the log automatically.
+7. Post-call, the frontend triggers a Convex action that polls the ElevenLabs Conversations API until the transcript and analysis are ready, then stores everything in the database.
+8. The Convex action calls Claude Sonnet (via OpenRouter) for summarization, updates the conversation record, and regenerates the process-level rolling summary.
+9. Convex's built-in reactivity pushes the update to the UI — the new conversation appears in the log automatically.
 
 ---
 
@@ -85,44 +85,63 @@ When a user selects a process, they see:
 | Frontend | **Next.js** (React) with **shadcn/ui** + **ElevenLabs UI** components |
 | Voice Agent | `@elevenlabs/react` SDK (`useConversation` hook) |
 | UI Components | ElevenLabs UI registry (Orb, Conversation, ConversationBar, Message, Transcript Viewer, Audio Player, Scrub Bar, Waveform, Voice Button) — built on shadcn/ui |
-| Backend / BaaS | **Supabase** (PostgreSQL, Edge Functions, Realtime) |
+| Backend / BaaS | **Convex** (document database, server functions, built-in reactivity) |
 | Conversation Summaries | ElevenLabs Conversation Analysis (built-in, no extra cost) |
-| Process-level Summaries | Claude API (Sonnet) via Supabase Edge Function — only LLM cost |
+| Process-level Summaries | Claude Sonnet via OpenRouter API (OpenAI-compatible) — only LLM cost |
 | Post-call data | ElevenLabs Conversations API (transcript, summary, analysis) |
 | Audio playback | ElevenLabs Conversations Audio API (`GET .../audio`) — streamed on demand, no storage needed |
-| Hosting | Vercel (frontend) + Supabase (backend) |
+| Hosting | Vercel (frontend) + Convex (backend) |
 
-### 3.2 Data Model (Supabase / PostgreSQL)
+### 3.2 Data Model (Convex)
 
-**Tables:**
+**Tables (defined in `convex/schema.ts`):**
 
-```sql
--- Organizational hierarchy
-functions (id uuid PK, name text, sort_order int, created_at timestamptz)
-departments (id uuid PK, function_id uuid FK, name text, sort_order int, created_at timestamptz)
-processes (id uuid PK, department_id uuid FK, name text, sort_order int, rolling_summary text, created_at timestamptz)
+Note: Convex auto-generates `_id` and `_creationTime` fields for every document — no need to define them explicitly.
 
--- Conversation records
-conversations (
-  id uuid PK,
-  process_id uuid FK,
-  elevenlabs_conversation_id text,        -- from startSession() return
-  contributor_name text,
-  transcript jsonb,                        -- full structured transcript from ElevenLabs
-  summary text,                            -- from ElevenLabs analysis (no Claude call needed)
-  analysis jsonb,                          -- ElevenLabs evaluation + data collection results
-  duration_seconds int,
-  status text DEFAULT 'processing',        -- processing | done | failed
-  created_at timestamptz DEFAULT now()
-)
+```typescript
+// convex/schema.ts
+import { defineSchema, defineTable } from "convex/server";
+import { v } from "convex/values";
+
+export default defineSchema({
+  // Organizational hierarchy
+  functions: defineTable({
+    name: v.string(),
+    sortOrder: v.number(),
+  }),
+  departments: defineTable({
+    functionId: v.id("functions"),
+    name: v.string(),
+    sortOrder: v.number(),
+  }).index("by_function", ["functionId"]),
+  processes: defineTable({
+    departmentId: v.id("departments"),
+    name: v.string(),
+    sortOrder: v.number(),
+    rollingSummary: v.optional(v.string()),
+  }).index("by_department", ["departmentId"]),
+
+  // Conversation records
+  conversations: defineTable({
+    processId: v.id("processes"),
+    elevenlabsConversationId: v.string(),   // from startSession() return
+    contributorName: v.string(),
+    transcript: v.optional(v.any()),         // full structured transcript from ElevenLabs
+    summary: v.optional(v.string()),         // from ElevenLabs analysis (no Claude call needed)
+    analysis: v.optional(v.any()),           // ElevenLabs evaluation + data collection results
+    durationSeconds: v.optional(v.number()),
+    status: v.string(),                      // "processing" | "done" | "failed"
+  }).index("by_process", ["processId"])
+    .index("by_status", ["status"]),
+});
 ```
 
-**Supabase features used:**
+**Convex features used:**
 
-- **PostgreSQL** — relational data with foreign keys, JSONB for flexible transcript/analysis storage
-- **Edge Functions** — post-call processing pipeline (calls Claude API for process summaries), audio proxy endpoint
-- **Realtime** — subscribe to conversation inserts so the UI updates live when a new session completes
-- **Row Level Security** — disabled for POC, enabled in Phase 2 with auth
+- **Document database** — schema-validated tables with typed fields, references via `v.id()`, and flexible `v.any()` for transcript/analysis storage
+- **Server functions** — `actions` for external API calls (ElevenLabs, OpenRouter), `mutations` for database writes, `queries` for reads, `httpAction` for HTTP endpoints (audio proxy)
+- **Built-in reactivity** — all `useQuery` hooks auto-update when data changes. No manual subscriptions needed — the UI updates live when a new conversation is inserted or its status changes
+- **Auth** — disabled for POC, enabled in Phase 2
 
 ### 3.3 ElevenLabs Integration
 
@@ -242,7 +261,7 @@ The conversation status transitions to `processing` immediately after the call e
 ElevenLabs supports webhooks that fire when processing is complete:
 - **`post_call_transcription`** — contains full transcript, analysis results, and all metadata. This is the primary webhook for Fabric.
 
-Webhook endpoint: a **Supabase Edge Function** that receives the webhook payload, extracts transcript + analysis (including the ElevenLabs-generated summary), and inserts directly into the `conversations` table. Then triggers `regenerate-process-summary` to update the process-level rolling summary via Claude.
+Webhook endpoint: a **Convex HTTP action** that receives the webhook payload, extracts transcript + analysis (including the ElevenLabs-generated summary), and inserts directly into the `conversations` table. Then triggers `regenerateProcessSummary` to update the process-level rolling summary via OpenRouter.
 
 #### 3.3.5 Audio Playback — Streamed from ElevenLabs
 
@@ -253,10 +272,10 @@ GET https://api.elevenlabs.io/v1/convai/conversations/{conversation_id}/audio
 Header: xi-api-key: <API_KEY>
 ```
 
-This returns the raw audio file directly. **Fabric does not store audio files** — instead, a lightweight proxy endpoint (Supabase Edge Function or Next.js API route) adds the `xi-api-key` header and streams the response to the frontend. The ElevenLabs UI Audio Player / Scrub Bar component points at this proxy URL.
+This returns the raw audio file directly. **Fabric does not store audio files** — instead, a lightweight proxy endpoint (Convex HTTP action) adds the `xi-api-key` header and streams the response to the frontend. The ElevenLabs UI Audio Player / Scrub Bar component points at this proxy URL.
 
 **Why this works for POC:**
-- No Supabase Storage bucket needed — removes an entire infrastructure layer
+- No file storage needed — removes an entire infrastructure layer
 - No `post_call_audio` webhook processing — no base64 decoding, no upload pipeline
 - No `audio_url` column in the database — the URL is deterministic from `elevenlabs_conversation_id`
 - Retrieval is a read operation, not a generation — **no additional credits consumed**
@@ -266,7 +285,7 @@ This returns the raw audio file directly. **Fabric does not store audio files** 
 **Proxy endpoint pattern:**
 ```
 GET /api/audio/:elevenlabs_conversation_id
-→ Edge Function calls ElevenLabs API with xi-api-key
+→ Convex HTTP action calls ElevenLabs API with xi-api-key
 → Streams audio response back to the frontend
 → Frontend <audio> element or ElevenLabs UI Audio Player renders it
 ```
@@ -296,8 +315,8 @@ The `analysis` object returned by the Conversations API (and via the `post_call_
 
 We simply store `analysis.transcript_summary` in `conversations.summary` and the structured `analysis.data_collection` results in `conversations.analysis`.
 
-**Process-level rolling summary — Claude API (the only LLM cost):**
-After each new conversation is stored, a Supabase Edge Function fetches all conversation summaries for that process and sends them to Claude Sonnet with a prompt like:
+**Process-level rolling summary — Claude Sonnet via OpenRouter (the only LLM cost):**
+After each new conversation is stored, a Convex action fetches all conversation summaries for that process and sends them to Claude Sonnet (via OpenRouter's OpenAI-compatible API) with a prompt like:
 
 > "You are synthesizing multiple employee accounts of a single business process. Combine these into a coherent narrative that describes the full process end-to-end, noting which contributors handle which parts, and highlighting any overlaps or gaps."
 
@@ -306,46 +325,42 @@ This is a lightweight call — it's combining short summary strings, not process
 **Department and Function summaries (lightweight for POC):**
 These are generated on-demand (not stored) by concatenating child process summaries and passing them through a similar synthesis prompt. This avoids a cascade of re-summarizations on every new conversation. Can be upgraded to stored + incrementally updated summaries in Phase 2.
 
-### 3.5 Supabase Architecture
+### 3.5 Convex Architecture
 
-**Why Supabase:** Eliminates the need to build and deploy a separate backend API. Supabase provides PostgreSQL, Edge Functions (Deno-based serverless), and Realtime subscriptions out of the box — all accessible from the Next.js frontend via the `@supabase/supabase-js` client.
+**Why Convex:** Eliminates the need to build and deploy a separate backend API. Convex provides a document database, TypeScript server functions, and built-in real-time reactivity out of the box — all accessible from the Next.js frontend via `convex/react` hooks (`useQuery`, `useMutation`, `useAction`).
 
-**Edge Functions (serverless endpoints):**
+**Server functions (defined in `convex/` directory):**
 
-| Function | Trigger | Purpose |
-|---|---|---|
-| `post-call-webhook` | HTTP POST (from ElevenLabs `post_call_transcription` webhook) | Receives transcript, summary, analysis, and metadata. Stores in `conversations` table. Triggers process summary regeneration. |
-| `regenerate-process-summary` | Called after `post-call-webhook` completes | Fetches all conversation summaries for a process → sends to Claude → updates `processes.rolling_summary` |
-| `fetch-conversation` | Called by frontend after `onDisconnect` (polling path) | Polls ElevenLabs API for conversation details, inserts into DB when status = `done`, then triggers `regenerate-process-summary` |
-| `get-audio` | Called by frontend audio player | Proxies `GET /v1/convai/conversations/{id}/audio` with `xi-api-key` header, streams MP3 back to client |
+| Function | Type | Trigger | Purpose |
+|---|---|---|---|
+| `postCallWebhook` | `httpAction` | HTTP POST (from ElevenLabs `post_call_transcription` webhook) | Receives transcript, summary, analysis, and metadata. Stores in `conversations` table. Triggers process summary regeneration. |
+| `regenerateProcessSummary` | `action` | Called after conversation is inserted | Fetches all conversation summaries for a process → sends to Claude Sonnet via OpenRouter → updates `processes.rollingSummary` |
+| `fetchConversation` | `action` | Called by frontend after `onDisconnect` (polling path) | Polls ElevenLabs API for conversation details, inserts into DB when status = `done`, then triggers `regenerateProcessSummary` |
+| `getAudio` | `httpAction` | Called by frontend audio player | Proxies `GET /v1/convai/conversations/{id}/audio` with `xi-api-key` header, streams MP3 back to client |
 
-**Realtime subscriptions:**
-The frontend subscribes to `conversations` table inserts filtered by `process_id`. When a new conversation record is inserted (or its status changes to `done`), the Process Detail Panel auto-refreshes without a page reload.
+**Built-in reactivity (no manual subscriptions needed):**
+Convex queries are reactive by default. Any component using `useQuery` will auto-update when the underlying data changes. When a new conversation record is inserted (or its status changes to `done`), the Process Detail Panel auto-refreshes without a page reload — no channels, no subscriptions, no cleanup.
 
 ```tsx
-supabase
-  .channel('conversations')
-  .on('postgres_changes', {
-    event: '*',
-    schema: 'public',
-    table: 'conversations',
-    filter: `process_id=eq.${selectedProcessId}`,
-  }, (payload) => {
-    refreshConversationList();
-  })
-  .subscribe();
+// Convex queries are reactive by default — no manual subscriptions needed.
+// Any component using useQuery will auto-update when the underlying data changes.
+const conversations = useQuery(api.conversations.listByProcess, {
+  processId: selectedProcessId,
+});
+const process = useQuery(api.processes.get, { processId: selectedProcessId });
+// process.rollingSummary auto-updates when regenerateProcessSummary writes a new value
 ```
 
 **Data flow (POC — polling path):**
 
 1. User starts session → `conversation.startSession()` → receives `conversationId`
 2. User ends session → `onDisconnect` fires
-3. Frontend calls Supabase Edge Function `fetch-conversation` with `conversationId`
-4. Edge Function polls `GET /v1/convai/conversations/{id}` until status = `done`
-5. Edge Function extracts transcript, summary (from `analysis`), and data collection results → inserts into `conversations` table (no Claude call needed — ElevenLabs provides the summary)
-6. Edge Function calls `regenerate-process-summary` → Claude synthesizes all conversation summaries into a rolling process narrative → updates `processes.rolling_summary`
-7. Supabase Realtime pushes updates to frontend → UI refreshes with summary, transcript, and audio player
-8. Audio playback: when user clicks play, the Audio Player component calls `get-audio` Edge Function → proxies the ElevenLabs Audio API → streams MP3 to the browser (no stored files, no additional credits)
+3. Frontend calls `fetchConversation` Convex action with `conversationId`
+4. Convex action polls `GET /v1/convai/conversations/{id}` until status = `done`
+5. Convex action extracts transcript, summary (from `analysis`), and data collection results → inserts into `conversations` table via `ctx.runMutation` (no Claude call needed — ElevenLabs provides the summary)
+6. Convex action calls `regenerateProcessSummary` → Claude Sonnet (via OpenRouter) synthesizes all conversation summaries into a rolling process narrative → updates `processes.rollingSummary`
+7. Convex reactivity auto-updates the frontend → UI refreshes with summary, transcript, and audio player (no manual subscriptions needed)
+8. Audio playback: when user clicks play, the Audio Player component calls `getAudio` HTTP action → proxies the ElevenLabs Audio API → streams MP3 to the browser (no stored files, no additional credits)
 
 ---
 
@@ -483,7 +498,7 @@ Alternatively, the entire modal can use the **Conversation Bar** component, whic
 
 - Miller column navigation (Function → Department → Process) built with **shadcn/ui** components
 - **Responsive layout** — Miller columns on desktop; stacked drill-down navigation on mobile/tablet (collapse to single-column with back navigation)
-- Pre-seeded organizational hierarchy (Supabase seed script with `seed.sql`)
+- Pre-seeded organizational hierarchy (Convex seed script)
 - **English only** for POC (ElevenLabs agent language set to `"en"`)
 - ElevenLabs voice agent integration via `@elevenlabs/react` SDK with dynamic context injection
 - Recording UI using **ElevenLabs UI** components (Orb, Conversation, Message, Waveform, Voice Button)
@@ -491,15 +506,15 @@ Alternatively, the entire modal can use the **Conversation Bar** component, whic
 - **Consent banner** — simple notice before first recording: "This conversation will be recorded, transcribed, and stored."
 - Post-call transcript and summary retrieval via ElevenLabs Conversations API (summary provided by ElevenLabs — no extra LLM call)
 - **Post-call loading state** — ShimmeringText "Processing your conversation..." while ElevenLabs analysis completes, transitioning to post-call review screen
-- Process-level rolling summaries via Claude API (the only LLM cost — called from Supabase Edge Functions)
+- Process-level rolling summaries via Claude Sonnet through OpenRouter (the only LLM cost — called from Convex actions)
 - ElevenLabs Conversation Analysis (Success Evaluation + Data Collection) configured on platform
 - Conversation log per process (contributor name, date, summary, transcript, structured analysis)
-- **Audio playback streamed from ElevenLabs** — no local storage; audio served on-demand via `GET /v1/convai/conversations/{id}/audio` through a proxy Edge Function, rendered with ElevenLabs UI Audio Player / Scrub Bar
+- **Audio playback streamed from ElevenLabs** — no local storage; audio served on-demand via `GET /v1/convai/conversations/{id}/audio` through a proxy Convex HTTP action, rendered with ElevenLabs UI Audio Player / Scrub Bar
 - **Process Summary Box** — prominent, always-visible summary card per process synthesizing all conversations
 - **Empty states** — friendly prompts when a process has no conversations, a department has no processes, etc.
 - Process-level rolling summary (auto-regenerated after each new conversation)
 - On-demand department and function summaries
-- Supabase Realtime for live UI updates
+- Convex built-in reactivity for live UI updates
 - **Error handling for disconnects** — graceful UI for `onDisconnect` with reason `"error"`, with retry prompt
 - Simple, clean single-page UI (Next.js + Tailwind + shadcn/ui)
 
@@ -513,7 +528,7 @@ Alternatively, the entire modal can use the **Conversation Bar** component, whic
 - Integrations (Slack, Teams, email digests)
 - Multi-tenant / multi-organization support
 - Multi-language support (Arabic, auto-detect, etc.)
-- Local audio archiving (Supabase Storage backup of ElevenLabs audio for long-term retention)
+- Local audio archiving (backup of ElevenLabs audio for long-term retention)
 - Mobile-native app (iOS / Android)
 
 ---
@@ -536,17 +551,17 @@ Alternatively, the entire modal can use the **Conversation Bar** component, whic
 
 ### 8.1 Technical Risks
 
-**Polling timeout on `fetch-conversation`:**
-After `onDisconnect`, the Edge Function polls the ElevenLabs API every ~2 seconds until status = `done`. ElevenLabs processing (transcript + analysis) can take 10-30+ seconds. Supabase Edge Functions have a default execution timeout (typically 60s).
-**Mitigation:** Add a max-retry counter (e.g., 30 retries × 2s = 60s). If still `processing`, insert a record with `status: 'processing'` and have the frontend poll Supabase on an interval until the record updates. Alternatively, switch to the webhook path for production.
+**Polling timeout on `fetchConversation`:**
+After `onDisconnect`, the Convex action polls the ElevenLabs API every ~2 seconds until status = `done`. ElevenLabs processing (transcript + analysis) can take 10-30+ seconds.
+**Mitigation:** Add a max-retry counter (e.g., 30 retries × 2s = 60s). If still `processing`, insert a record with `status: 'processing'` — Convex reactivity will auto-update the frontend via `useQuery` when the record's status eventually changes to `done`. Alternatively, switch to the webhook path for production.
 
 **Concurrent recordings on the same process:**
-Two people could record simultaneously for the same process. The ElevenLabs agent handles this fine (separate `conversationId` per session), but `regenerate-process-summary` could fire twice near-simultaneously, causing a race condition on the `processes.rolling_summary` column.
-**Mitigation:** For POC, accept last-write-wins — the second call will include both conversation summaries anyway. For production, add a simple Postgres advisory lock or debounce the regeneration by 5 seconds.
+Two people could record simultaneously for the same process. The ElevenLabs agent handles this fine (separate `conversationId` per session), but `regenerateProcessSummary` could fire twice near-simultaneously, causing a race condition on the `processes.rollingSummary` field.
+**Mitigation:** For POC, accept last-write-wins — the second call will include both conversation summaries anyway. For production, add a debounce mechanism.
 
 **ElevenLabs API key security:**
-The `agentId` can be public (it's passed to the frontend SDK), but the `xi-api-key` needed by `fetch-conversation` and `get-audio` to call the ElevenLabs API must never be exposed client-side.
-**Mitigation:** Store the API key exclusively in Supabase Edge Function environment variables. The frontend never calls the ElevenLabs API directly — it always goes through Edge Functions (for both data retrieval and audio streaming).
+The `agentId` can be public (it's passed to the frontend SDK), but the `xi-api-key` needed by `fetchConversation` and `getAudio` to call the ElevenLabs API must never be exposed client-side.
+**Mitigation:** Store the API key exclusively in Convex environment variables (set via `npx convex env set`). The frontend never calls the ElevenLabs API directly — it always goes through Convex server functions (for both data retrieval and audio streaming).
 
 ### 8.2 UX Considerations
 
@@ -556,7 +571,7 @@ Without authentication, we need the user to self-identify before recording. A sh
 
 **Post-call loading state:**
 After the user ends the call, there's a 10-30 second processing window. The UI must not feel broken during this gap.
-**Design:** Show a post-call screen with ShimmeringText ("Processing your conversation...") and the ElevenLabs Orb in a subtle idle animation. When the data lands (via Supabase Realtime), transition to the summary + transcript + audio player view.
+**Design:** Show a post-call screen with ShimmeringText ("Processing your conversation...") and the ElevenLabs Orb in a subtle idle animation. When the data lands (via Convex reactivity), transition to the summary + transcript + audio player view.
 
 **Empty states:**
 Every level of the hierarchy needs a zero-data state. Process with no conversations: "No conversations yet — be the first to record how this process works." Department with no processes: "No processes defined yet." These should feel inviting, not empty.
@@ -576,7 +591,7 @@ Conversation Analysis (Success Evaluation, Data Collection, transcript summary) 
 Even for an internal POC, employees are being recorded describing their work. A simple consent notice should appear before the first recording: "This conversation will be recorded, transcribed, and stored to help document our processes." One-line banner in the recording modal, not a legal wall. But it needs to be there.
 
 **Seed data for demo:**
-The org hierarchy needs to be realistic for the POC to land well. Create a `seed.sql` file as part of the build with 3-4 functions, 2-3 departments each, and 2-4 processes per department. Pre-populate 1-2 sample conversations with mock summaries so the UI doesn't look empty on first load.
+The org hierarchy needs to be realistic for the POC to land well. Create a Convex seed script as part of the build with 3-4 functions, 2-3 departments each, and 2-4 processes per department. Pre-populate 1-2 sample conversations with mock summaries so the UI doesn't look empty on first load.
 
 **Microphone permissions:**
 The ElevenLabs SDK requires microphone access. Browsers will prompt for permission on first use. If the user denies or the page is on HTTP (not HTTPS), the agent won't work. The app must be served over HTTPS (Vercel handles this). Add a pre-check: if `navigator.mediaDevices.getUserMedia` fails, show a clear message explaining how to enable the mic.
