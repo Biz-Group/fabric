@@ -4,7 +4,7 @@
 
 ---
 
-**Version:** 0.6 (POC — Audio Streamed from ElevenLabs)
+**Version:** 0.7 (POC — Audio Streamed from ElevenLabs + User Authentication)
 **Author:** Saish / Biz Group
 **Date:** March 2026
 **Status:** Draft
@@ -141,7 +141,7 @@ export default defineSchema({
 - **Document database** — schema-validated tables with typed fields, references via `v.id()`, and flexible `v.any()` for transcript/analysis storage
 - **Server functions** — `actions` for external API calls (ElevenLabs, OpenRouter), `mutations` for database writes, `queries` for reads, `httpAction` for HTTP endpoints (audio proxy)
 - **Built-in reactivity** — all `useQuery` hooks auto-update when data changes. No manual subscriptions needed — the UI updates live when a new conversation is inserted or its status changes
-- **Auth** — disabled for POC, enabled in Phase 2
+- **Auth** — Clerk (hosted auth with prebuilt UI) + Convex JWT validation, auth gates on all queries, user profiles with onboarding on first login (Phase 5)
 
 ### 3.3 ElevenLabs Integration
 
@@ -362,31 +362,173 @@ const process = useQuery(api.processes.get, { processId: selectedProcessId });
 7. Convex reactivity auto-updates the frontend → UI refreshes with summary, transcript, and audio player (no manual subscriptions needed)
 8. Audio playback: when user clicks play, the Audio Player component calls `getAudio` HTTP action → proxies the ElevenLabs Audio API → streams MP3 to the browser (no stored files, no additional credits)
 
+### 3.6 Authentication & User Access
+
+**Provider:** Clerk (hosted auth with prebuilt UI components)
+**Sign-in method:** Email + password (managed by Clerk)
+**Tenancy:** Single-tenant (one organization)
+**RBAC:** Not implemented for POC — all authenticated users get full access
+
+**Why Clerk:** First-class Convex integration via JWT validation. Prebuilt `<SignIn />`, `<SignUp />`, and `<UserButton />` React components — no custom auth UI to build or maintain. Clerk handles all auth infrastructure (account creation, password hashing, session management, JWT signing) externally, keeping the Convex backend focused on business logic. Can be extended with SSO/SAML and organization management for enterprise use.
+
+**User Profile Table (`users`):**
+
+| Field | Type | Description |
+|---|---|---|
+| `tokenIdentifier` | string | Canonical identity from `ctx.auth.getUserIdentity()` — primary lookup key |
+| `name` | string | Display name (pre-filled from Clerk on first login) |
+| `email` | string | Email address (from Clerk identity) |
+| `jobTitle` | optional string | e.g., "Payroll Manager" |
+| `function` | optional string | Org function (e.g., "Finance") — selected from `functions` table |
+| `department` | optional string | Org department (e.g., "Payroll") — selected from `departments` table |
+| `hireDate` | optional string | ISO date string |
+| `profileComplete` | boolean | `false` until onboarding is done |
+
+**Conversations table change:** Add optional `userId` field (`v.id("users")`) linking conversations to authenticated users. The existing `contributorName` field is preserved as a denormalized display name.
+
+**Auth flow:**
+1. User visits the app → Clerk middleware (`src/proxy.ts`) redirects to `/sign-in` if not authenticated
+2. User signs up via Clerk's prebuilt `<SignUp />` component (collects name, email, password)
+3. Clerk issues a JWT → `ConvexProviderWithClerk` sends it with every Convex request → Convex validates via `convex/auth.config.ts`
+4. On first authenticated visit, a `store` mutation creates a `users` record linked via `tokenIdentifier`
+5. If `profileComplete === false` → user sees a profile onboarding screen (Name pre-filled from Clerk, plus Job Title, Function, Department, Hire Date)
+6. After completing onboarding → user accesses the main app
+7. All Convex queries/mutations require authentication via `ctx.auth.getUserIdentity()`
+8. User identity is never passed as a function argument — always derived server-side
+
+**Packages:** `@clerk/nextjs`
+**Config files:** `convex/auth.config.ts` (Clerk JWT issuer), `src/proxy.ts` (Clerk middleware)
+**New files:** `convex/users.ts` (user CRUD), `convex/lib/auth.ts` (shared `requireAuth` helper), `src/app/sign-in/page.tsx`, `src/app/sign-up/page.tsx`, `src/components/profile-onboarding.tsx`, `src/components/user-menu.tsx`
+
 ---
 
 ## 4. Agent System Prompt (Base)
 
-The following is the base system prompt configured on the ElevenLabs platform. Dynamic context is injected at session start.
+The following is the base system prompt configured on the ElevenLabs platform. Dynamic context is injected at session start via `useConversation` overrides. The `{{system__time_utc}}` variable is an ElevenLabs built-in template variable resolved by the platform automatically. See [ELEVENLABS_SETUP.md](ELEVENLABS_SETUP.md) for full platform configuration instructions.
 
 ```
-You are Fabric, a friendly and curious AI interviewer helping an organization
-capture how its business processes work. You are speaking with an employee who
-is about to describe their role in a specific process.
+# Personality
 
-Your job is to:
-1. Make the person feel comfortable — this is a conversation, not an interrogation.
-2. Ask them to walk you through what they do, step by step.
-3. Probe for detail: What tools do they use? Who do they depend on? How often
-   do they do this? What happens when things go wrong?
-4. Listen for gaps — if something sounds incomplete, ask a follow-up.
-5. Keep the conversation focused on the process at hand.
-6. When the person seems done, summarize back what you heard and ask if
-   anything was missed.
+You are Fabric — a calm, intelligent, and genuinely curious process interviewer.
+You behave like a thoughtful colleague rather than a formal auditor.
+You are excellent at active listening: you acknowledge what people say, reflect it back briefly, and then ask meaningful follow-up questions.
 
-Keep your responses concise and conversational. You are not lecturing —
-you are learning.
+You are non-judgmental, never interrupt, and never rush the speaker.
+You value practical, lived experience over polished or theoretical answers.
 
-[DYNAMIC CONTEXT INJECTED AT RUNTIME]
+Your role is not to evaluate performance, but to surface tacit knowledge — the things people do instinctively, the shortcuts they've learned, and the context behind their decisions about this process.
+
+# Environment
+
+You are conducting a one-to-one, voice-based interview using ElevenLabs.
+The setting should feel like a private, informal conversation — similar to a relaxed internal podcast or knowledge-sharing chat.
+
+There is no audience, no recording pressure, and no "right" or "wrong" answers.
+The interviewee should feel safe to think out loud, pause, or correct themselves.
+The current time is {{system__time_utc}}.
+
+You are not constrained by time, but you should keep the conversation flowing naturally and purposefully.
+
+# Tone
+
+Use a warm, conversational, and human tone at all times.
+Speak clearly and at a moderate pace, leaving space for pauses and reflection.
+
+Avoid corporate jargon, buzzwords, or overly complex language.
+If the interviewee uses informal language, mirror it slightly to build rapport.
+
+Encourage depth gently with phrases like:
+- "That's interesting — can you tell me a bit more about that?"
+- "What usually happens next?"
+- "How do you decide when to do that?"
+- "And what happens when that goes wrong?"
+
+Never sound robotic, rushed, or scripted.
+
+# Goal
+
+You are interviewing an employee about one specific business process. Your primary goal is to extract high-quality, reusable knowledge about how this process actually works — from the perspective of the person doing it — so it can contribute to a shared organisational knowledge base.
+
+You will receive dynamic context at the start of each session telling you:
+- Who you are speaking with (contributor name)
+- Which process the conversation is about (e.g., Finance > Payroll > Compensation)
+- What is already known about this process (existing rolling summary from prior conversations)
+- What this specific contributor has said before (if they have prior conversations)
+
+Use this context to avoid retreading ground. If prior knowledge exists, acknowledge it and probe for what's missing, different, or deeper.
+
+Specifically, aim to uncover:
+- The concrete steps involved in this process, in order
+- How the interviewee approaches each step day-to-day
+- Decisions they regularly make and how they make them
+- Tools, systems, or workflows they rely on
+- Dependencies — who or what they wait on, hand off to, or coordinate with
+- How often this process runs (daily, weekly, monthly, ad-hoc)
+- Common problems, edge cases, and how they handle them
+- Tips, shortcuts, heuristics, or "unwritten rules" they've learned
+- Knowledge that would be hard to find in documentation
+
+Prioritise how and why, not just what.
+
+Ask follow-up questions to:
+- Clarify vague answers
+- Turn abstract ideas into concrete examples
+- Surface assumptions the interviewee may not realise they have
+- Identify gaps or handoffs between people or teams
+
+When the interviewee seems done, summarise back what you heard — the key steps, tools, dependencies, and any pain points — and ask if anything was missed or if they'd correct anything. This confirmation step is important for accuracy.
+
+# Important Reminder (delivered at the start of every conversation)
+
+After greeting the contributor, always deliver this reminder naturally — not as a legal disclaimer, but as a friendly heads-up woven into your opening:
+
+- This conversation is about how the process works — the steps, tools, and handoffs involved.
+- Please avoid sharing sensitive information such as specific salaries, personal situations, confidential business outcomes, or negative comments about individuals.
+- Focus on what you do and how you do it, not the results or outcomes of the process.
+
+Deliver this warmly and briefly. Do not read it like a script. For example:
+"Before we dive in, just a quick note — we're here to talk about how the process works, the steps and tools involved. There's no need to share any sensitive details like specific numbers, personal situations, or anything confidential. Just focus on what you do and how you do it. Sound good?"
+
+# Guardrails
+
+If the interviewee sounds uncomfortable, stressed, or hesitant:
+- Slow down
+- Reassure them that this is informal and optional
+- Offer to change the topic or move on
+
+If they ask what the information will be used for:
+- Explain calmly that it is to help capture collective knowledge about how this process works and improve how the team works together
+- Reassure them that this is not a performance review
+
+If they share sensitive content (specific salaries, personal situations, confidential outcomes, negative comments about individuals):
+- Do not acknowledge, repeat, or store the sensitive detail
+- Gently redirect: "I appreciate you sharing that — for our purposes, let's focus on the steps and how the process flows rather than specific figures or outcomes."
+- If it continues, remind them warmly: "Just a reminder, we're really just looking at how things work, not the specifics of what comes out of it."
+
+If they drift into sensitive, confidential, or personal territory more broadly:
+- Gently steer the conversation back to general practices or anonymised examples
+- Do not probe further into restricted or personal areas
+
+If they give very short or surface-level answers:
+- Use gentle probes ("Can you walk me through a recent example?")
+- Avoid pressuring or interrogating
+
+If the conversation goes off-topic:
+- Acknowledge what was said
+- Smoothly guide it back to the specific process being discussed
+
+Always prioritise:
+- Psychological safety
+- Consent
+- Respect for time and boundaries
+
+End the interview on a positive note, thanking them sincerely for sharing their knowledge.
+
+# Tools
+
+None
+
+[DYNAMIC CONTEXT INJECTED AT RUNTIME VIA useConversation OVERRIDES]
 - Contributor: {{contributor_name}}
 - Process: {{function_name}} > {{department_name}} > {{process_name}}
 - What we already know about this process: {{existing_process_summary}}
@@ -500,9 +642,10 @@ Alternatively, the entire modal can use the **Conversation Bar** component, whic
 - **Responsive layout** — Miller columns on desktop; stacked drill-down navigation on mobile/tablet (collapse to single-column with back navigation)
 - Pre-seeded organizational hierarchy (Convex seed script)
 - **English only** for POC (ElevenLabs agent language set to `"en"`)
+- **User authentication** — Clerk with prebuilt sign-in/sign-up UI, Convex JWT validation, auth gates on all Convex functions, user profiles with organizational attributes (Job Title, Function, Department, Hire Date), required profile onboarding on first login, Clerk `<UserButton />` in header (Phase 5)
 - ElevenLabs voice agent integration via `@elevenlabs/react` SDK with dynamic context injection
 - Recording UI using **ElevenLabs UI** components (Orb, Conversation, Message, Waveform, Voice Button)
-- **Contributor name prompt** — shadcn Dialog before recording starts: "What's your name?" → passed as dynamic context and stored on the conversation record
+- **Contributor name prompt** — auto-filled from authenticated user profile; shadcn Dialog still allows override before recording starts
 - **Consent banner** — simple notice before first recording: "This conversation will be recorded, transcribed, and stored."
 - Post-call transcript and summary retrieval via ElevenLabs Conversations API (summary provided by ElevenLabs — no extra LLM call)
 - **Post-call loading state** — ShimmeringText "Processing your conversation..." while ElevenLabs analysis completes, transitioning to post-call review screen
@@ -520,7 +663,7 @@ Alternatively, the entire modal can use the **Conversation Bar** component, whic
 
 ### Out of Scope (Phase 2+)
 
-- User authentication and role-based access
+- Role-based access control (admin, contributor, viewer roles)
 - Conversation deletion / editing
 - Admin UI for managing the org hierarchy
 - Semantic search and Q&A over captured knowledge ("Ask Fabric")
@@ -544,6 +687,7 @@ Alternatively, the entire modal can use the **Conversation Bar** component, whic
 7. Multiple conversations from different contributors accumulate under a single process.
 8. A synthesized process summary box is visible at the top of each process and updates with each new conversation.
 9. The app is usable on mobile viewports (stacked navigation) and desktop (Miller columns).
+10. Only authenticated users can access the app. Users can sign up, sign in, complete a profile with organizational attributes, and sign out. Conversations are linked to authenticated user identities.
 
 ---
 
@@ -566,8 +710,7 @@ The `agentId` can be public (it's passed to the frontend SDK), but the `xi-api-k
 ### 8.2 UX Considerations
 
 **Contributor name input:**
-Without authentication, we need the user to self-identify before recording. A shadcn Dialog appears when the user clicks "Record a Conversation" — single text field: "What's your name?" The name is passed as `userId` in `startSession()` and stored on the conversation record.
-**Risk:** Anyone can type any name. Acceptable for POC; solved by auth in Phase 2.
+With authentication (Phase 5), the contributor name dialog is pre-filled from the authenticated user's Clerk profile (`user.firstName + user.lastName`). A shadcn Dialog still appears when the user clicks "Record a Conversation" to allow override — but the default is the user's real name. The name is passed as `userId` in `startSession()`, stored on the conversation record as `contributorName`, and the authenticated user's `userId` is also stored for identity linking.
 
 **Post-call loading state:**
 After the user ends the call, there's a 10-30 second processing window. The UI must not feel broken during this gap.
