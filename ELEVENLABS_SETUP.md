@@ -22,7 +22,7 @@ Fabric uses ElevenLabs as the voice conversation engine. The agent is a **platfo
 | Post-call data retrieval (transcript, summary, analysis) | Code | Convex action polls ElevenLabs REST API |
 | Audio playback | Code | Convex HTTP action proxies ElevenLabs Audio API |
 | Conversation-level summary | ElevenLabs | Built-in `analysis.transcript_summary` |
-| Process-level rolling summary | Code + Claude | Convex action calls Claude Sonnet via OpenRouter |
+| Process-level rolling summary | Code + Claude | Convex action calls Claude Haiku via OpenRouter |
 
 ### Runtime Flow
 
@@ -57,7 +57,7 @@ Code: Convex action polls GET /v1/convai/conversations/{id}
 Code: Inserts conversation record into Convex DB
   │
   ▼
-Code: Calls regenerateProcessSummary (Claude Sonnet via OpenRouter)
+Code: Calls regenerateProcessSummary (Claude Haiku via OpenRouter)
   │  Synthesizes ALL conversation summaries for this process
   │  Updates processes.rollingSummary
   │
@@ -203,11 +203,17 @@ End the interview on a positive note, thanking them sincerely for sharing their 
 None
 ```
 
-> **Note:** Dynamic context is injected at runtime via `useConversation` overrides, NOT baked into the platform prompt. The code appends the following to the prompt at session start:
-> - `Contributor: {{contributor_name}}`
-> - `Process: {{function_name}} > {{department_name}} > {{process_name}}`
-> - `What we already know about this process: {{existing_process_summary}}`
-> - `Previous conversations from this contributor: {{prior_contributor_summaries}}`
+> **Note:** Dynamic context is injected at runtime via `dynamicVariables` passed to `startSession()`. These fill `{{placeholder}}` templates in the prompt. Add the following **Dynamic Context** block at the end of the system prompt on the ElevenLabs dashboard:
+>
+> ```
+> --- Dynamic Context ---
+> Contributor: {{contributor_name}}
+> Job title: {{job_title}}
+> Tenure: {{years_in_role}}
+> Process: {{function_name}} > {{department_name}} > {{process_name}}
+> What we already know about this process: {{existing_summary}}
+> Previous conversations from this contributor: {{prior_conversations}}
+> ```
 >
 > The `{{system__time_utc}}` variable in the Environment section is an ElevenLabs built-in template variable — it is resolved by the platform automatically, not by our code.
 
@@ -220,20 +226,14 @@ Select a natural-sounding English voice. Recommendations:
 
 ### 2.4 Set Language
 
-Set the agent's default language to **English (`en`)**. The code also overrides this at session start (`overrides.agent.language: "en"`).
+Set the agent's default language to **English (`en`)**.
 
 ### 2.5 Configure First Message
 
-**On the platform**, set a generic fallback first message (used only if the code override fails):
+**On the platform**, set the first message using `{{dynamic_variable}}` placeholders that are filled at session start via `dynamicVariables`:
 
 ```
-Hi, I'm Fabric. I'm here to learn about how your process works. Ready when you are.
-```
-
-**In normal operation**, the code overrides this per-session with a personalized greeting:
-
-```
-Hi {{contributorName}}, I'm Fabric. Let's talk about how {{processName}} works.
+Hi {{contributor_name}}, I'm Fabric. Let's talk about how {{process_name}} works.
 Before we dive in, just a quick note — we're here to talk about how the process
 works, the steps and tools involved. There's no need to share any sensitive details
 like specific numbers, personal situations, or anything confidential. Just focus on
@@ -319,27 +319,31 @@ After creating the agent:
 import { useConversation } from "@elevenlabs/react";
 
 const conversation = useConversation({
-  agentId: process.env.NEXT_PUBLIC_ELEVENLABS_AGENT_ID,
-  overrides: {
-    agent: {
-      prompt: {
-        prompt: `${basePrompt}\n\nContributor: ${contributorName}\nProcess: ${functionName} > ${departmentName} > ${processName}\nWhat we already know: ${existingRollingSummary}\nPrevious conversations from this contributor: ${priorSummaries}`,
-      },
-      firstMessage: `Hi ${contributorName}, I'm Fabric. Let's talk about ${processName}.`,
-      language: "en",
-    },
-  },
   onConnect: ({ conversationId }) => { /* store conversationId */ },
   onMessage: ({ message, source }) => { /* update live transcript */ },
   onDisconnect: (details) => { /* trigger post-call pipeline */ },
   onError: (message, context) => { /* handle errors */ },
+  micMuted: isMuted,
 });
 
 await conversation.startSession({
+  agentId: process.env.NEXT_PUBLIC_ELEVENLABS_AGENT_ID,
   connectionType: "webrtc",
   userId: contributorName,
+  dynamicVariables: {
+    contributor_name: contributorName,
+    job_title: userJobTitle,
+    years_in_role: tenure,
+    function_name: functionName,
+    department_name: departmentName,
+    process_name: processName,
+    existing_summary: existingRollingSummary,
+    prior_conversations: priorSummaries,
+  },
 });
 ```
+
+> **Note:** We use `dynamicVariables` (not `overrides`) to inject context. Dynamic variables fill `{{placeholder}}` templates in the agent's dashboard-configured prompt and first message. This avoids needing to enable override permissions in the agent's Security tab.
 
 ### 3.2 During a Session
 
@@ -423,7 +427,7 @@ Currently English-only. To add languages:
 | `NEXT_PUBLIC_ELEVENLABS_AGENT_ID` | `.env.local` | Agent ID — safe for client-side |
 | `ELEVENLABS_API_KEY` | Convex env var (`npx convex env set`) | API key — server-side only |
 | `NEXT_PUBLIC_CONVEX_URL` | `.env.local` | Convex deployment URL |
-| `OPENROUTER_API_KEY` | Convex env var (`npx convex env set`) | For Claude Sonnet (process summaries only) |
+| `OPENROUTER_API_KEY` | Convex env var (`npx convex env set`) | For Claude Haiku (process summaries only) |
 
 ---
 

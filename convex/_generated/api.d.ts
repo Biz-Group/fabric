@@ -12,6 +12,7 @@ import type * as conversations from "../conversations.js";
 import type * as departments from "../departments.js";
 import type * as functions from "../functions.js";
 import type * as lib_auth from "../lib/auth.js";
+import type * as postCall from "../postCall.js";
 import type * as processes from "../processes.js";
 import type * as seed from "../seed.js";
 import type * as users from "../users.js";
@@ -27,6 +28,7 @@ declare const fullApi: ApiFromModules<{
   departments: typeof departments;
   functions: typeof functions;
   "lib/auth": typeof lib_auth;
+  postCall: typeof postCall;
   processes: typeof processes;
   seed: typeof seed;
   users: typeof users;

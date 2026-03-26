@@ -32,6 +32,7 @@ import {
 } from "lucide-react";
 import { ConversationLog } from "@/components/conversation-log";
 import { UserMenu } from "@/components/user-menu";
+import { RecordingModal } from "@/components/recording-modal";
 
 // --- Types ---
 
@@ -142,6 +143,9 @@ export function MillerColumns() {
     useState<Id<"departments"> | null>(null);
   const [selectedProcessId, setSelectedProcessId] =
     useState<Id<"processes"> | null>(null);
+
+  // Recording modal state
+  const [recordingOpen, setRecordingOpen] = useState(false);
 
   // Mobile navigation level
   const [mobileLevel, setMobileLevel] = useState<MobileLevel>(1);
@@ -399,11 +403,26 @@ export function MillerColumns() {
 
           <div className="flex-1 overflow-y-auto scrollbar-hide">
             <div className="space-y-6 p-4 md:p-6">
-              {/* Record button placeholder (Phase 4/5) */}
-              <Button size="lg" className="w-full gap-2" disabled>
+              {/* Record a Conversation */}
+              <Button
+                size="lg"
+                className="w-full gap-2"
+                onClick={() => setRecordingOpen(true)}
+              >
                 <Mic className="h-4 w-4" />
                 Record a Conversation
               </Button>
+
+              {selectedProcessId && (
+                <RecordingModal
+                  open={recordingOpen}
+                  onOpenChange={setRecordingOpen}
+                  processId={selectedProcessId}
+                  processName={selectedProcessName}
+                  functionName={selectedFunctionName}
+                  departmentName={selectedDepartmentName}
+                />
+              )}
 
               {/* Process Summary Card */}
               <Card>

@@ -39,7 +39,7 @@ Derived from [PRD.md](PRD.md) v0.7 (POC — Audio Streamed from ElevenLabs + Use
     - `NEXT_PUBLIC_ELEVENLABS_AGENT_ID` — the ElevenLabs agent ID (safe to expose client-side)
   - Store secrets in Convex environment variables via `npx convex env set` (never client-side):
     - `ELEVENLABS_API_KEY` (`xi-api-key`) — used by `fetchConversation` and `getAudio` Convex functions
-    - `OPENROUTER_API_KEY` — used by `regenerateProcessSummary` Convex action to call Claude Sonnet via OpenRouter
+    - `OPENROUTER_API_KEY` — used by `regenerateProcessSummary` Convex action to call Claude Haiku via OpenRouter
   - Add `.env.local` to `.gitignore`
   - Create a `.env.example` file documenting all required variables (without values)
 
@@ -280,71 +280,48 @@ Derived from [PRD.md](PRD.md) v0.7 (POC — Audio Streamed from ElevenLabs + Use
 
 ## Phase 6: ElevenLabs Voice Agent — Recording Flow
 
-- [ ] **Build the contributor name prompt dialog**
-  - When the user clicks "Record a Conversation", first show a **shadcn Dialog** (modal) before launching the recording
-  - **Auto-fill** the name field from the authenticated user's profile (`user.name` from `api.users.getMe`) — still allow override
-  - The entered name is stored in component state and used for:
-    - Passing as `userId` in `conversation.startSession()` for ElevenLabs analytics filtering
-    - Injecting into the agent's `firstMessage` override: `"Hi ${contributorName}, I'm Fabric. Let's talk about ${processName}."`
-    - Injecting into the dynamic system prompt context: `Contributor: {{contributor_name}}`
-    - Storing on the `conversations.contributor_name` field in the database
-    - The authenticated user's `userId` (from `users` table) is also stored on the conversation record
-  - Validate that the name field is not empty before proceeding
-  - After submission, transition to the consent banner / recording modal
+- [x] **Build the contributor name prompt dialog**
+  - When the user clicks "Record a Conversation", a **shadcn Dialog** (modal) opens with a name prompt step
+  - **Auto-fills** the name field from the authenticated user's profile (`user.name` from `api.users.getMe`) — still allows override
+  - The entered name is stored in component state and passed via `dynamicVariables` and `userId` in `startSession()`
+  - Validates that the name field is not empty before proceeding
+  - After submission, mic is acquired and the modal transitions to the consent banner
 
-- [ ] **Build the consent & disclaimer banner**
-  - Display a notice before the recording begins with two parts:
+- [x] **Build the consent & disclaimer banner**
+  - Displays a notice before the recording begins with two parts:
     > **Recording notice:** "This conversation will be recorded, transcribed, and stored to help document our processes."
     >
     > **Content disclaimer:** "Please focus on how the process works — the steps, tools, and handoffs involved. Avoid sharing sensitive information such as specific salaries, personal situations, confidential outcomes, or negative comments about individuals."
-  - Show this inside the recording modal before the agent session starts (not a legal wall — keep it concise and friendly)
-  - The agent's first spoken message also reinforces this disclaimer naturally (configured in the system prompt — see [ELEVENLABS_SETUP.md](ELEVENLABS_SETUP.md) section 2.5)
-  - This should appear **before** the agent session starts
-  - Consider persisting a "seen consent" flag in localStorage so it doesn't appear on every recording (or show it every time — POC is fine either way)
+  - Shown inside the recording modal before the agent session starts
+  - The agent's first spoken message also reinforces this disclaimer naturally (configured on the ElevenLabs dashboard — see [ELEVENLABS_SETUP.md](ELEVENLABS_SETUP.md) section 2.5)
+  - Consent is shown every time (acceptable for POC)
 
-- [ ] **Build the recording modal with ElevenLabs UI components**
-  - Create a full-screen or large modal matching the PRD wireframe (Screen 2)
-  - Layout from top to bottom:
+- [x] **Build the recording modal with ElevenLabs UI components**
+  - Full recording modal (`src/components/recording-modal.tsx`) with layout:
     - **Breadcrumb** at the top: `Function > Department > Process` (shadcn Breadcrumb)
-    - **Orb** — ElevenLabs UI `Orb` component (3D Three.js, audio-reactive). Drives animation from `conversation.getOutputVolume()` for agent speech and `conversation.getInputVolume()` for user speech
-    - **Conversation area** — ElevenLabs UI `Conversation` component containing `Message` components. Messages appear in real-time via the `onMessage` callback. Auto-styling for user vs. assistant messages. Include `ConversationScrollButton` for auto-scrolling
-    - **Waveform** — ElevenLabs UI `Waveform` component showing canvas-based audio visualization during recording
-    - **Controls row**:
-      - **Voice Button** — ElevenLabs UI `VoiceButton` for mic toggle (start/stop)
-      - **End Call button** — triggers `conversation.endSession()`
-    - **Text input fallback** — shadcn `Input` + send icon for `conversation.sendUserMessage(text)` (alternative to voice)
-  - Alternatively, evaluate using the **Conversation Bar** component which bundles mic controls, text input, and waveform into one pre-built interface
-  - The modal should work identically on all screen sizes (mobile and desktop)
+    - **Orb** — ElevenLabs UI `Orb` component (3D Three.js, audio-reactive), driven by `getInputVolume()` and `getOutputVolume()`
+    - **Conversation area** — ElevenLabs UI `Conversation` + `ConversationContent` containing `Message` components with real-time updates via `onMessage`. Includes `ConversationScrollButton` for auto-scrolling
+    - **Controls row**: Mic mute toggle, keyboard/text mode toggle, End Call button
+    - **Text input fallback** — shadcn `Input` + send icon for `conversation.sendUserMessage(text)`
+  - Modal works on all screen sizes (responsive)
 
-- [ ] **Integrate `useConversation` hook with full configuration**
-  - Import `useConversation` from `@elevenlabs/react`
-  - Configure the hook with:
-    - `agentId`: from `NEXT_PUBLIC_ELEVENLABS_AGENT_ID` env var
-    - `overrides.agent.prompt.prompt`: dynamic system prompt injecting process context:
-      - Contributor name
-      - Process path: `{{function_name}} > {{department_name}} > {{process_name}}`
-      - Existing process summary: `{{existing_process_summary}}` (from `processes.rolling_summary`)
-      - Prior contributor summaries (if any — query previous conversations by this contributor for this process)
-    - `overrides.agent.firstMessage`: `"Hi ${contributorName}, I'm Fabric. Let's talk about ${processName}."`
-    - `overrides.agent.language`: `"en"` (English only for POC)
-  - Implement all event handlers:
-    - **`onConnect({ conversationId })`**: Store `conversationId` in state — this is the globally unique ID needed for all post-call API calls
-    - **`onMessage({ message, source })`**: Append to live transcript display in the recording modal. `source` is `"user"` or `"ai"`. Feed into the `Message` components for real-time chat display
-    - **`onDisconnect(details)`**: Check `details.reason` (`"user"` | `"agent"` | `"error"`). If `"user"` or `"agent"`, trigger the post-call processing pipeline. If `"error"`, show error recovery UI (see Phase 8)
-    - **`onError(message, context)`**: Log error, show user-facing error state
-  - Call `conversation.startSession()` with:
-    - `connectionType: "webrtc"` (preferred for audio quality)
-    - `userId: contributorName` (for ElevenLabs analytics filtering)
-  - Use `conversation.status` (`"connected"` | `"disconnected"` | `"connecting"` | `"disconnecting"`) to drive UI states (connecting spinner, active call, etc.)
-  - Use `conversation.isSpeaking` to provide visual feedback when the agent is speaking (e.g., Orb animation intensity)
-  - Wire `conversation.getInputVolume()` and `conversation.getOutputVolume()` to drive Orb animation and Waveform visualization
+- [x] **Integrate `useConversation` hook with full configuration**
+  - Uses `dynamicVariables` (not `overrides`) to inject context into the ElevenLabs agent's dashboard-configured prompt templates — avoids needing to enable overrides in the agent's Security tab
+  - Dynamic variables passed: `contributor_name`, `job_title`, `years_in_role`, `function_name`, `department_name`, `process_name`, `existing_summary`, `prior_conversations`
+  - First message is configured on the ElevenLabs dashboard using `{{contributor_name}}` and `{{process_name}}` template variables
+  - Event handlers implemented:
+    - **`onConnect({ conversationId })`**: Stores `conversationId` in state for Phase 7 post-call pipeline
+    - **`onMessage({ message, source })`**: Appends to live transcript in the recording modal
+    - **`onDisconnect(details)`**: Checks `details.reason` — shows error recovery UI on `"error"`, ready for post-call pipeline on `"user"`/`"agent"` (Phase 7)
+    - **`onError(message, context)`**: Logs error, shows user-facing error state
+  - `startSession()` called with `connectionType: "webrtc"`, `userId: contributorName`
+  - `conversation.status` drives UI states (connecting spinner, active call, done)
+  - `conversation.isSpeaking` drives Orb animation and status indicator text
 
-- [ ] **Add microphone permission pre-check**
-  - Before attempting to start a session, check if microphone access is available using `navigator.mediaDevices.getUserMedia({ audio: true })`
-  - If the browser prompts for permission and the user **denies**, show a clear, helpful message explaining how to enable the microphone in their browser settings
-  - If the page is served over HTTP (not HTTPS), `getUserMedia` will fail — show a message about requiring HTTPS (Vercel handles this in production, but important for local dev)
-  - Handle the case where `navigator.mediaDevices` is undefined (very old browsers)
-  - Show the check result before attempting `conversation.startSession()` to avoid a confusing silent failure
+- [x] **Add microphone permission pre-check**
+  - Before proceeding from the name step, acquires the mic stream via `navigator.mediaDevices.getUserMedia({ audio: true })` and keeps it alive for WebRTC
+  - Shows specific error messages for denied permissions or unavailable APIs (non-HTTPS, old browsers)
+  - Mic stream is cleaned up on modal close and component unmount
 
 ---
 
@@ -376,10 +353,10 @@ Derived from [PRD.md](PRD.md) v0.7 (POC — Audio Streamed from ElevenLabs + Use
   - **Note**: This should be an `internalAction` (not public) since it's called server-side after `fetchConversation` — no direct auth check needed
   - **Logic**:
     1. Use `ctx.runQuery` to fetch ALL conversation summaries for the given `processId` from the `conversations` table (where `status = 'done'`, ordered by `_creationTime`)
-    2. Construct a prompt for Claude Sonnet (via OpenRouter) with the synthesis instruction from PRD section 3.4:
+    2. Construct a prompt for Claude Haiku (via OpenRouter) with the synthesis instruction from PRD section 3.4:
        > "You are synthesizing multiple employee accounts of a single business process. Combine these into a coherent narrative that describes the full process end-to-end, noting which contributors handle which parts, and highlighting any overlaps or gaps."
     3. Include all conversation summaries as input context (these are short summary strings, not full transcripts — lightweight call)
-    4. Call OpenRouter API (`OPENROUTER_API_KEY` from Convex environment variables, model: `anthropic/claude-sonnet-4`) using the OpenAI-compatible endpoint (`https://openrouter.ai/api/v1/chat/completions`) to generate the rolling summary
+    4. Call OpenRouter API (`OPENROUTER_API_KEY` from Convex environment variables, model: `anthropic/claude-Haiku-4`) using the OpenAI-compatible endpoint (`https://openrouter.ai/api/v1/chat/completions`) to generate the rolling summary
     5. Use `ctx.runMutation` to update `processes.rolling_summary` with Claude's response for the given `processId`
   - **Cost note**: This is the **only LLM cost** in the system — ElevenLabs handles all conversation-level summarization natively
   - **Concurrency note (PRD section 8.1)**: For POC, accept last-write-wins if two summaries fire near-simultaneously. The second call will include both conversation summaries anyway. Production would add a debounce mechanism.

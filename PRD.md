@@ -71,7 +71,7 @@ When a user selects a process, they see:
 5. The agent conducts a semi-structured interview — asking follow-up questions, clarifying steps, probing for edge cases and exceptions.
 6. The user ends the conversation when they're done.
 7. Post-call, the frontend triggers a Convex action that polls the ElevenLabs Conversations API until the transcript and analysis are ready, then stores everything in the database.
-8. The Convex action calls Claude Sonnet (via OpenRouter) for summarization, updates the conversation record, and regenerates the process-level rolling summary.
+8. The Convex action calls Claude Haiku (via OpenRouter) for summarization, updates the conversation record, and regenerates the process-level rolling summary.
 9. Convex's built-in reactivity pushes the update to the UI — the new conversation appears in the log automatically.
 
 ---
@@ -87,7 +87,7 @@ When a user selects a process, they see:
 | UI Components | ElevenLabs UI registry (Orb, Conversation, ConversationBar, Message, Transcript Viewer, Audio Player, Scrub Bar, Waveform, Voice Button) — built on shadcn/ui |
 | Backend / BaaS | **Convex** (document database, server functions, built-in reactivity) |
 | Conversation Summaries | ElevenLabs Conversation Analysis (built-in, no extra cost) |
-| Process-level Summaries | Claude Sonnet via OpenRouter API (OpenAI-compatible) — only LLM cost |
+| Process-level Summaries | Claude Haiku via OpenRouter API (OpenAI-compatible) — only LLM cost |
 | Post-call data | ElevenLabs Conversations API (transcript, summary, analysis) |
 | Audio playback | ElevenLabs Conversations Audio API (`GET .../audio`) — streamed on demand, no storage needed |
 | Hosting | Vercel (frontend) + Convex (backend) |
@@ -185,14 +185,6 @@ The `@elevenlabs/react` package provides the `useConversation` hook, which manag
 import { useConversation } from "@elevenlabs/react";
 
 const conversation = useConversation({
-  agentId: "<FABRIC_AGENT_ID>",
-  overrides: {
-    agent: {
-      prompt: { prompt: dynamicSystemPrompt },
-      firstMessage: `Hi ${contributorName}, I'm Fabric. Let's talk about ${processName}.`,
-      language: "en",
-    },
-  },
   onConnect: ({ conversationId }) => {
     // Store conversationId — needed for post-call API retrieval
     setElevenLabsConversationId(conversationId);
@@ -209,6 +201,7 @@ const conversation = useConversation({
   onError: (message, context) => {
     console.error("ElevenLabs error:", message, context);
   },
+  micMuted: isMuted,
 });
 
 // State provided by the hook
@@ -217,8 +210,19 @@ conversation.isSpeaking;  // boolean — is the agent currently speaking?
 
 // Methods
 await conversation.startSession({
-  connectionType: "webrtc",  // or "websocket"
+  agentId: "<FABRIC_AGENT_ID>",
+  connectionType: "webrtc",
   userId: contributorName,    // for analytics filtering
+  dynamicVariables: {
+    contributor_name: contributorName,
+    job_title: userJobTitle,
+    years_in_role: tenure,
+    function_name: functionName,
+    department_name: departmentName,
+    process_name: processName,
+    existing_summary: existingRollingSummary,
+    prior_conversations: priorSummaries,
+  },
 });
 conversation.endSession();
 conversation.sendUserMessage(text);  // text input fallback
@@ -227,10 +231,10 @@ conversation.getInputVolume();       // for waveform visualization
 conversation.getOutputVolume();      // for orb animation
 ```
 
-**Key capabilities confirmed from research:**
+**Key capabilities confirmed from research and implementation:**
 
-- **Dynamic overrides** — prompt, first message, voice, and language can all be overridden at session start. This is how we inject process context and contributor info.
-- **`startSession()` returns `conversationId`** — this is the globally unique ID we use to fetch post-call data.
+- **Dynamic variables** — values are injected into `{{placeholder}}` templates in the agent's dashboard-configured system prompt and first message. This avoids needing to enable override permissions in the agent's Security tab. Context passed: contributor name, job title, tenure, process path, existing summary, prior conversations.
+- **`onConnect` provides `conversationId`** — this is the globally unique ID we use to fetch post-call data.
 - **`onMessage` event** — fires for both user and agent messages in real-time, enabling live transcript display during the call.
 - **`getInputVolume()` / `getOutputVolume()`** — raw audio levels for driving the Orb animation and Waveform visualization.
 - **Client tools** — the agent can invoke client-side functions (e.g., to save a note, trigger a UI action). Useful for Phase 2 but not required for POC.
@@ -315,8 +319,8 @@ The `analysis` object returned by the Conversations API (and via the `post_call_
 
 We simply store `analysis.transcript_summary` in `conversations.summary` and the structured `analysis.data_collection` results in `conversations.analysis`.
 
-**Process-level rolling summary — Claude Sonnet via OpenRouter (the only LLM cost):**
-After each new conversation is stored, a Convex action fetches all conversation summaries for that process and sends them to Claude Sonnet (via OpenRouter's OpenAI-compatible API) with a prompt like:
+**Process-level rolling summary — Claude Haiku via OpenRouter (the only LLM cost):**
+After each new conversation is stored, a Convex action fetches all conversation summaries for that process and sends them to Claude Haiku (via OpenRouter's OpenAI-compatible API) with a prompt like:
 
 > "You are synthesizing multiple employee accounts of a single business process. Combine these into a coherent narrative that describes the full process end-to-end, noting which contributors handle which parts, and highlighting any overlaps or gaps."
 
@@ -334,7 +338,7 @@ These are generated on-demand (not stored) by concatenating child process summar
 | Function | Type | Trigger | Purpose |
 |---|---|---|---|
 | `postCallWebhook` | `httpAction` | HTTP POST (from ElevenLabs `post_call_transcription` webhook) | Receives transcript, summary, analysis, and metadata. Stores in `conversations` table. Triggers process summary regeneration. |
-| `regenerateProcessSummary` | `action` | Called after conversation is inserted | Fetches all conversation summaries for a process → sends to Claude Sonnet via OpenRouter → updates `processes.rollingSummary` |
+| `regenerateProcessSummary` | `action` | Called after conversation is inserted | Fetches all conversation summaries for a process → sends to Claude Haiku via OpenRouter → updates `processes.rollingSummary` |
 | `fetchConversation` | `action` | Called by frontend after `onDisconnect` (polling path) | Polls ElevenLabs API for conversation details, inserts into DB when status = `done`, then triggers `regenerateProcessSummary` |
 | `getAudio` | `httpAction` | Called by frontend audio player | Proxies `GET /v1/convai/conversations/{id}/audio` with `xi-api-key` header, streams MP3 back to client |
 
@@ -358,7 +362,7 @@ const process = useQuery(api.processes.get, { processId: selectedProcessId });
 3. Frontend calls `fetchConversation` Convex action with `conversationId`
 4. Convex action polls `GET /v1/convai/conversations/{id}` until status = `done`
 5. Convex action extracts transcript, summary (from `analysis`), and data collection results → inserts into `conversations` table via `ctx.runMutation` (no Claude call needed — ElevenLabs provides the summary)
-6. Convex action calls `regenerateProcessSummary` → Claude Sonnet (via OpenRouter) synthesizes all conversation summaries into a rolling process narrative → updates `processes.rollingSummary`
+6. Convex action calls `regenerateProcessSummary` → Claude Haiku (via OpenRouter) synthesizes all conversation summaries into a rolling process narrative → updates `processes.rollingSummary`
 7. Convex reactivity auto-updates the frontend → UI refreshes with summary, transcript, and audio player (no manual subscriptions needed)
 8. Audio playback: when user clicks play, the Audio Player component calls `getAudio` HTTP action → proxies the ElevenLabs Audio API → streams MP3 to the browser (no stored files, no additional credits)
 
@@ -404,7 +408,7 @@ const process = useQuery(api.processes.get, { processId: selectedProcessId });
 
 ## 4. Agent System Prompt (Base)
 
-The following is the base system prompt configured on the ElevenLabs platform. Dynamic context is injected at session start via `useConversation` overrides. The `{{system__time_utc}}` variable is an ElevenLabs built-in template variable resolved by the platform automatically. See [ELEVENLABS_SETUP.md](ELEVENLABS_SETUP.md) for full platform configuration instructions.
+The following is the base system prompt configured on the ElevenLabs platform. Dynamic context is injected at session start via `dynamicVariables` passed to `startSession()`, which fill `{{placeholder}}` templates in the agent's prompt and first message. The `{{system__time_utc}}` variable is an ElevenLabs built-in template variable resolved by the platform automatically. See [ELEVENLABS_SETUP.md](ELEVENLABS_SETUP.md) for full platform configuration instructions.
 
 ```
 # Personality
@@ -649,7 +653,7 @@ Alternatively, the entire modal can use the **Conversation Bar** component, whic
 - **Consent banner** — simple notice before first recording: "This conversation will be recorded, transcribed, and stored."
 - Post-call transcript and summary retrieval via ElevenLabs Conversations API (summary provided by ElevenLabs — no extra LLM call)
 - **Post-call loading state** — ShimmeringText "Processing your conversation..." while ElevenLabs analysis completes, transitioning to post-call review screen
-- Process-level rolling summaries via Claude Sonnet through OpenRouter (the only LLM cost — called from Convex actions)
+- Process-level rolling summaries via Claude Haiku through OpenRouter (the only LLM cost — called from Convex actions)
 - ElevenLabs Conversation Analysis (Success Evaluation + Data Collection) configured on platform
 - Conversation log per process (contributor name, date, summary, transcript, structured analysis)
 - **Audio playback streamed from ElevenLabs** — no local storage; audio served on-demand via `GET /v1/convai/conversations/{id}/audio` through a proxy Convex HTTP action, rendered with ElevenLabs UI Audio Player / Scrub Bar
