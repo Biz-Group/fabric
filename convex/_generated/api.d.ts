@@ -18,6 +18,7 @@ import type * as postCall from "../postCall.js";
 import type * as processes from "../processes.js";
 import type * as seed from "../seed.js";
 import type * as summaries from "../summaries.js";
+import type * as summariesHelpers from "../summariesHelpers.js";
 import type * as users from "../users.js";
 
 import type {
@@ -37,6 +38,7 @@ declare const fullApi: ApiFromModules<{
   processes: typeof processes;
   seed: typeof seed;
   summaries: typeof summaries;
+  summariesHelpers: typeof summariesHelpers;
   users: typeof users;
 }>;
 

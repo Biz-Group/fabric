@@ -35,6 +35,7 @@ import {
   Plus,
   Pencil,
   Trash2,
+  Clock,
 } from "lucide-react";
 import { ConversationLog } from "@/components/conversation-log";
 import { UserMenu } from "@/components/user-menu";
@@ -199,6 +200,19 @@ function LoadingSpinner() {
   );
 }
 
+// --- Time Ago Helper ---
+
+function formatTimeAgo(epochMs: number): string {
+  const seconds = Math.floor((Date.now() - epochMs) / 1000);
+  if (seconds < 60) return "just now";
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.floor(hours / 24);
+  return `${days}d ago`;
+}
+
 // --- Main Component ---
 
 export function MillerColumns() {
@@ -221,11 +235,9 @@ export function MillerColumns() {
   const [selectedDepartmentName, setSelectedDepartmentName] = useState("");
   const [selectedProcessName, setSelectedProcessName] = useState("");
 
-  // On-demand summary state
-  const [deptSummary, setDeptSummary] = useState<string | null>(null);
+  // On-demand summary state (loading/error only - summary now comes from reactive queries)
   const [deptSummaryLoading, setDeptSummaryLoading] = useState(false);
   const [deptSummaryError, setDeptSummaryError] = useState<string | null>(null);
-  const [funcSummary, setFuncSummary] = useState<string | null>(null);
   const [funcSummaryLoading, setFuncSummaryLoading] = useState(false);
   const [funcSummaryError, setFuncSummaryError] = useState<string | null>(null);
 
@@ -340,6 +352,14 @@ export function MillerColumns() {
     api.processes.get,
     selectedProcessId ? { processId: selectedProcessId } : "skip"
   );
+  const selectedDepartment = useQuery(
+    api.departments.get,
+    selectedDepartmentId ? { departmentId: selectedDepartmentId } : "skip"
+  );
+  const selectedFunction = useQuery(
+    api.functions.get,
+    selectedFunctionId ? { functionId: selectedFunctionId } : "skip"
+  );
 
   // Selection handlers
   const handleSelectFunction = useCallback(
@@ -350,9 +370,7 @@ export function MillerColumns() {
       setSelectedDepartmentName("");
       setSelectedProcessId(null);
       setSelectedProcessName("");
-      setDeptSummary(null);
       setDeptSummaryError(null);
-      setFuncSummary(null);
       setFuncSummaryError(null);
       setMobileLevel(2);
     },
@@ -365,7 +383,6 @@ export function MillerColumns() {
       setSelectedDepartmentName(name);
       setSelectedProcessId(null);
       setSelectedProcessName("");
-      setDeptSummary(null);
       setDeptSummaryError(null);
       setMobileLevel(3);
     },
@@ -559,16 +576,39 @@ export function MillerColumns() {
                   <CardTitle className="flex items-center gap-2 text-base">
                     <Sparkles className="h-4 w-4 text-muted-foreground" />
                     Department Summary
+                    {selectedDepartment?.summaryStale && selectedDepartment?.summary && (
+                      <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-medium text-amber-700">
+                        New data available
+                      </span>
+                    )}
                   </CardTitle>
                   <CardDescription>
-                    Generate an AI-synthesized overview of all processes in {selectedDepartmentName}.
+                    {selectedDepartment?.summary
+                      ? `AI-synthesized overview of processes in ${selectedDepartmentName}.`
+                      : `Generate an AI-synthesized overview of all processes in ${selectedDepartmentName}.`}
                   </CardDescription>
                 </CardHeader>
                 <CardContent className="space-y-3">
-                  {deptSummary && (
+                  {deptSummaryLoading && selectedDepartment?.summary && (
+                    <div className="relative">
+                      <p className="text-sm leading-relaxed text-muted-foreground opacity-50">
+                        {selectedDepartment.summary}
+                      </p>
+                      <div className="absolute inset-0 flex items-center justify-center">
+                        <Loader2 className="h-6 w-6 animate-spin text-primary" />
+                      </div>
+                    </div>
+                  )}
+                  {!deptSummaryLoading && selectedDepartment?.summary && (
                     <p className="text-sm leading-relaxed text-muted-foreground">
-                      {deptSummary}
+                      {selectedDepartment.summary}
                     </p>
+                  )}
+                  {selectedDepartment?.summaryUpdatedAt && (
+                    <div className="flex items-center gap-1 text-[11px] text-muted-foreground/60">
+                      <Clock className="h-3 w-3" />
+                      Last refreshed: {formatTimeAgo(selectedDepartment.summaryUpdatedAt)}
+                    </div>
                   )}
                   {deptSummaryError && (
                     <div className="flex items-center gap-2 text-sm text-muted-foreground">
@@ -577,7 +617,13 @@ export function MillerColumns() {
                     </div>
                   )}
                   <Button
-                    variant={deptSummary ? "outline" : "default"}
+                    variant={
+                      !selectedDepartment?.summary
+                        ? "default"
+                        : selectedDepartment?.summaryStale
+                          ? "default"
+                          : "outline"
+                    }
                     size="sm"
                     className="gap-2"
                     disabled={deptSummaryLoading}
@@ -586,11 +632,12 @@ export function MillerColumns() {
                       setDeptSummaryLoading(true);
                       setDeptSummaryError(null);
                       try {
-                        const result = await generateDepartmentSummary({ departmentId: selectedDepartmentId });
-                        if (result.summary) {
-                          setDeptSummary(result.summary);
-                        } else {
-                          setDeptSummaryError(result.message ?? "No summary could be generated.");
+                        const result = await generateDepartmentSummary({
+                          departmentId: selectedDepartmentId,
+                          forceRefresh: !!selectedDepartment?.summary && !selectedDepartment?.summaryStale,
+                        });
+                        if (!result.summary && result.message) {
+                          setDeptSummaryError(result.message);
                         }
                       } catch {
                         setDeptSummaryError("Failed to generate summary. Please try again.");
@@ -604,15 +651,20 @@ export function MillerColumns() {
                         <Loader2 className="h-4 w-4 animate-spin" />
                         Generating...
                       </>
-                    ) : deptSummary ? (
+                    ) : !selectedDepartment?.summary ? (
                       <>
                         <Sparkles className="h-4 w-4" />
-                        Regenerate
+                        Generate Summary
+                      </>
+                    ) : selectedDepartment?.summaryStale ? (
+                      <>
+                        <Sparkles className="h-4 w-4" />
+                        Refresh Summary
                       </>
                     ) : (
                       <>
                         <Sparkles className="h-4 w-4" />
-                        Generate Summary
+                        Regenerate
                       </>
                     )}
                   </Button>
@@ -632,16 +684,39 @@ export function MillerColumns() {
                   <CardTitle className="flex items-center gap-2 text-base">
                     <Sparkles className="h-4 w-4 text-muted-foreground" />
                     Function Summary
+                    {selectedFunction?.summaryStale && selectedFunction?.summary && (
+                      <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-medium text-amber-700">
+                        New data available
+                      </span>
+                    )}
                   </CardTitle>
                   <CardDescription>
-                    Generate an AI-synthesized overview of all processes across {selectedFunctionName}.
+                    {selectedFunction?.summary
+                      ? `AI-synthesized overview of departments across ${selectedFunctionName}.`
+                      : `Generate an AI-synthesized overview of all departments across ${selectedFunctionName}.`}
                   </CardDescription>
                 </CardHeader>
                 <CardContent className="space-y-3">
-                  {funcSummary && (
+                  {funcSummaryLoading && selectedFunction?.summary && (
+                    <div className="relative">
+                      <p className="text-sm leading-relaxed text-muted-foreground opacity-50">
+                        {selectedFunction.summary}
+                      </p>
+                      <div className="absolute inset-0 flex items-center justify-center">
+                        <Loader2 className="h-6 w-6 animate-spin text-primary" />
+                      </div>
+                    </div>
+                  )}
+                  {!funcSummaryLoading && selectedFunction?.summary && (
                     <p className="text-sm leading-relaxed text-muted-foreground">
-                      {funcSummary}
+                      {selectedFunction.summary}
                     </p>
+                  )}
+                  {selectedFunction?.summaryUpdatedAt && (
+                    <div className="flex items-center gap-1 text-[11px] text-muted-foreground/60">
+                      <Clock className="h-3 w-3" />
+                      Last refreshed: {formatTimeAgo(selectedFunction.summaryUpdatedAt)}
+                    </div>
                   )}
                   {funcSummaryError && (
                     <div className="flex items-center gap-2 text-sm text-muted-foreground">
@@ -650,7 +725,13 @@ export function MillerColumns() {
                     </div>
                   )}
                   <Button
-                    variant={funcSummary ? "outline" : "default"}
+                    variant={
+                      !selectedFunction?.summary
+                        ? "default"
+                        : selectedFunction?.summaryStale
+                          ? "default"
+                          : "outline"
+                    }
                     size="sm"
                     className="gap-2"
                     disabled={funcSummaryLoading}
@@ -659,11 +740,12 @@ export function MillerColumns() {
                       setFuncSummaryLoading(true);
                       setFuncSummaryError(null);
                       try {
-                        const result = await generateFunctionSummary({ functionId: selectedFunctionId });
-                        if (result.summary) {
-                          setFuncSummary(result.summary);
-                        } else {
-                          setFuncSummaryError(result.message ?? "No summary could be generated.");
+                        const result = await generateFunctionSummary({
+                          functionId: selectedFunctionId,
+                          forceRefresh: !!selectedFunction?.summary && !selectedFunction?.summaryStale,
+                        });
+                        if (!result.summary && result.message) {
+                          setFuncSummaryError(result.message);
                         }
                       } catch {
                         setFuncSummaryError("Failed to generate summary. Please try again.");
@@ -677,15 +759,20 @@ export function MillerColumns() {
                         <Loader2 className="h-4 w-4 animate-spin" />
                         Generating...
                       </>
-                    ) : funcSummary ? (
+                    ) : !selectedFunction?.summary ? (
                       <>
                         <Sparkles className="h-4 w-4" />
-                        Regenerate
+                        Generate Summary
+                      </>
+                    ) : selectedFunction?.summaryStale ? (
+                      <>
+                        <Sparkles className="h-4 w-4" />
+                        Refresh Summary
                       </>
                     ) : (
                       <>
                         <Sparkles className="h-4 w-4" />
-                        Generate Summary
+                        Regenerate
                       </>
                     )}
                   </Button>

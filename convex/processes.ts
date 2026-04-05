@@ -1,5 +1,6 @@
 import { v } from "convex/values";
 import { query, mutation } from "./_generated/server";
+import { internal } from "./_generated/api";
 import { requireAuth } from "./lib/auth";
 
 export const listByDepartment = query({
@@ -34,11 +35,16 @@ export const create = mutation({
       .order("desc")
       .take(1);
     const maxSortOrder = existing.length > 0 ? existing[0].sortOrder : 0;
-    return await ctx.db.insert("processes", {
+    const id = await ctx.db.insert("processes", {
       departmentId: args.departmentId,
       name: args.name,
       sortOrder: maxSortOrder + 1,
     });
+    // Mark department summary as stale (cascades to function)
+    await ctx.runMutation(internal.summariesHelpers.markDepartmentSummaryStale, {
+      departmentId: args.departmentId,
+    });
+    return id;
   },
 });
 
@@ -62,6 +68,14 @@ export const remove = mutation({
     for (const conv of conversations) {
       await ctx.db.delete(conv._id);
     }
+    const process = await ctx.db.get(args.processId);
+    const departmentId = process?.departmentId;
     await ctx.db.delete(args.processId);
+    // Mark department summary as stale (cascades to function)
+    if (departmentId) {
+      await ctx.runMutation(internal.summariesHelpers.markDepartmentSummaryStale, {
+        departmentId,
+      });
+    }
   },
 });

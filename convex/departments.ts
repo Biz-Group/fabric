@@ -1,5 +1,6 @@
 import { v } from "convex/values";
 import { query, mutation } from "./_generated/server";
+import { internal } from "./_generated/api";
 import { requireAuth } from "./lib/auth";
 
 export const listByFunction = query({
@@ -32,11 +33,16 @@ export const create = mutation({
       .order("desc")
       .take(1);
     const maxSortOrder = existing.length > 0 ? existing[0].sortOrder : 0;
-    return await ctx.db.insert("departments", {
+    const id = await ctx.db.insert("departments", {
       functionId: args.functionId,
       name: args.name,
       sortOrder: maxSortOrder + 1,
     });
+    // Mark function summary as stale
+    await ctx.runMutation(internal.summariesHelpers.markFunctionSummaryStale, {
+      functionId: args.functionId,
+    });
+    return id;
   },
 });
 
@@ -60,6 +66,14 @@ export const remove = mutation({
     for (const proc of processes) {
       await ctx.db.delete(proc._id);
     }
+    const dept = await ctx.db.get(args.departmentId);
+    const functionId = dept?.functionId;
     await ctx.db.delete(args.departmentId);
+    // Mark function summary as stale
+    if (functionId) {
+      await ctx.runMutation(internal.summariesHelpers.markFunctionSummaryStale, {
+        functionId,
+      });
+    }
   },
 });

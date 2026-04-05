@@ -20,12 +20,18 @@ export default defineSchema({
   functions: defineTable({
     name: v.string(),
     sortOrder: v.number(),
+    summary: v.optional(v.string()),
+    summaryUpdatedAt: v.optional(v.number()),
+    summaryStale: v.optional(v.boolean()),
   }),
 
   departments: defineTable({
     functionId: v.id("functions"),
     name: v.string(),
     sortOrder: v.number(),
+    summary: v.optional(v.string()),
+    summaryUpdatedAt: v.optional(v.number()),
+    summaryStale: v.optional(v.boolean()),
   }).index("by_functionId", ["functionId"]),
 
   processes: defineTable({

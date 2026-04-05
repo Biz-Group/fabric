@@ -81,6 +81,15 @@ export const updateRollingSummary = internalMutation({
   },
 });
 
+// Lookup a process's departmentId for staleness cascading
+export const getProcessDepartmentId = internalQuery({
+  args: { processId: v.id("processes") },
+  handler: async (ctx, args) => {
+    const process = await ctx.db.get(args.processId);
+    return process?.departmentId ?? null;
+  },
+});
+
 // --- Public action: fetchConversation ---
 // Called by the frontend after onDisconnect fires.
 // Polls ElevenLabs API until the conversation is processed, then inserts data.
@@ -385,6 +394,16 @@ export const regenerateProcessSummary = internalAction({
         processId: args.processId,
         rollingSummary: summaries[0].summary,
       });
+      // Mark department (and cascading function) summary as stale
+      const departmentId = await ctx.runQuery(
+        internal.postCall.getProcessDepartmentId,
+        { processId: args.processId },
+      );
+      if (departmentId) {
+        await ctx.runMutation(internal.summariesHelpers.markDepartmentSummaryStale, {
+          departmentId,
+        });
+      }
       return;
     }
 
@@ -441,6 +460,16 @@ export const regenerateProcessSummary = internalAction({
         processId: args.processId,
         rollingSummary,
       });
+      // Mark department (and cascading function) summary as stale
+      const departmentId = await ctx.runQuery(
+        internal.postCall.getProcessDepartmentId,
+        { processId: args.processId },
+      );
+      if (departmentId) {
+        await ctx.runMutation(internal.summariesHelpers.markDepartmentSummaryStale, {
+          departmentId,
+        });
+      }
     }
   },
 });

@@ -108,11 +108,17 @@ export default defineSchema({
   functions: defineTable({
     name: v.string(),
     sortOrder: v.number(),
+    summary: v.optional(v.string()),          // persisted function summary
+    summaryUpdatedAt: v.optional(v.number()), // epoch ms of last generation
+    summaryStale: v.optional(v.boolean()),    // true when new data invalidates the summary
   }),
   departments: defineTable({
     functionId: v.id("functions"),
     name: v.string(),
     sortOrder: v.number(),
+    summary: v.optional(v.string()),          // persisted department summary
+    summaryUpdatedAt: v.optional(v.number()), // epoch ms of last generation
+    summaryStale: v.optional(v.boolean()),    // true when new data invalidates the summary
   }).index("by_function", ["functionId"]),
   processes: defineTable({
     departmentId: v.id("departments"),
@@ -319,15 +325,46 @@ The `analysis` object returned by the Conversations API (and via the `post_call_
 
 We simply store `analysis.transcript_summary` in `conversations.summary` and the structured `analysis.data_collection` results in `conversations.analysis`.
 
-**Process-level rolling summary — Claude Haiku via OpenRouter (the only LLM cost):**
+**Process-level rolling summary — Claude Haiku via OpenRouter (auto-regenerated):**
 After each new conversation is stored, a Convex action fetches all conversation summaries for that process and sends them to Claude Haiku (via OpenRouter's OpenAI-compatible API) with a prompt like:
 
 > "You are synthesizing multiple employee accounts of a single business process. Combine these into a coherent narrative that describes the full process end-to-end, noting which contributors handle which parts, and highlighting any overlaps or gaps."
 
-This is a lightweight call — it's combining short summary strings, not processing full transcripts. Cost is minimal.
+This is a lightweight call — it's combining short summary strings, not processing full transcripts. Cost is minimal. Process summaries auto-regenerate after every new recording (no manual refresh needed).
 
-**Department and Function summaries (lightweight for POC):**
-These are generated on-demand (not stored) by concatenating child process summaries and passing them through a similar synthesis prompt. This avoids a cascade of re-summarizations on every new conversation. Can be upgraded to stored + incrementally updated summaries in Phase 2.
+**Department-level summary — Claude Haiku via OpenRouter (persistent, on-demand with staleness):**
+Department summaries are generated on-demand and **persisted** to the `departments` table with a `summary`, `summaryUpdatedAt` (epoch ms), and `summaryStale` (boolean) field. Generation synthesizes all child process `rollingSummary` values through Claude Haiku with a department-focused prompt that emphasizes cross-process handoffs and relationships.
+
+- **Staleness**: A department summary becomes stale when: (a) a new conversation is recorded under any child process (the process summary auto-regenerates, then marks the department stale), (b) a process is added or removed from the department.
+- **Token efficiency**: If the summary exists and `summaryStale === false`, the action returns the persisted summary without making an LLM call — no tokens wasted on unchanged data.
+- **Force refresh**: A `forceRefresh` flag can bypass the staleness check to regenerate regardless.
+- **UI**: Shows a "Last refreshed: X ago" timestamp and a stale indicator ("New data available") when invalidated.
+
+**Function-level summary — Claude Haiku via OpenRouter (persistent, on-demand with staleness + cascade):**
+Function summaries follow the same persistent + staleness pattern as department summaries, but are built from **department summaries** (not raw process summaries) to maintain proper hierarchical abstraction.
+
+- **Cascade generation**: If any department under the function has no summary yet, the action auto-generates missing department summaries first (sequentially), then synthesizes the function-level summary from all department summaries.
+- **Staleness**: A function summary becomes stale when: (a) any child department summary is regenerated, (b) a department is added or removed from the function.
+- **Token efficiency**: Same guard as department level — skip LLM call if summary is fresh and not stale.
+- **Prompt**: Tailored for cross-department themes, organizational handoffs, and high-level patterns rather than granular process details.
+
+**Summary hierarchy:**
+```
+Function Summary (built from Department Summaries)
+  └── Department Summary (built from Process Rolling Summaries)
+      └── Process Rolling Summary (built from Conversation Summaries)
+          └── Conversation Summary (provided by ElevenLabs — no LLM cost)
+```
+
+**Staleness propagation:**
+```
+New recording → Process summary auto-regenerates
+  → Department summary marked stale
+    → Function summary marked stale
+```
+
+New process added/removed → Department summary marked stale → Function summary marked stale
+New department added/removed → Function summary marked stale
 
 ### 3.5 Convex Architecture
 
@@ -660,7 +697,7 @@ Alternatively, the entire modal can use the **Conversation Bar** component, whic
 - **Process Summary Box** — prominent, always-visible summary card per process synthesizing all conversations
 - **Empty states** — friendly prompts when a process has no conversations, a department has no processes, etc.
 - Process-level rolling summary (auto-regenerated after each new conversation)
-- On-demand department and function summaries
+- **Persistent department and function summaries** — stored in the database with staleness tracking (`summaryStale` flag) and "Last refreshed" timestamps (`summaryUpdatedAt`). Generated on-demand via Claude Haiku (OpenRouter), with token efficiency guards that skip LLM calls when no new data exists. Function summaries built from department summaries (proper hierarchy) with cascade generation for missing departments.
 - Convex built-in reactivity for live UI updates
 - **Error handling for disconnects** — graceful UI for `onDisconnect` with reason `"error"`, with retry prompt
 - Simple, clean single-page UI (Next.js + Tailwind + shadcn/ui)
@@ -739,6 +776,12 @@ Even for an internal POC, employees are being recorded describing their work. A 
 
 **Seed data for demo:**
 The org hierarchy needs to be realistic for the POC to land well. Create a Convex seed script as part of the build with 3-4 functions, 2-3 departments each, and 2-4 processes per department. Pre-populate 1-2 sample conversations with mock summaries so the UI doesn't look empty on first load.
+
+**Cascade summary generation limits:**
+When generating a function-level summary, if child departments are missing summaries, the action auto-generates them first. A function with many departments (10+) could hit OpenRouter rate limits or Convex's 10-minute action timeout during cascade generation. For POC, sequential generation is acceptable. For production, fan out via `ctx.scheduler.runAfter` per department and poll for completion.
+
+**Summary staleness and token efficiency:**
+Department and function summaries are persistent and include a `summaryStale` flag. When no new recordings or structural changes have occurred, the generate action returns the existing summary without an LLM call — avoiding unnecessary token spend. The `forceRefresh` flag allows manual override when the user wants to regenerate regardless. First-time UX: all existing departments and functions will show "No summary yet" since `summary` starts `undefined` on existing docs — this is expected behavior for the new feature rollout.
 
 **Microphone permissions:**
 The ElevenLabs SDK requires microphone access. Browsers will prompt for permission on first use. If the user denies or the page is on HTTP (not HTTPS), the agent won't work. The app must be served over HTTPS (Vercel handles this). Add a pre-check: if `navigator.mediaDevices.getUserMedia` fails, show a clear message explaining how to enable the mic.
