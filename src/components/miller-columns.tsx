@@ -90,7 +90,7 @@ function ColumnItem({
               "rounded p-0.5 transition-colors",
               selected
                 ? "hover:bg-primary-foreground/20"
-                : "hover:bg-muted"
+                : "hover:bg-foreground/10"
             )}
             title="Rename"
           >
@@ -108,7 +108,7 @@ function ColumnItem({
               "rounded p-0.5 transition-colors",
               selected
                 ? "hover:bg-primary-foreground/20"
-                : "hover:bg-muted"
+                : "hover:bg-foreground/10"
             )}
             title="Delete"
           >
@@ -168,7 +168,7 @@ function ColumnHeader({
         <h2 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
           {title}
         </h2>
-        <div className="flex items-center gap-1">
+        <div className="flex items-center gap-1 min-h-[1.625rem]">
           {count !== undefined && (
             <span className="rounded-full bg-muted px-2 py-0.5 text-[10px] font-medium text-muted-foreground">
               {count}

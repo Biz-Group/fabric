@@ -485,7 +485,7 @@ Derived from [PRD.md](PRD.md) v0.7 (POC — Audio Streamed from ElevenLabs + Use
 
 ---
 
-## Phase 10: Deploy & End-to-End Verification
+## Phase X: End-to-End Verification
 
 - [ ] **End-to-end verification against all 10 POC success criteria (PRD section 7)**
   1. **Three-click navigation**: Verify a user can navigate the org hierarchy in three clicks (desktop) or three taps (mobile) to reach any process
