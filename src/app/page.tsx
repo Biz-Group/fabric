@@ -16,8 +16,9 @@ function AuthenticatedApp() {
 
   if (user === undefined) {
     return (
-      <div className="flex h-screen items-center justify-center">
-        <div className="text-muted-foreground">Loading...</div>
+      <div className="flex h-screen flex-col items-center justify-center gap-3">
+        <div className="h-5 w-5 animate-spin rounded-full border-2 border-primary/30 border-t-primary" />
+        <p className="text-sm text-muted-foreground">Loading your workspace...</p>
       </div>
     );
   }
@@ -38,8 +39,9 @@ export default function Home() {
 
   if (isLoading) {
     return (
-      <div className="flex h-screen items-center justify-center">
-        <div className="text-muted-foreground">Loading...</div>
+      <div className="flex h-screen flex-col items-center justify-center gap-3">
+        <div className="h-5 w-5 animate-spin rounded-full border-2 border-primary/30 border-t-primary" />
+        <p className="text-sm text-muted-foreground">Loading...</p>
       </div>
     );
   }

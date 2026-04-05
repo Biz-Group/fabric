@@ -74,6 +74,7 @@ function ConversationEntry({
   return (
     <Card
       className={cn(
+        "transition-shadow hover:shadow-md",
         isFailed && "border-destructive/30 opacity-60"
       )}
     >

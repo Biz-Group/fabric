@@ -8,6 +8,20 @@ import {
 import { internal } from "./_generated/api";
 import { requireAuth } from "./lib/auth";
 
+// Normalize ElevenLabs transcript to the shape our UI expects:
+// ElevenLabs returns { role: "agent"|"user", message: string, time_in_call_secs: number }
+// Our UI expects { role: "ai"|"user", content: string, time_in_call_secs: number }
+function normalizeTranscript(
+  raw: Array<{ role: string; message?: string; time_in_call_secs?: number }> | null,
+): Array<{ role: string; content: string; time_in_call_secs: number }> | null {
+  if (!raw || !Array.isArray(raw)) return null;
+  return raw.map((msg) => ({
+    role: msg.role === "agent" ? "ai" : msg.role,
+    content: msg.message ?? "",
+    time_in_call_secs: msg.time_in_call_secs ?? 0,
+  }));
+}
+
 // --- Internal helpers (not public) ---
 
 export const insertConversation = internalMutation({
@@ -93,28 +107,71 @@ export const fetchConversation = action({
 
     const maxRetries = 30;
     const pollIntervalMs = 2000;
-    let lastStatus = "processing";
+    const maxNetworkErrors = 5; // tolerate up to 5 consecutive network failures
+    let consecutiveNetworkErrors = 0;
 
     for (let attempt = 0; attempt < maxRetries; attempt++) {
-      const response = await fetch(
-        `https://api.elevenlabs.io/v1/convai/conversations/${args.elevenlabsConversationId}`,
-        {
-          headers: { "xi-api-key": apiKey },
-        },
-      );
+      let response: Response;
+      try {
+        response = await fetch(
+          `https://api.elevenlabs.io/v1/convai/conversations/${args.elevenlabsConversationId}`,
+          {
+            headers: { "xi-api-key": apiKey },
+          },
+        );
+      } catch (networkError) {
+        // Network-level failure (DNS, timeout, connection refused, etc.)
+        consecutiveNetworkErrors++;
+        console.error(
+          `ElevenLabs network error (attempt ${attempt + 1}, consecutive: ${consecutiveNetworkErrors}):`,
+          networkError,
+        );
+
+        if (consecutiveNetworkErrors >= maxNetworkErrors) {
+          // Too many consecutive network errors — give up and record as failed
+          await ctx.runMutation(internal.postCall.insertConversation, {
+            processId: args.processId,
+            elevenlabsConversationId: args.elevenlabsConversationId,
+            contributorName: args.contributorName,
+            userId,
+            status: "failed",
+          });
+          return { status: "failed" as const };
+        }
+
+        // Back off slightly longer on network errors (3 seconds)
+        await new Promise((resolve) => setTimeout(resolve, 3000));
+        continue;
+      }
+
+      // Reset consecutive error counter on successful connection
+      consecutiveNetworkErrors = 0;
 
       if (!response.ok) {
-        throw new Error(
-          `ElevenLabs API error: ${response.status} ${response.statusText}`,
-        );
+        // Transient server errors (5xx) — retry; client errors (4xx) — fail
+        if (response.status >= 500) {
+          console.error(
+            `ElevenLabs server error ${response.status} on attempt ${attempt + 1} — retrying`,
+          );
+          await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
+          continue;
+        }
+        // 4xx errors are not transient — fail immediately
+        await ctx.runMutation(internal.postCall.insertConversation, {
+          processId: args.processId,
+          elevenlabsConversationId: args.elevenlabsConversationId,
+          contributorName: args.contributorName,
+          userId,
+          status: "failed",
+        });
+        return { status: "failed" as const };
       }
 
       const data = await response.json();
-      lastStatus = data.status;
 
       if (data.status === "done") {
         // Extract fields from the ElevenLabs response
-        const transcript = data.transcript ?? null;
+        const transcript = normalizeTranscript(data.transcript);
         const summary = data.analysis?.transcript_summary ?? null;
         const analysis = data.analysis ?? null;
         const durationSeconds = data.metadata?.call_duration_secs ?? null;
@@ -183,6 +240,130 @@ export const getUserByToken = internalQuery({
   },
 });
 
+// --- Internal helper: get all imported ElevenLabs conversation IDs ---
+
+export const getImportedConversationIds = internalQuery({
+  args: {},
+  handler: async (ctx) => {
+    const conversations = await ctx.db.query("conversations").collect();
+    return conversations.map((c) => c.elevenlabsConversationId);
+  },
+});
+
+// --- Backfill: list conversations on ElevenLabs not yet in our DB ---
+
+export const listUnimported = internalAction({
+  args: {},
+  handler: async (ctx) => {
+    const apiKey = process.env.ELEVENLABS_API_KEY;
+    if (!apiKey) throw new Error("ELEVENLABS_API_KEY is not configured");
+
+    const agentId = process.env.ELEVENLABS_AGENT_ID;
+
+    // Fetch conversations from ElevenLabs (up to 100)
+    const url = new URL("https://api.elevenlabs.io/v1/convai/conversations");
+    if (agentId) url.searchParams.set("agent_id", agentId);
+
+    const response = await fetch(url.toString(), {
+      headers: { "xi-api-key": apiKey },
+    });
+    if (!response.ok) {
+      throw new Error(`ElevenLabs API error: ${response.status}`);
+    }
+
+    const data = await response.json();
+    const allConversations: Array<{
+      conversation_id: string;
+      status: string;
+      start_time_unix_secs?: number;
+      call_duration_secs?: number;
+    }> = data.conversations ?? [];
+
+    // Get IDs already in our DB
+    const importedIds: string[] = await ctx.runQuery(
+      internal.postCall.getImportedConversationIds,
+      {},
+    );
+    const importedSet: Set<string> = new Set(importedIds);
+
+    // Filter to unimported, done conversations
+    const unimported: Array<{
+      conversationId: string;
+      startTime: string | null;
+      durationSeconds: number | null;
+    }> = allConversations
+      .filter(
+        (c) =>
+          !importedSet.has(c.conversation_id) && c.status === "done",
+      )
+      .map((c) => ({
+        conversationId: c.conversation_id,
+        startTime: c.start_time_unix_secs
+          ? new Date(c.start_time_unix_secs * 1000).toISOString()
+          : null,
+        durationSeconds: c.call_duration_secs ?? null,
+      }));
+
+    return unimported;
+  },
+});
+
+// --- Backfill: import a specific ElevenLabs conversation into a process ---
+
+export const importConversation = internalAction({
+  args: {
+    elevenlabsConversationId: v.string(),
+    processId: v.id("processes"),
+    contributorName: v.string(),
+  },
+  handler: async (ctx, args) => {
+    const apiKey = process.env.ELEVENLABS_API_KEY;
+    if (!apiKey) throw new Error("ELEVENLABS_API_KEY is not configured");
+
+    const response = await fetch(
+      `https://api.elevenlabs.io/v1/convai/conversations/${args.elevenlabsConversationId}`,
+      { headers: { "xi-api-key": apiKey } },
+    );
+
+    if (!response.ok) {
+      throw new Error(`ElevenLabs API error: ${response.status}`);
+    }
+
+    const data = await response.json();
+
+    if (data.status !== "done") {
+      throw new Error(
+        `Conversation status is "${data.status}" — only "done" conversations can be imported`,
+      );
+    }
+
+    const transcript = normalizeTranscript(data.transcript);
+    const summary = data.analysis?.transcript_summary ?? null;
+    const analysis = data.analysis ?? null;
+    const durationSeconds = data.metadata?.call_duration_secs ?? null;
+
+    await ctx.runMutation(internal.postCall.insertConversation, {
+      processId: args.processId,
+      elevenlabsConversationId: args.elevenlabsConversationId,
+      contributorName: args.contributorName,
+      transcript,
+      summary,
+      analysis,
+      durationSeconds,
+      status: "done",
+    });
+
+    // Regenerate rolling summary for the process
+    await ctx.scheduler.runAfter(
+      0,
+      internal.postCall.regenerateProcessSummary,
+      { processId: args.processId },
+    );
+
+    return { status: "done" as const, summary };
+  },
+});
+
 // --- Internal action: regenerateProcessSummary ---
 // Fetches all conversation summaries for a process and synthesizes via Claude Haiku.
 
@@ -216,7 +397,7 @@ export const regenerateProcessSummary = internalAction({
     // Build the prompt with all conversation summaries
     const summaryBlock = summaries
       .map(
-        (s, i) =>
+        (s: { contributorName: string; summary: string; creationTime: number }, i: number) =>
           `[Conversation ${i + 1} — ${s.contributorName}]\n${s.summary}`,
       )
       .join("\n\n");

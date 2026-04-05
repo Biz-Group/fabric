@@ -72,7 +72,7 @@ export function ProfileOnboarding() {
       <Card className="w-full max-w-md">
         <CardHeader className="text-center">
           <CardTitle className="text-2xl font-bold tracking-tight">
-            Welcome to Fabric
+            Welcome to Fabric.
           </CardTitle>
           <CardDescription>
             Complete your profile to get started. This helps us personalize your
@@ -123,7 +123,7 @@ export function ProfileOnboarding() {
               </label>
               <select
                 id="function"
-                className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
                 value={selectedFunctionId}
                 onChange={(e) => {
                   const id = e.target.value as Id<"functions"> | "";
@@ -152,7 +152,7 @@ export function ProfileOnboarding() {
               </label>
               <select
                 id="department"
-                className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
                 value={selectedDepartmentName}
                 onChange={(e) => setSelectedDepartmentName(e.target.value)}
                 required

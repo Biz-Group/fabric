@@ -389,9 +389,7 @@ export function RecordingModal({
           "flex flex-col gap-0 p-0",
           step === "recording"
             ? "h-[90vh] max-h-[90vh] sm:max-w-2xl"
-            : step === "processing"
-              ? "sm:max-w-md"
-              : "sm:max-w-md"
+            : "sm:max-w-md"
         )}
       >
         {/* Step 1: Name Prompt */}

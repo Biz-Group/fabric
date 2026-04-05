@@ -327,7 +327,7 @@ Derived from [PRD.md](PRD.md) v0.7 (POC — Audio Streamed from ElevenLabs + Use
 
 ## Phase 7: Post-Call Pipeline (Convex Functions)
 
-- [ ] **Create `fetchConversation` Convex action**
+- [x] **Create `fetchConversation` Convex action**
   - **Trigger**: Called by the frontend via `useMutation`/`useAction` after `onDisconnect` fires (polling path — recommended for POC)
   - **Input**: `elevenlabs_conversation_id`, `processId`, and `contributor_name` from the frontend
   - **Auth**: Add `requireAuth(ctx)` — derive `userId` server-side via `ctx.auth.getUserIdentity()` → look up user record in `users` table by `tokenIdentifier` → attach `userId` to the conversation insert. **NEVER accept `userId` as a function argument.**
@@ -347,7 +347,7 @@ Derived from [PRD.md](PRD.md) v0.7 (POC — Audio Streamed from ElevenLabs + Use
   - **Security**: `xi-api-key` stored in Convex environment variables (set via `npx convex env set`) — never exposed to the client
   - **Error handling**: Throw appropriate errors; log for debugging
 
-- [ ] **Create `regenerateProcessSummary` Convex internal action**
+- [x] **Create `regenerateProcessSummary` Convex internal action**
   - **Trigger**: Called after `fetchConversation` successfully inserts a conversation
   - **Input**: `processId`
   - **Note**: This should be an `internalAction` (not public) since it's called server-side after `fetchConversation` — no direct auth check needed
@@ -361,7 +361,7 @@ Derived from [PRD.md](PRD.md) v0.7 (POC — Audio Streamed from ElevenLabs + Use
   - **Cost note**: This is the **only LLM cost** in the system — ElevenLabs handles all conversation-level summarization natively
   - **Concurrency note (PRD section 8.1)**: For POC, accept last-write-wins if two summaries fire near-simultaneously. The second call will include both conversation summaries anyway. Production would add a debounce mechanism.
 
-- [ ] **Wire the complete post-call data flow (end-to-end)**
+- [x] **Wire the complete post-call data flow (end-to-end)**
   - Implement the full sequence from PRD section 3.5 "Data flow (POC — polling path)":
     1. User starts session → `conversation.startSession()` → `onConnect` stores `conversationId`
     2. User ends session → `onDisconnect` fires with `reason`
@@ -372,7 +372,7 @@ Derived from [PRD.md](PRD.md) v0.7 (POC — Audio Streamed from ElevenLabs + Use
     7. Convex reactivity auto-updates the frontend → UI refreshes with new conversation + updated summary (no manual subscriptions needed)
   - Handle the case where the Convex action times out (insert `processing` record, frontend detects via reactive `useQuery`)
 
-- [ ] **Build the post-call loading state**
+- [x] **Build the post-call loading state**
   - After `onDisconnect` with `reason: "user"` or `"agent"`, transition the recording modal to a loading/processing state:
     - Show **ShimmeringText** component: "Processing your conversation..."
     - Show the **Orb** in a subtle idle animation (low-energy visual feedback)
@@ -382,7 +382,7 @@ Derived from [PRD.md](PRD.md) v0.7 (POC — Audio Streamed from ElevenLabs + Use
     - The `fetchConversation` Convex action returns successfully, OR
     - Convex reactivity delivers the conversation insert/update via `useQuery`
 
-- [ ] **Build the post-call review screen**
+- [x] **Build the post-call review screen**
   - Displayed inside the modal after processing completes, matching PRD wireframe (Screen 3):
     - Success indicator: "Conversation Recorded" with a checkmark
     - **Summary** display: show the `conversations.summary` text (from ElevenLabs analysis)
@@ -394,7 +394,7 @@ Derived from [PRD.md](PRD.md) v0.7 (POC — Audio Streamed from ElevenLabs + Use
 
 ## Phase 8: Audio Playback
 
-- [ ] **Create `getAudio` Convex HTTP action (audio proxy)**
+- [x] **Create `getAudio` Convex HTTP action (audio proxy)**
   - **Trigger**: Called by the frontend's Audio Player component when the user clicks play on a conversation
   - **Endpoint pattern**: Convex HTTP action registered via `httpAction` (e.g., `GET /audio/{elevenlabs_conversation_id}`)
   - **Logic**:
@@ -406,7 +406,7 @@ Derived from [PRD.md](PRD.md) v0.7 (POC — Audio Streamed from ElevenLabs + Use
   - **No storage**: Fabric does NOT store audio files. Audio is served on-demand from ElevenLabs. The URL is deterministic from `elevenlabs_conversation_id` (no `audio_url` column in the database). No additional ElevenLabs credits consumed — retrieval is a read operation (PRD section 3.3.5)
   - **Tradeoff acknowledged**: Playback depends on ElevenLabs API availability — acceptable for POC
 
-- [ ] **Integrate Audio Player and Scrub Bar into the conversation log**
+- [x] **Integrate Audio Player and Scrub Bar into the conversation log**
   - In each conversation entry in the conversation log, add an inline audio player using the **ElevenLabs UI Audio Player** and **Scrub Bar** components
   - Point the audio source URL at the `getAudio` Convex HTTP action endpoint
   - Display the duration from `conversations.duration_seconds` formatted as `m:ss` (e.g., "4:32", "6:15") next to the scrub bar
@@ -418,7 +418,7 @@ Derived from [PRD.md](PRD.md) v0.7 (POC — Audio Streamed from ElevenLabs + Use
 
 ## Phase 9: Polish, Error Handling & Platform Configuration
 
-- [ ] **Add error recovery for voice agent disconnects**
+- [x] **Add error recovery for voice agent disconnects**
   - In the `onDisconnect` handler, check `details.reason`:
     - `"user"`: Normal end — proceed to post-call processing pipeline
     - `"agent"`: Agent ended the call — proceed to post-call processing pipeline
@@ -428,7 +428,7 @@ Derived from [PRD.md](PRD.md) v0.7 (POC — Audio Streamed from ElevenLabs + Use
     - Include a **"Close"** button to dismiss and return to the Process Detail Panel
   - Also handle `onError(message, context)` from the `useConversation` hook — log the error and show appropriate UI feedback
 
-- [ ] **Add polling timeout mitigation on `fetchConversation`**
+- [x] **Add polling timeout mitigation on `fetchConversation`**
   - Implement max-retry counter: 30 retries × 2-second intervals = 60 seconds maximum
   - If ElevenLabs still returns `processing` after max retries:
     1. Insert a conversation record into Convex with `status: 'processing'` (so it's tracked)
@@ -437,14 +437,14 @@ Derived from [PRD.md](PRD.md) v0.7 (POC — Audio Streamed from ElevenLabs + Use
   - Handle `status: 'failed'` from ElevenLabs — insert record with `status: 'failed'` and show appropriate error in the UI
   - Handle network errors / ElevenLabs API outages gracefully with retry logic
 
-- [ ] **Implement on-demand department and function level summaries**
+- [x] **Implement on-demand department and function level summaries**
   - Per PRD section 3.4: Department and Function summaries are generated **on-demand** (not stored) to avoid cascading re-summarizations
   - When viewing a department or function level, concatenate all child process `rolling_summary` values and pass through a Claude synthesis prompt (similar to the process-level prompt)
   - These can be triggered via a button ("Generate Summary") or displayed automatically when a department/function is selected
   - This is a lightweight call — concatenating short summary strings
   - Can be upgraded to stored + incrementally updated summaries in Phase 2
 
-- [ ] **Configure ElevenLabs Conversation Analysis on the platform**
+- [ ] **Configure ElevenLabs Conversation Analysis on the platform** _(manual platform task)_
   - Log into the ElevenLabs platform and configure the agent's analysis settings:
   - **Success Evaluation** — define custom criteria to assess each conversation:
     - "Did the contributor describe specific steps in their process?"
@@ -459,7 +459,7 @@ Derived from [PRD.md](PRD.md) v0.7 (POC — Audio Streamed from ElevenLabs + Use
   - These results are returned in the `analysis` field of the Conversations API response and stored in `conversations.analysis` field
   - **Confirm ElevenLabs pricing tier** supports Conversation Analysis (Success Evaluation, Data Collection, transcript summary) — these may not be available on starter/free tier (PRD section 8.3)
 
-- [ ] **Configure the ElevenLabs agent system prompt on the platform**
+- [ ] **Configure the ElevenLabs agent system prompt on the platform** _(manual platform task)_
   - Set the base system prompt on the ElevenLabs platform agent configuration — see full prompt in [ELEVENLABS_SETUP.md](ELEVENLABS_SETUP.md) section 2.2 and [PRD.md](PRD.md) section 4
   - The prompt includes structured sections: Personality, Environment, Tone, Goal, Guardrails, Tools
   - Set the agent language to `"en"` (English only for POC)
@@ -470,7 +470,7 @@ Derived from [PRD.md](PRD.md) v0.7 (POC — Audio Streamed from ElevenLabs + Use
     - `Previous conversations from this contributor: {{prior_contributor_summaries}}`
   - `{{system__time_utc}}` in the Environment section is an ElevenLabs built-in template variable — resolved by the platform automatically
 
-- [ ] **Final UI polish and responsive verification**
+- [x] **Final UI polish and responsive verification**
   - Verify all shadcn/ui component styling is consistent and clean across the app
   - Test responsive breakpoints:
     - Desktop (≥ 768px): Miller columns layout with four panels visible simultaneously
@@ -486,24 +486,6 @@ Derived from [PRD.md](PRD.md) v0.7 (POC — Audio Streamed from ElevenLabs + Use
 ---
 
 ## Phase 10: Deploy & End-to-End Verification
-
-- [ ] **Deploy frontend to Vercel**
-  - Connect the repo to Vercel for automatic deployments
-  - Configure environment variables on Vercel: `NEXT_PUBLIC_CONVEX_URL`, `NEXT_PUBLIC_ELEVENLABS_AGENT_ID`
-  - Verify the app is served over **HTTPS** (required for `getUserMedia` / microphone access — Vercel provides this by default)
-  - Confirm the deployed build runs without errors
-
-- [ ] **Deploy Convex functions and run seed data**
-  - Deploy all Convex functions to production via `npx convex deploy`:
-    - `fetchConversation` (action)
-    - `regenerateProcessSummary` (internal action)
-    - `getAudio` (HTTP action)
-    - Auth functions (`convex/auth.config.ts`, `convex/users.ts`)
-  - Set Convex environment variables via `npx convex env set`: `ELEVENLABS_API_KEY`, `OPENROUTER_API_KEY`
-  - Set `CLERK_JWT_ISSUER_DOMAIN` on the production Convex deployment (may differ from dev)
-  - Configure production Clerk keys on Vercel: `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY`, `CLERK_SECRET_KEY`
-  - Run the Convex seed script to populate the organizational hierarchy and sample conversations
-  - Verify Convex functions are reachable and responding correctly via the Convex dashboard
 
 - [ ] **End-to-end verification against all 10 POC success criteria (PRD section 7)**
   1. **Three-click navigation**: Verify a user can navigate the org hierarchy in three clicks (desktop) or three taps (mobile) to reach any process
