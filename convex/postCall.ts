@@ -525,7 +525,7 @@ export const regenerateProcessSummary = internalAction({
                 content: `Here are the full transcripts of all ${allConversations.length} conversations for this process:\n\n${transcriptBlock}`,
               },
             ],
-            max_tokens: 3072,
+            max_tokens: 8192,
           }),
         },
       );
@@ -618,7 +618,7 @@ export const regenerateProcessSummary = internalAction({
             { role: "system", content: PROCESS_SUMMARY_SYSTEM_PROMPT },
             { role: "user", content: userContent },
           ],
-          max_tokens: 3072,
+          max_tokens: 8192,
         }),
       },
     );

@@ -320,7 +320,7 @@ These results are returned in the `analysis` field of the conversation details A
 
 ### 3.4 Summarization Pipeline
 
-**Model:** Claude Haiku 4.5 via OpenRouter (`anthropic/claude-haiku-4.5-latest`, `max_tokens: 3072`)
+**Model:** Claude Haiku 4.5 via OpenRouter (`anthropic/claude-haiku-4.5-latest`, `max_tokens: 8192`)
 
 **Design principles:**
 - **Structured analyst briefs, not flat prose.** Every summary uses thematic sections with cited evidence — making claims traceable back to the person or process that produced them.
@@ -862,7 +862,7 @@ When generating a function-level summary, if child departments are missing summa
 Department and function summaries are persistent and include a `summaryStale` flag. When no new recordings or structural changes have occurred, the generate action returns the existing summary without an LLM call — avoiding unnecessary token spend. The `forceRefresh` flag allows manual override when the user wants to regenerate regardless. First-time UX: all existing departments and functions will show "No summary yet" since `summary` starts `undefined` on existing docs — this is expected behavior for the new feature rollout.
 
 **Incremental process summaries and token cost:**
-Process-level summaries use an incremental approach: the first conversation's full transcript produces the initial structured summary; each subsequent conversation sends only the *existing rolling summary + new transcript*. This keeps per-call token cost roughly constant regardless of conversation count, but means the summary is a lossy compression — early conversations are represented only through the rolling summary, not their raw transcripts. A `forceRefresh` flag triggers a full regeneration from all transcripts when needed (at higher token cost). The structured output format (markdown with sections and citations) requires `max_tokens: 3072` to accommodate the thematic sections.
+Process-level summaries use an incremental approach: the first conversation's full transcript produces the initial structured summary; each subsequent conversation sends only the *existing rolling summary + new transcript*. This keeps per-call token cost roughly constant regardless of conversation count, but means the summary is a lossy compression — early conversations are represented only through the rolling summary, not their raw transcripts. A `forceRefresh` flag triggers a full regeneration from all transcripts when needed (at higher token cost). The structured output format (markdown with sections and citations) requires `max_tokens: 8192` to accommodate the thematic sections.
 
 **Summary rendering:**
 All summaries (process, department, function) are stored as markdown and must be rendered as such in the frontend. The summary display components need to support markdown headers, bold, and inline citations.
@@ -890,7 +890,7 @@ The ElevenLabs SDK requires microphone access. Browsers will prompt for permissi
   - Fetch the process's existing `rollingSummary` (if any) and the new conversation's full transcript (not just summary)
   - First conversation: send full transcript → produce initial structured summary
   - Subsequent conversations: send existing `rollingSummary` + new conversation transcript → LLM integrates new info into existing structure
-  - Update model to `anthropic/claude-haiku-4.5-latest`, `max_tokens: 3072`
+  - Update model to `anthropic/claude-haiku-4.5-latest`, `max_tokens: 8192`
   - New system prompt producing structured output (Overview, Key Stages, Consensus, Tensions & Gaps, Notable Details) with contributor citations
 
 - [ ] **Task 2: Update `getConversationSummaries` query in `postCall.ts`**
@@ -904,13 +904,13 @@ The ElevenLabs SDK requires microphone access. Browsers will prompt for permissi
 - [ ] **Task 4: Rewrite department summary prompt in `summaries.ts` and `summariesHelpers.ts`**
   - New system prompt producing structured output (Overview, Cross-Process Handoffs, Shared Themes, Tensions & Gaps, Notable Details)
   - Citations reference process names (e.g., "[Compensation process]")
-  - Update model to `anthropic/claude-haiku-4.5-latest`, `max_tokens: 3072`
+  - Update model to `anthropic/claude-haiku-4.5-latest`, `max_tokens: 8192`
   - Update both the public action (`generateDepartmentSummary`) and the internal action (`generateDepartmentSummaryInternal`)
 
 - [ ] **Task 5: Rewrite function summary prompt in `summaries.ts`**
   - New system prompt producing structured output (Overview, Cross-Department Patterns, Strategic Themes, Tensions & Gaps, Notable Details)
   - Citations reference department names (e.g., "[Payroll dept]")
-  - Update model to `anthropic/claude-haiku-4.5-latest`, `max_tokens: 3072`
+  - Update model to `anthropic/claude-haiku-4.5-latest`, `max_tokens: 8192`
 
 - [ ] **Task 6: Store conversation transcript for summary generation**
   - Ensure `insertConversation` stores the full normalized transcript (already does — verify)

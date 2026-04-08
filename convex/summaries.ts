@@ -128,7 +128,7 @@ export const generateDepartmentSummary = action({
               content: `Here are the process summaries for this department:\n\n${summaryBlock}`,
             },
           ],
-          max_tokens: 3072,
+          max_tokens: 8192,
         }),
       },
     );
@@ -270,7 +270,7 @@ export const generateFunctionSummary = action({
               content: `Here are the department summaries for this function:\n\n${summaryBlock}`,
             },
           ],
-          max_tokens: 3072,
+          max_tokens: 8192,
         }),
       },
     );

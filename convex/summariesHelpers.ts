@@ -185,7 +185,7 @@ export const generateDepartmentSummaryInternal = internalAction({
             { role: "system", content: DEPARTMENT_SUMMARY_SYSTEM_PROMPT },
             { role: "user", content: `Here are the process summaries for this department:\n\n${summaryBlock}` },
           ],
-          max_tokens: 3072,
+          max_tokens: 8192,
         }),
       },
     );

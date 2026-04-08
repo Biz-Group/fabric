@@ -581,7 +581,7 @@ Derived from [PRD.md](PRD.md) v0.7 (POC — Audio Streamed from ElevenLabs + Use
 
 ## Phase 11: Summary Enhancement — Structured Briefs with Citations
 
-> **Goal:** Replace flat prose summaries with structured analyst briefs featuring thematic sections, contributor/process/department citations, and contradiction surfacing. Switch process-level summaries to incremental generation (existing summary + new transcript) for token efficiency. Upgrade model to Claude Haiku 4.5 with `max_tokens: 3072`. Render all summaries as markdown.
+> **Goal:** Replace flat prose summaries with structured analyst briefs featuring thematic sections, contributor/process/department citations, and contradiction surfacing. Switch process-level summaries to incremental generation (existing summary + new transcript) for token efficiency. Upgrade model to Claude Haiku 4.5 with `max_tokens: 8192`. Render all summaries as markdown.
 
 ### Backend — Incremental Process Summaries
 
@@ -589,7 +589,7 @@ Derived from [PRD.md](PRD.md) v0.7 (POC — Audio Streamed from ElevenLabs + Use
   - Fetch the process's existing `rollingSummary` (if any) and the new conversation's full transcript (not just the ElevenLabs summary)
   - **First conversation**: send full transcript → produce initial structured summary
   - **Subsequent conversations**: send existing `rollingSummary` + new conversation's full transcript → LLM integrates new information into the existing structure, adding citations and updating sections
-  - Update model to `anthropic/claude-haiku-4.5-latest`, `max_tokens: 3072`
+  - Update model to `anthropic/claude-haiku-4.5-latest`, `max_tokens: 8192`
   - New system prompt producing structured markdown output:
     - `## Overview` — 2-3 sentence executive summary
     - `## Key Stages` — thematic breakdown with contributor citations (e.g., `[Alice, Conv. 2]`)
@@ -610,7 +610,7 @@ Derived from [PRD.md](PRD.md) v0.7 (POC — Audio Streamed from ElevenLabs + Use
 
 - [x] **Rewrite department summary prompts in `convex/summaries.ts` and `convex/summariesHelpers.ts`**
   - Update both the public action (`generateDepartmentSummary`) and the internal action (`generateDepartmentSummaryInternal`)
-  - Update model to `anthropic/claude-haiku-4.5-latest`, `max_tokens: 3072`
+  - Update model to `anthropic/claude-haiku-4.5-latest`, `max_tokens: 8192`
   - New system prompt producing structured markdown:
     - `## Overview` — executive summary of department operations
     - `## Cross-Process Handoffs` — how processes feed into each other, citing source process (e.g., `[Compensation process]`)
@@ -619,7 +619,7 @@ Derived from [PRD.md](PRD.md) v0.7 (POC — Audio Streamed from ElevenLabs + Use
     - `## Notable Details` — unique findings worth surfacing at department level
 
 - [x] **Rewrite function summary prompt in `convex/summaries.ts`**
-  - Update model to `anthropic/claude-haiku-4.5-latest`, `max_tokens: 3072`
+  - Update model to `anthropic/claude-haiku-4.5-latest`, `max_tokens: 8192`
   - New system prompt producing structured markdown:
     - `## Overview` — high-level summary of the function
     - `## Cross-Department Patterns` — how departments relate, citing source department (e.g., `[Payroll dept]`)
