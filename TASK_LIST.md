@@ -491,57 +491,57 @@ Derived from [PRD.md](PRD.md) v0.7 (POC — Audio Streamed from ElevenLabs + Use
 
 ### Schema Changes
 
-- [ ] **Widen `departments` table in `convex/schema.ts`**
+- [x] **Widen `departments` table in `convex/schema.ts`**
   - Add `summary: v.optional(v.string())` — persisted department summary
   - Add `summaryUpdatedAt: v.optional(v.number())` — epoch ms of last generation
   - Add `summaryStale: v.optional(v.boolean())` — `true` when new data invalidates the summary
   - Existing docs get `undefined` for new fields (no data migration needed)
 
-- [ ] **Widen `functions` table in `convex/schema.ts`**
+- [x] **Widen `functions` table in `convex/schema.ts`**
   - Add `summary: v.optional(v.string())`
   - Add `summaryUpdatedAt: v.optional(v.number())`
   - Add `summaryStale: v.optional(v.boolean())`
 
 ### Staleness Propagation
 
-- [ ] **Create `markDepartmentSummaryStale` internalMutation in `convex/summaries.ts`**
+- [x] **Create `markDepartmentSummaryStale` internalMutation in `convex/summaries.ts`**
   - Accepts `departmentId`
   - Patches department doc: `{ summaryStale: true }`
   - Looks up the department's `functionId` and cascades to `markFunctionSummaryStale`
 
-- [ ] **Create `markFunctionSummaryStale` internalMutation in `convex/summaries.ts`**
+- [x] **Create `markFunctionSummaryStale` internalMutation in `convex/summaries.ts`**
   - Accepts `functionId`
   - Patches function doc: `{ summaryStale: true }`
 
-- [ ] **Wire staleness triggers into existing code**
+- [x] **Wire staleness triggers into existing code**
   - **`convex/postCall.ts` → `regenerateProcessSummary`**: After updating `rollingSummary`, look up the process's `departmentId` and call `markDepartmentSummaryStale` (which cascades to function)
   - **`convex/processes.ts` → `create` and `remove`**: After insert/delete, call `markDepartmentSummaryStale`
   - **`convex/departments.ts` → `create` and `remove`**: After insert/delete, call `markFunctionSummaryStale`
 
 ### Persistent Summary Generation
 
-- [ ] **Refactor `generateDepartmentSummary` in `convex/summaries.ts`**
+- [x] **Refactor `generateDepartmentSummary` in `convex/summaries.ts`**
   - **Token guard**: Before calling OpenRouter, check if `department.summaryStale === false` AND `department.summary` exists AND `forceRefresh` is not set → return existing summary (no LLM call)
   - **Persist**: After generation, save to department doc via new `saveDepartmentSummary` internalMutation: `{ summary, summaryUpdatedAt: Date.now(), summaryStale: false }`
   - Still return the summary to the caller for immediate UI display
 
-- [ ] **Refactor `generateFunctionSummary` in `convex/summaries.ts`**
+- [x] **Refactor `generateFunctionSummary` in `convex/summaries.ts`**
   - **New hierarchy**: Create `getDepartmentSummariesByFunction` internalQuery that fetches department-level summaries (not process-level summaries as before)
   - **Cascade generation**: If any department under the function has no summary (`summary` is `undefined`), auto-generate it first by calling `generateDepartmentSummary` for each missing department (sequentially to respect rate limits)
   - **Token guard**: If `function.summaryStale === false` AND `function.summary` exists AND `forceRefresh` is not set → return existing summary
   - **Persist**: Save to function doc via new `saveFunctionSummary` internalMutation: `{ summary, summaryUpdatedAt: Date.now(), summaryStale: false }`
   - Update the synthesis prompt to work with department-level abstractions (cross-department themes, handoffs) rather than individual process details
 
-- [ ] **Create `saveDepartmentSummary` and `saveFunctionSummary` internalMutations**
+- [x] **Create `saveDepartmentSummary` and `saveFunctionSummary` internalMutations**
   - Each patches the relevant doc with `{ summary, summaryUpdatedAt, summaryStale: false }`
 
-- [ ] **Add `forceRefresh` flag to both generate actions**
+- [x] **Add `forceRefresh` flag to both generate actions**
   - `args: { ..., forceRefresh: v.optional(v.boolean()) }` — default `false`
   - When `true`, bypasses the token guard and always regenerates via OpenRouter
 
 ### Frontend — Staleness UI & "Last Refreshed"
 
-- [ ] **Update department detail panel in `src/components/miller-columns.tsx`**
+- [x] **Update department detail panel in `src/components/miller-columns.tsx`**
   - Replace ephemeral `useState` for `deptSummary` with reactive data from `useQuery(api.departments.get)` which now includes `summary`, `summaryUpdatedAt`, `summaryStale`
   - Display persisted summary immediately (no need to click "Generate" if one exists)
   - Show **"Last refreshed: X ago"** timestamp beneath summary using `summaryUpdatedAt`
@@ -549,29 +549,29 @@ Derived from [PRD.md](PRD.md) v0.7 (POC — Audio Streamed from ElevenLabs + Use
   - Button states: "Generate Summary" (no summary yet) → "Refresh Summary" (stale, primary) → "Regenerate" (fresh, outline variant)
   - While generating: show spinner overlay on existing summary (don't hide it)
 
-- [ ] **Update function detail panel in `src/components/miller-columns.tsx`**
+- [x] **Update function detail panel in `src/components/miller-columns.tsx`**
   - Same reactive pattern as department panel
   - When cascade-generating missing department summaries, show progress indicator: "Generating 2 missing department summaries… then function summary"
 
-- [ ] **Remove ephemeral summary state resets on navigation**
+- [x] **Remove ephemeral summary state resets on navigation**
   - Remove `setDeptSummary(null)` / `setFuncSummary(null)` from selection handlers — summaries now come from reactive queries, not local state
   - Keep `deptSummaryLoading` / `funcSummaryLoading` for generation-in-progress UI
 
 ### Verification
 
-- [ ] **Verify staleness propagation**
+- [x] **Verify staleness propagation**
   - Record a new conversation → verify `summaryStale` flips to `true` on both department and function docs
   - Add a new process to a department → verify department summary goes stale
   - Add a new department to a function → verify function summary goes stale
 
-- [ ] **Verify token efficiency**
+- [x] **Verify token efficiency**
   - Click "Refresh" on a fresh (non-stale) summary → confirm no OpenRouter call is made (check Convex dashboard logs)
   - Use `forceRefresh` → confirm LLM call fires even when summary is fresh
 
-- [ ] **Verify cascade generation**
+- [x] **Verify cascade generation**
   - Generate function summary where 1 of 3 departments has no summary → verify it auto-generates the missing department summary first, then synthesizes the function summary
 
-- [ ] **Verify UI**
+- [x] **Verify UI**
   - Navigate to department → see persisted summary with "Last refreshed: X ago" timestamp
   - Record a conversation → see stale badge appear on department and function summaries
   - Click "Refresh Summary" → see updated summary and new timestamp

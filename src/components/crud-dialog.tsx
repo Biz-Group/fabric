@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import {
   Dialog,
   DialogContent,
@@ -12,8 +12,23 @@ import {
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import {
+  Select,
+  SelectTrigger,
+  SelectContent,
+  SelectItem,
+  SelectGroup,
+  SelectLabel,
+  SelectValue,
+} from "@/components/ui/select";
 
 type CrudMode = "create" | "edit" | "delete";
+
+export interface LocationOption {
+  value: string;
+  label: string;
+  group?: string;
+}
 
 interface CrudDialogProps {
   open: boolean;
@@ -21,7 +36,10 @@ interface CrudDialogProps {
   mode: CrudMode;
   entityType: string; // "Function" | "Department" | "Process"
   currentName?: string;
-  onConfirm: (name: string) => Promise<void>;
+  currentLocationId?: string;
+  locationOptions?: LocationOption[];
+  locationLabel?: string;
+  onConfirm: (name: string, newLocationId?: string) => Promise<void>;
 }
 
 export function CrudDialog({
@@ -30,33 +48,64 @@ export function CrudDialog({
   mode,
   entityType,
   currentName,
+  currentLocationId,
+  locationOptions,
+  locationLabel,
   onConfirm,
 }: CrudDialogProps) {
   const [name, setName] = useState("");
+  const [selectedLocationId, setSelectedLocationId] = useState<
+    string | undefined
+  >(undefined);
   const [loading, setLoading] = useState(false);
 
   useEffect(() => {
     if (open) {
       setName(mode === "edit" ? currentName ?? "" : "");
+      setSelectedLocationId(mode === "edit" ? currentLocationId : undefined);
     }
-  }, [open, mode, currentName]);
+  }, [open, mode, currentName, currentLocationId]);
 
   const handleSubmit = async () => {
     if (mode !== "delete" && !name.trim()) return;
     setLoading(true);
     try {
-      await onConfirm(name.trim());
+      await onConfirm(name.trim(), selectedLocationId);
       onOpenChange(false);
     } finally {
       setLoading(false);
     }
   };
 
+  const showLocation =
+    mode === "edit" && locationOptions && locationOptions.length > 0;
+
+  const hasGroups = locationOptions?.some((opt) => opt.group);
+  const groupedOptions = useMemo(() => {
+    if (!hasGroups || !locationOptions) return [];
+    const groups: Record<string, LocationOption[]> = {};
+    for (const opt of locationOptions) {
+      const group = opt.group ?? "Other";
+      (groups[group] ??= []).push(opt);
+    }
+    return Object.entries(groups);
+  }, [hasGroups, locationOptions]);
+
+  // Build items map for SelectValue to display label instead of raw ID
+  const itemsMap = useMemo(() => {
+    if (!locationOptions) return undefined;
+    const map: Record<string, string> = {};
+    for (const opt of locationOptions) {
+      map[opt.value] = opt.label;
+    }
+    return map;
+  }, [locationOptions]);
+
   const title =
     mode === "create"
       ? `Add ${entityType}`
       : mode === "edit"
-        ? `Rename ${entityType}`
+        ? `Edit ${entityType}`
         : `Delete ${entityType}`;
 
   return (
@@ -73,22 +122,61 @@ export function CrudDialog({
             <DialogDescription>
               {mode === "create"
                 ? `Enter a name for the new ${entityType.toLowerCase()}.`
-                : `Update the name of this ${entityType.toLowerCase()}.`}
+                : `Update the name${showLocation ? " or location" : ""} of this ${entityType.toLowerCase()}.`}
             </DialogDescription>
           )}
         </DialogHeader>
 
         {mode !== "delete" && (
-          <div className="py-2">
-            <Input
-              placeholder={`${entityType} name`}
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") handleSubmit();
-              }}
-              autoFocus
-            />
+          <div className="space-y-3 py-2">
+            <div>
+              <Input
+                placeholder={`${entityType} name`}
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") handleSubmit();
+                }}
+                autoFocus
+              />
+            </div>
+
+            {showLocation && (
+              <div>
+                <p className="mb-1.5 text-sm font-medium text-foreground">
+                  {locationLabel ?? "Location"}
+                </p>
+                <Select
+                  value={selectedLocationId}
+                  onValueChange={(val) => setSelectedLocationId(val as string)}
+                  items={itemsMap}
+                >
+                  <SelectTrigger className="w-full">
+                    <SelectValue
+                      placeholder={`Select ${(locationLabel ?? "location").toLowerCase()}`}
+                    />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {hasGroups
+                      ? groupedOptions.map(([groupName, items]) => (
+                          <SelectGroup key={groupName}>
+                            <SelectLabel>{groupName}</SelectLabel>
+                            {items.map((opt) => (
+                              <SelectItem key={opt.value} value={opt.value}>
+                                {opt.label}
+                              </SelectItem>
+                            ))}
+                          </SelectGroup>
+                        ))
+                      : (locationOptions ?? []).map((opt) => (
+                          <SelectItem key={opt.value} value={opt.value}>
+                            {opt.label}
+                          </SelectItem>
+                        ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            )}
           </div>
         )}
 

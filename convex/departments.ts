@@ -23,6 +23,20 @@ export const get = query({
   },
 });
 
+export const listAll = query({
+  args: {},
+  handler: async (ctx) => {
+    await requireAuth(ctx);
+    const allDepts = await ctx.db.query("departments").order("asc").collect();
+    const allFunctions = await ctx.db.query("functions").order("asc").collect();
+    const fnMap = new Map(allFunctions.map((f) => [f._id, f.name]));
+    return allDepts.map((d) => ({
+      ...d,
+      functionName: fnMap.get(d.functionId) ?? "Unknown",
+    }));
+  },
+});
+
 export const create = mutation({
   args: { functionId: v.id("functions"), name: v.string() },
   handler: async (ctx, args) => {
@@ -47,10 +61,39 @@ export const create = mutation({
 });
 
 export const update = mutation({
-  args: { departmentId: v.id("departments"), name: v.string() },
+  args: {
+    departmentId: v.id("departments"),
+    name: v.string(),
+    functionId: v.optional(v.id("functions")),
+  },
   handler: async (ctx, args) => {
     await requireAuth(ctx);
-    await ctx.db.patch(args.departmentId, { name: args.name });
+    const dept = await ctx.db.get(args.departmentId);
+    if (!dept) throw new Error("Department not found");
+
+    const patch: Record<string, unknown> = { name: args.name };
+    const isMoving = args.functionId && args.functionId !== dept.functionId;
+
+    if (isMoving) {
+      const existing = await ctx.db
+        .query("departments")
+        .withIndex("by_functionId", (q) => q.eq("functionId", args.functionId!))
+        .order("desc")
+        .take(1);
+      patch.functionId = args.functionId;
+      patch.sortOrder = (existing.length > 0 ? existing[0].sortOrder : 0) + 1;
+    }
+
+    await ctx.db.patch(args.departmentId, patch);
+
+    if (isMoving) {
+      await ctx.runMutation(internal.summariesHelpers.markFunctionSummaryStale, {
+        functionId: dept.functionId,
+      });
+      await ctx.runMutation(internal.summariesHelpers.markFunctionSummaryStale, {
+        functionId: args.functionId!,
+      });
+    }
   },
 });
 

@@ -262,25 +262,28 @@ export function MillerColumns() {
   const [crudEntity, setCrudEntity] = useState<"Function" | "Department" | "Process">("Function");
   const [crudTargetName, setCrudTargetName] = useState("");
   const [crudTargetId, setCrudTargetId] = useState<string | null>(null);
+  const [crudCurrentLocationId, setCrudCurrentLocationId] = useState<string | null>(null);
 
   const openCrud = useCallback(
     (
       mode: "create" | "edit" | "delete",
       entity: "Function" | "Department" | "Process",
       targetName?: string,
-      targetId?: string
+      targetId?: string,
+      currentLocationId?: string
     ) => {
       setCrudMode(mode);
       setCrudEntity(entity);
       setCrudTargetName(targetName ?? "");
       setCrudTargetId(targetId ?? null);
+      setCrudCurrentLocationId(currentLocationId ?? null);
       setCrudOpen(true);
     },
     []
   );
 
   const handleCrudConfirm = useCallback(
-    async (name: string) => {
+    async (name: string, newLocationId?: string) => {
       if (crudEntity === "Function") {
         if (crudMode === "create") {
           await createFunction({ name });
@@ -298,7 +301,16 @@ export function MillerColumns() {
         if (crudMode === "create" && selectedFunctionId) {
           await createDepartment({ functionId: selectedFunctionId, name });
         } else if (crudMode === "edit" && crudTargetId) {
-          await updateDepartment({ departmentId: crudTargetId as Id<"departments">, name });
+          const newFunctionId = newLocationId as Id<"functions"> | undefined;
+          await updateDepartment({
+            departmentId: crudTargetId as Id<"departments">,
+            name,
+            functionId: newFunctionId,
+          });
+          if (newFunctionId && newFunctionId !== selectedFunctionId) {
+            setSelectedDepartmentId(null);
+            setSelectedProcessId(null);
+          }
         } else if (crudMode === "delete" && crudTargetId) {
           await removeDepartment({ departmentId: crudTargetId as Id<"departments"> });
           if (selectedDepartmentId === crudTargetId) {
@@ -310,7 +322,15 @@ export function MillerColumns() {
         if (crudMode === "create" && selectedDepartmentId) {
           await createProcess({ departmentId: selectedDepartmentId, name });
         } else if (crudMode === "edit" && crudTargetId) {
-          await updateProcess({ processId: crudTargetId as Id<"processes">, name });
+          const newDepartmentId = newLocationId as Id<"departments"> | undefined;
+          await updateProcess({
+            processId: crudTargetId as Id<"processes">,
+            name,
+            departmentId: newDepartmentId,
+          });
+          if (newDepartmentId && newDepartmentId !== selectedDepartmentId) {
+            setSelectedProcessId(null);
+          }
         } else if (crudMode === "delete" && crudTargetId) {
           await removeProcess({ processId: crudTargetId as Id<"processes"> });
           if (selectedProcessId === crudTargetId) {
@@ -360,6 +380,18 @@ export function MillerColumns() {
     api.functions.get,
     selectedFunctionId ? { functionId: selectedFunctionId } : "skip"
   );
+  const allDepartments = useQuery(api.departments.listAll);
+
+  // Location options for edit modals
+  const departmentLocationOptions = (functions ?? []).map((fn) => ({
+    value: fn._id,
+    label: fn.name,
+  }));
+  const processLocationOptions = (allDepartments ?? []).map((dept) => ({
+    value: dept._id,
+    label: dept.name,
+    group: dept.functionName,
+  }));
 
   // Selection handlers
   const handleSelectFunction = useCallback(
@@ -485,7 +517,7 @@ export function MillerColumns() {
                 selected={selectedDepartmentId === dept._id}
                 indicator="arrow"
                 onClick={() => handleSelectDepartment(dept._id, dept.name)}
-                onEdit={() => openCrud("edit", "Department", dept.name, dept._id)}
+                onEdit={() => openCrud("edit", "Department", dept.name, dept._id, dept.functionId)}
                 onDelete={() => openCrud("delete", "Department", dept.name, dept._id)}
               />
             ))
@@ -539,7 +571,7 @@ export function MillerColumns() {
                 selected={selectedProcessId === proc._id}
                 indicator="dot"
                 onClick={() => handleSelectProcess(proc._id, proc.name)}
-                onEdit={() => openCrud("edit", "Process", proc.name, proc._id)}
+                onEdit={() => openCrud("edit", "Process", proc.name, proc._id, proc.departmentId)}
                 onDelete={() => openCrud("delete", "Process", proc.name, proc._id)}
               />
             ))
@@ -926,6 +958,21 @@ export function MillerColumns() {
         mode={crudMode}
         entityType={crudEntity}
         currentName={crudTargetName}
+        currentLocationId={crudCurrentLocationId ?? undefined}
+        locationOptions={
+          crudMode === "edit" && crudEntity === "Department"
+            ? departmentLocationOptions
+            : crudMode === "edit" && crudEntity === "Process"
+              ? processLocationOptions
+              : undefined
+        }
+        locationLabel={
+          crudEntity === "Department"
+            ? "Function"
+            : crudEntity === "Process"
+              ? "Department"
+              : undefined
+        }
         onConfirm={handleCrudConfirm}
       />
     </div>
