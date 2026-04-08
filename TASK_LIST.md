@@ -579,6 +579,88 @@ Derived from [PRD.md](PRD.md) v0.7 (POC — Audio Streamed from ElevenLabs + Use
 
 ---
 
+## Phase 11: Summary Enhancement — Structured Briefs with Citations
+
+> **Goal:** Replace flat prose summaries with structured analyst briefs featuring thematic sections, contributor/process/department citations, and contradiction surfacing. Switch process-level summaries to incremental generation (existing summary + new transcript) for token efficiency. Upgrade model to Claude Haiku 4.5 with `max_tokens: 3072`. Render all summaries as markdown.
+
+### Backend — Incremental Process Summaries
+
+- [x] **Rewrite `regenerateProcessSummary` in `convex/postCall.ts` to incremental model**
+  - Fetch the process's existing `rollingSummary` (if any) and the new conversation's full transcript (not just the ElevenLabs summary)
+  - **First conversation**: send full transcript → produce initial structured summary
+  - **Subsequent conversations**: send existing `rollingSummary` + new conversation's full transcript → LLM integrates new information into the existing structure, adding citations and updating sections
+  - Update model to `anthropic/claude-haiku-4.5-latest`, `max_tokens: 3072`
+  - New system prompt producing structured markdown output:
+    - `## Overview` — 2-3 sentence executive summary
+    - `## Key Stages` — thematic breakdown with contributor citations (e.g., `[Alice, Conv. 2]`)
+    - `## Consensus` — what multiple contributors agree on
+    - `## Tensions & Gaps` — contradictions between accounts or uncovered steps
+    - `## Notable Details` — unique insights from individual contributors
+
+- [x] **Update conversation data queries for transcript access**
+  - Modify `getConversationSummaries` in `postCall.ts` to also return full transcript alongside summary and contributor name
+  - Add a query variant to fetch only the latest conversation's transcript (optimization for the incremental path — avoids loading all transcripts)
+
+- [x] **Add `forceRefresh` support to `regenerateProcessSummary`**
+  - New optional `forceRefresh` arg: when `true`, fetch ALL conversation transcripts and regenerate from scratch (full rebuild at higher token cost)
+  - This is the fallback for when incremental drift becomes noticeable
+  - Wire a trigger for this from the frontend (Phase 11 frontend tasks)
+
+### Backend — Structured Department & Function Prompts
+
+- [x] **Rewrite department summary prompts in `convex/summaries.ts` and `convex/summariesHelpers.ts`**
+  - Update both the public action (`generateDepartmentSummary`) and the internal action (`generateDepartmentSummaryInternal`)
+  - Update model to `anthropic/claude-haiku-4.5-latest`, `max_tokens: 3072`
+  - New system prompt producing structured markdown:
+    - `## Overview` — executive summary of department operations
+    - `## Cross-Process Handoffs` — how processes feed into each other, citing source process (e.g., `[Compensation process]`)
+    - `## Shared Themes` — patterns across multiple processes
+    - `## Tensions & Gaps` — contradictions or uncovered gaps in the handoff chain
+    - `## Notable Details` — unique findings worth surfacing at department level
+
+- [x] **Rewrite function summary prompt in `convex/summaries.ts`**
+  - Update model to `anthropic/claude-haiku-4.5-latest`, `max_tokens: 3072`
+  - New system prompt producing structured markdown:
+    - `## Overview` — high-level summary of the function
+    - `## Cross-Department Patterns` — how departments relate, citing source department (e.g., `[Payroll dept]`)
+    - `## Strategic Themes` — recurring patterns across departments
+    - `## Tensions & Gaps` — cross-departmental contradictions or blind spots
+    - `## Notable Details` — department-specific findings worth escalating
+
+### Frontend — Markdown Rendering & Force Refresh
+
+- [x] **Add markdown rendering to all summary display components**
+  - Install a lightweight markdown renderer (e.g., `react-markdown`)
+  - Update the Process Summary Box in the process detail panel to render markdown
+  - Update department and function summary displays to render markdown
+  - Style markdown output to match the existing design system (shadcn/ui typography, consistent heading sizes, prose spacing)
+  - Edge case: old summaries (plain text, pre-upgrade) must still render gracefully — plain text without markdown should display as-is
+
+- [x] **Add "Force Refresh" button to process summary UI**
+  - Allow users to trigger a full regeneration from all transcripts (calls `regenerateProcessSummary` with `forceRefresh: true`)
+  - Show loading state during regeneration
+  - Only visible when a process has more than one conversation
+
+### Testing & Validation
+
+- [ ] **Test incremental summary generation end-to-end**
+  - Record 3+ conversations on a single process → verify summary builds incrementally with contributor citations
+  - Verify contradictions between contributors are surfaced in "Tensions & Gaps" section
+  - Verify force refresh produces equivalent (or better) quality to incremental
+  - Verify first conversation produces a valid structured summary from transcript alone
+
+- [ ] **Test department and function summary generation**
+  - Verify structured markdown output with cross-process/cross-department citations
+  - Verify staleness propagation still works correctly with new prompts
+  - Verify cascade generation (function → missing department summaries) works with new structured prompts
+
+- [ ] **Verify markdown rendering across all summary levels**
+  - Process, department, and function summaries render correctly as styled markdown
+  - Mobile responsive — markdown doesn't break on narrow viewports
+  - Old plain-text summaries (generated before this upgrade) still display correctly
+
+---
+
 ## Phase X: End-to-End Verification
 
 - [ ] **End-to-end verification against all 10 POC success criteria (PRD section 7)**

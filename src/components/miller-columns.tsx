@@ -41,6 +41,7 @@ import { ConversationLog } from "@/components/conversation-log";
 import { UserMenu } from "@/components/user-menu";
 import { RecordingModal } from "@/components/recording-modal";
 import { CrudDialog } from "@/components/crud-dialog";
+import { MarkdownSummary } from "@/components/markdown-summary";
 
 // --- Types ---
 
@@ -244,6 +245,8 @@ export function MillerColumns() {
   // On-demand summary actions
   const generateDepartmentSummary = useAction(api.summaries.generateDepartmentSummary);
   const generateFunctionSummary = useAction(api.summaries.generateFunctionSummary);
+  const forceRefreshProcessSummary = useAction(api.summaries.forceRefreshProcessSummary);
+  const [processSummaryRefreshing, setProcessSummaryRefreshing] = useState(false);
 
   // CRUD mutations
   const createFunction = useMutation(api.functions.create);
@@ -381,6 +384,10 @@ export function MillerColumns() {
     selectedFunctionId ? { functionId: selectedFunctionId } : "skip"
   );
   const allDepartments = useQuery(api.departments.listAll);
+  const processConversations = useQuery(
+    api.conversations.listByProcess,
+    selectedProcessId ? { processId: selectedProcessId } : "skip"
+  );
 
   // Location options for edit modals
   const departmentLocationOptions = (functions ?? []).map((fn) => ({
@@ -597,7 +604,7 @@ export function MillerColumns() {
         </div>
       )}
       {!selectedProcessId ? (
-        <div className="flex flex-1 flex-col">
+        <div className="flex flex-1 flex-col overflow-y-auto scrollbar-hide">
           <ColumnHeader title={selectedDepartmentId ? "Department Overview" : selectedFunctionId ? "Function Overview" : "Process Detail"} />
 
           {/* On-demand Department Summary */}
@@ -623,18 +630,16 @@ export function MillerColumns() {
                 <CardContent className="space-y-3">
                   {deptSummaryLoading && selectedDepartment?.summary && (
                     <div className="relative">
-                      <p className="text-sm leading-relaxed text-muted-foreground opacity-50">
-                        {selectedDepartment.summary}
-                      </p>
+                      <div className="opacity-50">
+                        <MarkdownSummary content={selectedDepartment.summary} />
+                      </div>
                       <div className="absolute inset-0 flex items-center justify-center">
                         <Loader2 className="h-6 w-6 animate-spin text-primary" />
                       </div>
                     </div>
                   )}
                   {!deptSummaryLoading && selectedDepartment?.summary && (
-                    <p className="text-sm leading-relaxed text-muted-foreground">
-                      {selectedDepartment.summary}
-                    </p>
+                    <MarkdownSummary content={selectedDepartment.summary} />
                   )}
                   {selectedDepartment?.summaryUpdatedAt && (
                     <div className="flex items-center gap-1 text-[11px] text-muted-foreground/60">
@@ -731,18 +736,16 @@ export function MillerColumns() {
                 <CardContent className="space-y-3">
                   {funcSummaryLoading && selectedFunction?.summary && (
                     <div className="relative">
-                      <p className="text-sm leading-relaxed text-muted-foreground opacity-50">
-                        {selectedFunction.summary}
-                      </p>
+                      <div className="opacity-50">
+                        <MarkdownSummary content={selectedFunction.summary} />
+                      </div>
                       <div className="absolute inset-0 flex items-center justify-center">
                         <Loader2 className="h-6 w-6 animate-spin text-primary" />
                       </div>
                     </div>
                   )}
                   {!funcSummaryLoading && selectedFunction?.summary && (
-                    <p className="text-sm leading-relaxed text-muted-foreground">
-                      {selectedFunction.summary}
-                    </p>
+                    <MarkdownSummary content={selectedFunction.summary} />
                   )}
                   {selectedFunction?.summaryUpdatedAt && (
                     <div className="flex items-center gap-1 text-[11px] text-muted-foreground/60">
@@ -902,10 +905,52 @@ export function MillerColumns() {
                   )}
                 </CardHeader>
                 {selectedProcess?.rollingSummary && (
-                  <CardContent>
-                    <p className="text-sm leading-relaxed text-muted-foreground">
-                      {selectedProcess.rollingSummary}
-                    </p>
+                  <CardContent className="space-y-3">
+                    {processSummaryRefreshing ? (
+                      <div className="relative">
+                        <div className="opacity-50">
+                          <MarkdownSummary content={selectedProcess.rollingSummary} />
+                        </div>
+                        <div className="absolute inset-0 flex items-center justify-center">
+                          <Loader2 className="h-6 w-6 animate-spin text-primary" />
+                        </div>
+                      </div>
+                    ) : (
+                      <MarkdownSummary content={selectedProcess.rollingSummary} />
+                    )}
+                    {selectedProcessId && (processConversations?.filter(c => c.status === "done").length ?? 0) > 1 && (
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="gap-2"
+                        disabled={processSummaryRefreshing}
+                        onClick={async () => {
+                          if (!selectedProcessId) return;
+                          setProcessSummaryRefreshing(true);
+                          try {
+                            await forceRefreshProcessSummary({
+                              processId: selectedProcessId,
+                            });
+                          } catch {
+                            // Error is logged server-side
+                          } finally {
+                            setProcessSummaryRefreshing(false);
+                          }
+                        }}
+                      >
+                        {processSummaryRefreshing ? (
+                          <>
+                            <Loader2 className="h-4 w-4 animate-spin" />
+                            Rebuilding...
+                          </>
+                        ) : (
+                          <>
+                            <Sparkles className="h-4 w-4" />
+                            Rebuild from all transcripts
+                          </>
+                        )}
+                      </Button>
+                    )}
                   </CardContent>
                 )}
               </Card>

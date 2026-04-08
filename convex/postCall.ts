@@ -6,6 +6,7 @@ import {
   internalQuery,
 } from "./_generated/server";
 import { internal } from "./_generated/api";
+import { Id } from "./_generated/dataModel";
 import { requireAuth } from "./lib/auth";
 
 // Normalize ElevenLabs transcript to the shape our UI expects:
@@ -64,8 +65,38 @@ export const getConversationSummaries = internalQuery({
       .map((c) => ({
         contributorName: c.contributorName,
         summary: c.summary!,
+        transcript: c.transcript ?? null,
         creationTime: c._creationTime,
       }));
+  },
+});
+
+// Fetch only the latest done conversation for a process (used by incremental summary path)
+export const getLatestConversation = internalQuery({
+  args: { processId: v.id("processes") },
+  handler: async (ctx, args) => {
+    const conversation = await ctx.db
+      .query("conversations")
+      .withIndex("by_processId", (q) => q.eq("processId", args.processId))
+      .order("desc")
+      .filter((q) => q.eq(q.field("status"), "done"))
+      .first();
+    if (!conversation) return null;
+    return {
+      contributorName: conversation.contributorName,
+      summary: conversation.summary ?? null,
+      transcript: conversation.transcript ?? null,
+      creationTime: conversation._creationTime,
+    };
+  },
+});
+
+// Fetch the current rolling summary for a process
+export const getProcessRollingSummary = internalQuery({
+  args: { processId: v.id("processes") },
+  handler: async (ctx, args) => {
+    const process = await ctx.db.get(args.processId);
+    return process?.rollingSummary ?? null;
   },
 });
 
@@ -374,54 +405,204 @@ export const importConversation = internalAction({
 });
 
 // --- Internal action: regenerateProcessSummary ---
-// Fetches all conversation summaries for a process and synthesizes via Claude Haiku.
+// Incrementally builds a structured process summary using Claude Haiku 4.5.
+// First conversation: full transcript → initial structured summary.
+// Subsequent: existing rolling summary + new transcript → updated summary.
+// forceRefresh: rebuilds from ALL transcripts (higher token cost).
+
+const PROCESS_SUMMARY_SYSTEM_PROMPT = `You are an analyst synthesizing employee accounts of a single business process into a structured brief. Your output must use the following markdown format exactly:
+
+## Overview
+2-3 sentence executive summary of the process.
+
+## Key Stages
+Thematic breakdown of the process phases. Cite which contributors described each stage using the format [Name, Conv. N] — e.g., "The request is triaged by the team lead [Alice, Conv. 2]." Group related steps into coherent stages rather than listing every micro-step.
+
+## Consensus
+What multiple contributors agree on — the shared understanding of how the process works. Only include points confirmed by more than one source.
+
+## Tensions & Gaps
+Where accounts contradict each other or where no contributor covers a step. Be specific: name the contributors who disagree and what they disagree about. If there are no contradictions, note any gaps in coverage instead.
+
+## Notable Details
+Unique insights mentioned by only one contributor that seem important enough to preserve. Cite the source.
+
+Rules:
+- Always cite contributors using [Name, Conv. N] format.
+- Write in clear, concise prose within each section.
+- If this is the first conversation, the Consensus and Tensions & Gaps sections can note that only one perspective exists so far.
+- When integrating new information into an existing summary, preserve existing citations and add new ones. Update sections as needed — move items from Notable Details to Consensus if a new contributor confirms them, or add new tensions if accounts conflict.
+- Output ONLY the markdown sections above, nothing else.`;
+
+const PROCESS_SUMMARY_SYSTEM_PROMPT_FULL_REBUILD = `You are an analyst synthesizing multiple employee accounts of a single business process into a structured brief. You are given the full transcripts of all conversations. Your output must use the following markdown format exactly:
+
+## Overview
+2-3 sentence executive summary of the process.
+
+## Key Stages
+Thematic breakdown of the process phases. Cite which contributors described each stage using the format [Name, Conv. N] — e.g., "The request is triaged by the team lead [Alice, Conv. 2]." Group related steps into coherent stages rather than listing every micro-step.
+
+## Consensus
+What multiple contributors agree on — the shared understanding of how the process works. Only include points confirmed by more than one source.
+
+## Tensions & Gaps
+Where accounts contradict each other or where no contributor covers a step. Be specific: name the contributors who disagree and what they disagree about. If there are no contradictions, note any gaps in coverage instead.
+
+## Notable Details
+Unique insights mentioned by only one contributor that seem important enough to preserve. Cite the source.
+
+Rules:
+- Always cite contributors using [Name, Conv. N] format.
+- Write in clear, concise prose within each section.
+- Output ONLY the markdown sections above, nothing else.`;
+
+function formatTranscript(
+  transcript: Array<{ role: string; content: string }> | null,
+  contributorName: string,
+  conversationNumber: number,
+): string {
+  if (!transcript || !Array.isArray(transcript) || transcript.length === 0) {
+    return `[Conversation ${conversationNumber} — ${contributorName}]\n(No transcript available)`;
+  }
+  const lines = transcript.map(
+    (msg: { role: string; content: string }) =>
+      `${msg.role === "user" ? contributorName : "Agent"}: ${msg.content}`,
+  );
+  return `[Conversation ${conversationNumber} — ${contributorName}]\n${lines.join("\n")}`;
+}
 
 export const regenerateProcessSummary = internalAction({
-  args: { processId: v.id("processes") },
+  args: {
+    processId: v.id("processes"),
+    forceRefresh: v.optional(v.boolean()),
+  },
   handler: async (ctx, args) => {
-    const summaries = await ctx.runQuery(
-      internal.postCall.getConversationSummaries,
-      { processId: args.processId },
-    );
-
-    if (summaries.length === 0) {
-      return;
-    }
-
-    // If only one summary, use it directly without calling the LLM
-    if (summaries.length === 1) {
-      await ctx.runMutation(internal.postCall.updateRollingSummary, {
-        processId: args.processId,
-        rollingSummary: summaries[0].summary,
-      });
-      // Mark department (and cascading function) summary as stale
-      const departmentId = await ctx.runQuery(
-        internal.postCall.getProcessDepartmentId,
-        { processId: args.processId },
-      );
-      if (departmentId) {
-        await ctx.runMutation(internal.summariesHelpers.markDepartmentSummaryStale, {
-          departmentId,
-        });
-      }
-      return;
-    }
-
     const openrouterKey = process.env.OPENROUTER_API_KEY;
     if (!openrouterKey) {
       console.error("OPENROUTER_API_KEY is not configured — skipping summary regeneration");
       return;
     }
 
-    // Build the prompt with all conversation summaries
-    const summaryBlock = summaries
-      .map(
-        (s: { contributorName: string; summary: string; creationTime: number }, i: number) =>
-          `[Conversation ${i + 1} — ${s.contributorName}]\n${s.summary}`,
-      )
-      .join("\n\n");
+    // Full rebuild: fetch all conversations and regenerate from scratch
+    if (args.forceRefresh) {
+      const allConversations: Array<{
+        contributorName: string;
+        summary: string;
+        transcript: unknown;
+        creationTime: number;
+      }> = await ctx.runQuery(
+        internal.postCall.getConversationSummaries,
+        { processId: args.processId },
+      );
 
-    const systemPrompt = `You are synthesizing multiple employee accounts of a single business process. Combine these into a coherent narrative that describes the full process end-to-end, noting which contributors handle which parts, and highlighting any overlaps or gaps. Write in clear, concise prose — no bullet points or headers. Output only the synthesized summary, nothing else.`;
+      if (allConversations.length === 0) return;
+
+      const transcriptBlock = allConversations
+        .map(
+          (c: { contributorName: string; transcript: unknown }, i: number) =>
+            formatTranscript(
+              c.transcript as Array<{ role: string; content: string }> | null,
+              c.contributorName,
+              i + 1,
+            ),
+        )
+        .join("\n\n---\n\n");
+
+      const response = await fetch(
+        "https://openrouter.ai/api/v1/chat/completions",
+        {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${openrouterKey}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            model: "anthropic/claude-haiku-4.5",
+            messages: [
+              { role: "system", content: PROCESS_SUMMARY_SYSTEM_PROMPT_FULL_REBUILD },
+              {
+                role: "user",
+                content: `Here are the full transcripts of all ${allConversations.length} conversations for this process:\n\n${transcriptBlock}`,
+              },
+            ],
+            max_tokens: 3072,
+          }),
+        },
+      );
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        console.error("OpenRouter API error:", response.status, errorText);
+        throw new Error(`OpenRouter API error: ${response.status}`);
+      }
+
+      const result = await response.json();
+      const rollingSummary = result.choices?.[0]?.message?.content?.trim() ?? null;
+      if (rollingSummary) {
+        await ctx.runMutation(internal.postCall.updateRollingSummary, {
+          processId: args.processId,
+          rollingSummary,
+        });
+        const departmentId: string | null = await ctx.runQuery(
+          internal.postCall.getProcessDepartmentId,
+          { processId: args.processId },
+        );
+        if (departmentId) {
+          await ctx.runMutation(internal.summariesHelpers.markDepartmentSummaryStale, {
+            departmentId: departmentId as Id<"departments">,
+          });
+        }
+      }
+      return;
+    }
+
+    // Incremental path: existing summary + latest conversation transcript
+    const existingSummary: string | null = await ctx.runQuery(
+      internal.postCall.getProcessRollingSummary,
+      { processId: args.processId },
+    );
+
+    const latestConversation: {
+      contributorName: string;
+      summary: string | null;
+      transcript: unknown;
+      creationTime: number;
+    } | null = await ctx.runQuery(
+      internal.postCall.getLatestConversation,
+      { processId: args.processId },
+    );
+
+    if (!latestConversation) return;
+
+    // Count total conversations for numbering
+    const allConversations: Array<{
+      contributorName: string;
+      summary: string;
+      transcript: unknown;
+      creationTime: number;
+    }> = await ctx.runQuery(
+      internal.postCall.getConversationSummaries,
+      { processId: args.processId },
+    );
+
+    const conversationCount = allConversations.length;
+    if (conversationCount === 0) return;
+
+    const latestTranscript = formatTranscript(
+      latestConversation.transcript as Array<{ role: string; content: string }> | null,
+      latestConversation.contributorName,
+      conversationCount,
+    );
+
+    let userContent: string;
+
+    if (!existingSummary || conversationCount === 1) {
+      // First conversation: generate initial structured summary from transcript
+      userContent = `This is the first conversation recorded for this process. Generate the initial structured summary from this transcript:\n\n${latestTranscript}`;
+    } else {
+      // Subsequent conversation: integrate into existing summary
+      userContent = `Here is the existing process summary:\n\n${existingSummary}\n\n---\n\nA new conversation has been recorded. Integrate the information from this transcript into the existing summary, updating all sections as needed:\n\n${latestTranscript}`;
+    }
 
     const response = await fetch(
       "https://openrouter.ai/api/v1/chat/completions",
@@ -432,15 +613,12 @@ export const regenerateProcessSummary = internalAction({
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
-          model: "anthropic/claude-haiku-4",
+          model: "anthropic/claude-haiku-4.5",
           messages: [
-            { role: "system", content: systemPrompt },
-            {
-              role: "user",
-              content: `Here are the individual conversation summaries to synthesize:\n\n${summaryBlock}`,
-            },
+            { role: "system", content: PROCESS_SUMMARY_SYSTEM_PROMPT },
+            { role: "user", content: userContent },
           ],
-          max_tokens: 1024,
+          max_tokens: 3072,
         }),
       },
     );
@@ -452,8 +630,7 @@ export const regenerateProcessSummary = internalAction({
     }
 
     const result = await response.json();
-    const rollingSummary =
-      result.choices?.[0]?.message?.content?.trim() ?? null;
+    const rollingSummary = result.choices?.[0]?.message?.content?.trim() ?? null;
 
     if (rollingSummary) {
       await ctx.runMutation(internal.postCall.updateRollingSummary, {
@@ -461,13 +638,13 @@ export const regenerateProcessSummary = internalAction({
         rollingSummary,
       });
       // Mark department (and cascading function) summary as stale
-      const departmentId = await ctx.runQuery(
+      const departmentId: string | null = await ctx.runQuery(
         internal.postCall.getProcessDepartmentId,
         { processId: args.processId },
       );
       if (departmentId) {
         await ctx.runMutation(internal.summariesHelpers.markDepartmentSummaryStale, {
-          departmentId,
+          departmentId: departmentId as Id<"departments">,
         });
       }
     }

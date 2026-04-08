@@ -110,6 +110,29 @@ export const getFunction = internalQuery({
   },
 });
 
+const DEPARTMENT_SUMMARY_SYSTEM_PROMPT = `You are an analyst synthesizing process-level summaries for an organizational department into a structured brief. Your output must use the following markdown format exactly:
+
+## Overview
+Executive summary of how this department operates (2-3 sentences).
+
+## Cross-Process Handoffs
+How processes feed into each other — inputs, outputs, and dependencies. Cite the source process using [Process name] format — e.g., "Output from [Compensation] feeds into [Bank Transfers] for payment execution."
+
+## Shared Themes
+Patterns that appear across multiple processes — common tools, shared bottlenecks, recurring pain points. Cite which processes share each theme.
+
+## Tensions & Gaps
+Contradictions between processes or uncovered gaps in the handoff chain. Be specific about which processes conflict and how.
+
+## Notable Details
+Unique findings from individual processes worth surfacing at the department level. Cite the source process.
+
+Rules:
+- Always cite processes using [Process name] format.
+- Write in clear, concise prose within each section.
+- If there is only one process, note that a fuller picture will emerge as more processes are documented.
+- Output ONLY the markdown sections above, nothing else.`;
+
 // Internal version of generateDepartmentSummary for cascade calls (no auth needed)
 export const generateDepartmentSummaryInternal = internalAction({
   args: {
@@ -139,58 +162,49 @@ export const generateDepartmentSummaryInternal = internalAction({
       return { summary: null as string | null, message: "No process summaries available." as string | null };
     }
 
-    let summary: string;
+    const openrouterKey = process.env.OPENROUTER_API_KEY;
+    if (!openrouterKey) {
+      return { summary: null as string | null, message: "Missing API key." as string | null };
+    }
 
-    if (processSummaries.length === 1) {
-      summary = `Based on the "${processSummaries[0].processName}" process: ${processSummaries[0].summary}`;
-    } else {
-      const openrouterKey = process.env.OPENROUTER_API_KEY;
-      if (!openrouterKey) {
-        return { summary: null as string | null, message: "Missing API key." as string | null };
-      }
+    const summaryBlock = processSummaries
+      .map((s) => `[Process: ${s.processName}]\n${s.summary}`)
+      .join("\n\n");
 
-      const summaryBlock = processSummaries
-        .map((s) => `[Process: ${s.processName}]\n${s.summary}`)
-        .join("\n\n");
-
-      const systemPrompt = `You are synthesizing process-level summaries for an organizational department. Combine these into a cohesive department-level overview that describes how the processes relate to each other, noting handoffs and dependencies between them. Write in clear, concise prose — no bullet points or headers. Output only the synthesized summary, nothing else.`;
-
-      const response = await fetch(
-        "https://openrouter.ai/api/v1/chat/completions",
-        {
-          method: "POST",
-          headers: {
-            Authorization: `Bearer ${openrouterKey}`,
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({
-            model: "anthropic/claude-haiku-4",
-            messages: [
-              { role: "system", content: systemPrompt },
-              { role: "user", content: `Here are the process summaries for this department:\n\n${summaryBlock}` },
-            ],
-            max_tokens: 1024,
-          }),
+    const response = await fetch(
+      "https://openrouter.ai/api/v1/chat/completions",
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${openrouterKey}`,
+          "Content-Type": "application/json",
         },
-      );
+        body: JSON.stringify({
+          model: "anthropic/claude-haiku-4.5",
+          messages: [
+            { role: "system", content: DEPARTMENT_SUMMARY_SYSTEM_PROMPT },
+            { role: "user", content: `Here are the process summaries for this department:\n\n${summaryBlock}` },
+          ],
+          max_tokens: 3072,
+        }),
+      },
+    );
 
-      if (!response.ok) {
-        return { summary: null as string | null, message: "Failed to generate summary." as string | null };
-      }
+    if (!response.ok) {
+      return { summary: null as string | null, message: "Failed to generate summary." as string | null };
+    }
 
-      const result = await response.json();
-      const generated = result.choices?.[0]?.message?.content?.trim() ?? null;
-      if (!generated) {
-        return { summary: null as string | null, message: "Failed to generate summary." as string | null };
-      }
-      summary = generated;
+    const result = await response.json();
+    const generated = result.choices?.[0]?.message?.content?.trim() ?? null;
+    if (!generated) {
+      return { summary: null as string | null, message: "Failed to generate summary." as string | null };
     }
 
     const _save: null = await ctx.runMutation(internal.summariesHelpers.saveDepartmentSummary, {
       departmentId: args.departmentId,
-      summary,
+      summary: generated,
     });
 
-    return { summary: summary as string | null, message: null as string | null };
+    return { summary: generated as string | null, message: null as string | null };
   },
 });
