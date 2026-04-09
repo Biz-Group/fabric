@@ -11,7 +11,7 @@ const inter = Inter({
 
 export const metadata: Metadata = {
   title: "Fabric.",
-  description: "Capture how your organization works through voice conversations",
+  description: "Capture how your organization works through conversations",
 };
 
 export default function RootLayout({

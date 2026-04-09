@@ -7,7 +7,7 @@ import {
 } from "./_generated/server";
 import { internal } from "./_generated/api";
 import { Id } from "./_generated/dataModel";
-import { requireAuth } from "./lib/auth";
+import { requireAuth, checkRoleFromUser } from "./lib/auth";
 
 // Normalize ElevenLabs transcript to the shape our UI expects:
 // ElevenLabs returns { role: "agent"|"user", message: string, time_in_call_secs: number }
@@ -138,6 +138,8 @@ export const fetchConversation = action({
       internal.postCall.getUserByToken,
       { tokenIdentifier: identity.tokenIdentifier },
     );
+    // Role check: recording requires contributor
+    checkRoleFromUser(user, "contributor");
     const userId = user?._id ?? undefined;
 
     const apiKey = process.env.ELEVENLABS_API_KEY;

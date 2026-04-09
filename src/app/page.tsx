@@ -54,7 +54,7 @@ function LandingPage() {
             Fabric.
           </h1>
           <p className="mt-6 text-lg text-neutral-600 max-w-md leading-relaxed">
-            Capture how your organization works through voice conversations. Build a living knowledge base, effortlessly.
+            Capture how your organization works through conversations. Build a living knowledge base, effortlessly.
           </p>
         </div>
 

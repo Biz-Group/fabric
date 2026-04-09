@@ -1,6 +1,6 @@
 # Fabric — Phased Task List
 
-Derived from [PRD.md](PRD.md) v0.7 (POC — Audio Streamed from ElevenLabs + User Authentication)
+Derived from [PRD.md](PRD.md) v0.8 (POC — Audio Streamed from ElevenLabs + User Authentication + RBAC)
 
 ---
 
@@ -661,6 +661,101 @@ Derived from [PRD.md](PRD.md) v0.7 (POC — Audio Streamed from ElevenLabs + Use
 
 ---
 
+## Phase 12: Role-Based Access Control (RBAC)
+
+> **Goal:** Introduce three roles — **admin**, **contributor**, **viewer** — with server-side enforcement on all write operations and frontend conditional rendering. New users default to `viewer`. Admins can manage user roles. Contributors can CRUD and record. Viewers can only browse and view summaries.
+
+### Schema Changes
+
+- [ ] **Add `role` field to `users` table in `convex/schema.ts`**
+  - Add `role: v.optional(v.union(v.literal("admin"), v.literal("contributor"), v.literal("viewer")))` after `profileComplete`
+  - `v.optional` for backward compatibility — existing user documents without `role` are treated as `"viewer"` by the auth helpers
+
+### Auth Helpers
+
+- [ ] **Extend auth helpers in `convex/lib/auth.ts`**
+  - Keep existing `requireAuth` unchanged (used by read-only queries)
+  - Add `requireRole(ctx, minimumRole)` — looks up user by `tokenIdentifier`, checks role against hierarchy (`viewer: 0, contributor: 1, admin: 2`), returns user doc
+  - Add `requireContributor(ctx)` — shorthand for `requireRole(ctx, "contributor")`
+  - Add `requireAdmin(ctx)` — shorthand for `requireRole(ctx, "admin")`
+  - Add `effectiveRole(user)` — resolves `undefined` role → `"viewer"` (least privilege default)
+  - Add `checkRoleFromUser(user, minimumRole)` — for actions that lack `ctx.db` (pre-fetched user doc)
+
+### User Mutations
+
+- [ ] **Update `store` mutation in `convex/users.ts` to set default role**
+  - Add `role: "viewer"` to the `ctx.db.insert` call for new users
+
+- [ ] **Add role management mutations in `convex/users.ts`**
+  - `setUserRole` mutation — requires `admin` role, takes `targetUserId` + `role`, patches target user
+  - `listAllUsers` query — requires `admin` role, returns all user documents (for future admin dashboard)
+
+- [ ] **Add internal mutations for bootstrapping in `convex/users.ts`**
+  - `backfillRoles` internal mutation — patches all users missing `role` with a given default role (run via `npx convex run`)
+  - `bootstrapAdmin` internal mutation — promotes a user to `admin` by email (run via `npx convex run`)
+
+### Backend Guards — Write Mutations
+
+- [ ] **Guard write mutations in `convex/functions.ts`**
+  - Import `requireContributor` from `./lib/auth`
+  - `create`, `update`, `remove` mutations: replace `requireAuth(ctx)` with `requireContributor(ctx)`
+  - `list`, `get` queries: keep `requireAuth(ctx)` unchanged (viewers can browse)
+
+- [ ] **Guard write mutations in `convex/departments.ts`**
+  - Import `requireContributor` from `./lib/auth`
+  - `create`, `update`, `remove` mutations: replace `requireAuth(ctx)` with `requireContributor(ctx)`
+  - `listByFunction`, `get`, `listAll` queries: keep `requireAuth(ctx)` unchanged
+
+- [ ] **Guard write mutations in `convex/processes.ts`**
+  - Import `requireContributor` from `./lib/auth`
+  - `create`, `update`, `remove` mutations: replace `requireAuth(ctx)` with `requireContributor(ctx)`
+  - `listByDepartment`, `get` queries: keep `requireAuth(ctx)` unchanged
+
+- [ ] **Guard recording action in `convex/postCall.ts`**
+  - Import `checkRoleFromUser` from `./lib/auth`
+  - In `fetchConversation` action, after the existing `getUserByToken` call, add `checkRoleFromUser(user, "contributor")`
+  - No changes needed to summary generation actions (read operations, accessible to all roles)
+
+### Frontend — Conditional Rendering
+
+- [ ] **Add role-based conditional rendering in `src/components/miller-columns.tsx`**
+  - At the top of `MillerColumns`, derive role from `useQuery(api.users.getMe)`:
+    ```typescript
+    const user = useQuery(api.users.getMe);
+    const userRole = user?.role ?? "viewer";
+    const canEdit = userRole === "admin" || userRole === "contributor";
+    ```
+  - `ColumnHeader` `onAdd` buttons: only pass when `canEdit` is true
+  - `ColumnItem` `onEdit`/`onDelete` callbacks: only pass when `canEdit` is true
+  - "Record a Conversation" button: only render when `canEdit` is true
+  - `RecordingModal`: only render when `canEdit` is true
+  - "Rebuild from all transcripts" button: only render when `canEdit` is true
+  - "Generate Summary" buttons: keep visible to all roles (read operation)
+
+- [ ] **Add role badge to `src/components/user-menu.tsx`**
+  - Show user's role as a small badge next to the Clerk `<UserButton />`
+  - Uses `useQuery(api.users.getMe)` to get role
+
+- [ ] **Add defense-in-depth role check to `src/components/recording-modal.tsx`**
+  - Early return `null` if `userRole === "viewer"` (backup — already hidden by MillerColumns guard)
+
+### Deployment & Bootstrapping
+
+- [ ] **Deploy and run backfill**
+  - Deploy all changes (schema + code) — backward compatible due to `v.optional`
+  - Run `npx convex run users:backfillRoles '{"defaultRole": "contributor"}'` to promote all existing users
+  - Run `npx convex run users:bootstrapAdmin '{"email": "<admin-email>"}'` to bootstrap first admin
+
+### Verification
+
+- [ ] **Verify RBAC end-to-end**
+  - **Viewer test**: New user signs up → gets `viewer` role → can browse hierarchy and view summaries → cannot see +/edit/delete buttons or Record button → calling a write mutation from console returns "Insufficient permissions"
+  - **Contributor test**: Promoted user → can see all CRUD buttons and Record button → can create/edit/delete items and record conversations → cannot call `setUserRole` or `listAllUsers`
+  - **Admin test**: Bootstrapped admin → can see everything contributor sees → can call `setUserRole` to change another user's role → can call `listAllUsers`
+  - **Schema safety**: Users with `role: undefined` (pre-backfill) are treated as viewers
+
+---
+
 ## Phase X: End-to-End Verification
 
 - [ ] **End-to-end verification against all 10 POC success criteria (PRD section 7)**
@@ -674,3 +769,4 @@ Derived from [PRD.md](PRD.md) v0.7 (POC — Audio Streamed from ElevenLabs + Use
   8. **Process Summary Box**: Verify a synthesized process summary box is visible at the top of each process and updates automatically with each new conversation
   9. **Mobile usability**: Verify the app is usable on mobile viewports (stacked navigation with back buttons) and desktop (Miller columns)
   10. **Authentication**: Verify sign-up, sign-in, profile onboarding, auth gates, and sign-out all work correctly on the deployed app
+  11. **RBAC**: Verify viewers can browse but not edit/record, contributors can CRUD and record, admins can manage user roles. Verify server-side enforcement rejects unauthorized mutations.

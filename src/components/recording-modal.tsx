@@ -111,6 +111,8 @@ export function RecordingModal({
 
   // Name prompt state
   const user = useQuery(api.users.getMe);
+  const userRole = user?.role ?? "viewer";
+
   const [contributorName, setContributorName] = useState("");
   const [nameInitialized, setNameInitialized] = useState(false);
 
@@ -381,6 +383,9 @@ export function RecordingModal({
   }, [isConnected, isConnecting, conversation, onOpenChange]);
 
   // --- Render ---
+
+  // Defense-in-depth: viewers should never reach this component
+  if (userRole === "viewer") return null;
 
   return (
     <Dialog open={open} onOpenChange={handleClose}>

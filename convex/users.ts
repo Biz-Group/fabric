@@ -1,6 +1,6 @@
 import { v } from "convex/values";
-import { query, mutation } from "./_generated/server";
-import { requireAuth } from "./lib/auth";
+import { query, mutation, internalMutation } from "./_generated/server";
+import { requireAuth, requireAdmin } from "./lib/auth";
 
 export const store = mutation({
   args: {},
@@ -15,6 +15,17 @@ export const store = mutation({
       .unique();
 
     if (existing) {
+      // Sync email/name from Clerk if they were missing or changed
+      const updates: Record<string, string> = {};
+      if (identity.email && existing.email !== identity.email) {
+        updates.email = identity.email;
+      }
+      if (identity.name && existing.name !== identity.name) {
+        updates.name = identity.name;
+      }
+      if (Object.keys(updates).length > 0) {
+        await ctx.db.patch(existing._id, updates);
+      }
       return existing._id;
     }
 
@@ -23,6 +34,7 @@ export const store = mutation({
       name: identity.name ?? "Anonymous",
       email: identity.email ?? "",
       profileComplete: false,
+      role: "viewer",
     });
 
     return userId;
@@ -111,5 +123,60 @@ export const updateProfile = mutation({
     if (Object.keys(updates).length > 0) {
       await ctx.db.patch(user._id, updates);
     }
+  },
+});
+
+// --- Role management (admin only) ---
+
+export const setUserRole = mutation({
+  args: {
+    targetUserId: v.id("users"),
+    role: v.union(v.literal("admin"), v.literal("contributor"), v.literal("viewer")),
+  },
+  handler: async (ctx, args) => {
+    await requireAdmin(ctx);
+    const target = await ctx.db.get(args.targetUserId);
+    if (!target) throw new Error("Target user not found");
+    await ctx.db.patch(args.targetUserId, { role: args.role });
+  },
+});
+
+export const listAllUsers = query({
+  args: {},
+  handler: async (ctx) => {
+    await requireAdmin(ctx);
+    return await ctx.db.query("users").collect();
+  },
+});
+
+// --- Internal mutations for bootstrapping (run via `npx convex run`) ---
+
+export const backfillRoles = internalMutation({
+  args: {
+    defaultRole: v.union(v.literal("admin"), v.literal("contributor"), v.literal("viewer")),
+  },
+  handler: async (ctx, args) => {
+    const users = await ctx.db.query("users").collect();
+    let updated = 0;
+    for (const user of users) {
+      if (!user.role) {
+        await ctx.db.patch(user._id, { role: args.defaultRole });
+        updated++;
+      }
+    }
+    return { updated, total: users.length };
+  },
+});
+
+export const bootstrapAdmin = internalMutation({
+  args: { email: v.string() },
+  handler: async (ctx, args) => {
+    const user = await ctx.db
+      .query("users")
+      .withIndex("by_email", (q) => q.eq("email", args.email))
+      .unique();
+    if (!user) throw new Error(`No user found with email: ${args.email}`);
+    await ctx.db.patch(user._id, { role: "admin" });
+    return { userId: user._id, email: args.email, role: "admin" };
   },
 });

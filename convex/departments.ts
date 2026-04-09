@@ -1,7 +1,7 @@
 import { v } from "convex/values";
 import { query, mutation } from "./_generated/server";
 import { internal } from "./_generated/api";
-import { requireAuth } from "./lib/auth";
+import { requireAuth, requireContributor } from "./lib/auth";
 
 export const listByFunction = query({
   args: { functionId: v.id("functions") },
@@ -40,7 +40,7 @@ export const listAll = query({
 export const create = mutation({
   args: { functionId: v.id("functions"), name: v.string() },
   handler: async (ctx, args) => {
-    await requireAuth(ctx);
+    await requireContributor(ctx);
     const existing = await ctx.db
       .query("departments")
       .withIndex("by_functionId", (q) => q.eq("functionId", args.functionId))
@@ -67,7 +67,7 @@ export const update = mutation({
     functionId: v.optional(v.id("functions")),
   },
   handler: async (ctx, args) => {
-    await requireAuth(ctx);
+    await requireContributor(ctx);
     const dept = await ctx.db.get(args.departmentId);
     if (!dept) throw new Error("Department not found");
 
@@ -100,7 +100,7 @@ export const update = mutation({
 export const remove = mutation({
   args: { departmentId: v.id("departments") },
   handler: async (ctx, args) => {
-    await requireAuth(ctx);
+    await requireContributor(ctx);
     // Delete child processes
     const processes = await ctx.db
       .query("processes")

@@ -217,6 +217,11 @@ function formatTimeAgo(epochMs: number): string {
 // --- Main Component ---
 
 export function MillerColumns() {
+  // Current user role
+  const currentUser = useQuery(api.users.getMe);
+  const userRole = currentUser?.role ?? "viewer";
+  const canEdit = userRole === "admin" || userRole === "contributor";
+
   // Selection state
   const [selectedFunctionId, setSelectedFunctionId] =
     useState<Id<"functions"> | null>(null);
@@ -450,7 +455,7 @@ export function MillerColumns() {
       <ColumnHeader
         title="Functions"
         count={functions?.length}
-        onAdd={() => openCrud("create", "Function")}
+        onAdd={canEdit ? () => openCrud("create", "Function") : undefined}
       />
       <div className="flex-1 overflow-y-auto scrollbar-hide">
         <div className="space-y-0.5 p-2">
@@ -470,8 +475,8 @@ export function MillerColumns() {
                 selected={selectedFunctionId === fn._id}
                 indicator="arrow"
                 onClick={() => handleSelectFunction(fn._id, fn.name)}
-                onEdit={() => openCrud("edit", "Function", fn.name, fn._id)}
-                onDelete={() => openCrud("delete", "Function", fn.name, fn._id)}
+                onEdit={canEdit ? () => openCrud("edit", "Function", fn.name, fn._id) : undefined}
+                onDelete={canEdit ? () => openCrud("delete", "Function", fn.name, fn._id) : undefined}
               />
             ))
           )}
@@ -498,7 +503,7 @@ export function MillerColumns() {
       <ColumnHeader
         title="Departments"
         count={departments?.length}
-        onAdd={selectedFunctionId ? () => openCrud("create", "Department") : undefined}
+        onAdd={canEdit && selectedFunctionId ? () => openCrud("create", "Department") : undefined}
       />
       <div className="flex-1 overflow-y-auto scrollbar-hide">
         <div className="space-y-0.5 p-2">
@@ -524,8 +529,8 @@ export function MillerColumns() {
                 selected={selectedDepartmentId === dept._id}
                 indicator="arrow"
                 onClick={() => handleSelectDepartment(dept._id, dept.name)}
-                onEdit={() => openCrud("edit", "Department", dept.name, dept._id, dept.functionId)}
-                onDelete={() => openCrud("delete", "Department", dept.name, dept._id)}
+                onEdit={canEdit ? () => openCrud("edit", "Department", dept.name, dept._id, dept.functionId) : undefined}
+                onDelete={canEdit ? () => openCrud("delete", "Department", dept.name, dept._id) : undefined}
               />
             ))
           )}
@@ -552,7 +557,7 @@ export function MillerColumns() {
       <ColumnHeader
         title="Processes"
         count={processes?.length}
-        onAdd={selectedDepartmentId ? () => openCrud("create", "Process") : undefined}
+        onAdd={canEdit && selectedDepartmentId ? () => openCrud("create", "Process") : undefined}
       />
       <div className="flex-1 overflow-y-auto scrollbar-hide">
         <div className="space-y-0.5 p-2">
@@ -578,8 +583,8 @@ export function MillerColumns() {
                 selected={selectedProcessId === proc._id}
                 indicator="dot"
                 onClick={() => handleSelectProcess(proc._id, proc.name)}
-                onEdit={() => openCrud("edit", "Process", proc.name, proc._id, proc.departmentId)}
-                onDelete={() => openCrud("delete", "Process", proc.name, proc._id)}
+                onEdit={canEdit ? () => openCrud("edit", "Process", proc.name, proc._id, proc.departmentId) : undefined}
+                onDelete={canEdit ? () => openCrud("delete", "Process", proc.name, proc._id) : undefined}
               />
             ))
           )}
@@ -870,17 +875,19 @@ export function MillerColumns() {
 
           <div className="flex-1 overflow-y-auto scrollbar-hide">
             <div className="space-y-6 p-4 md:p-6">
-              {/* Record a Conversation */}
-              <Button
-                size="lg"
-                className="w-full gap-2"
-                onClick={() => setRecordingOpen(true)}
-              >
-                <Mic className="h-4 w-4" />
-                Record a Conversation
-              </Button>
+              {/* Record a Conversation — contributors and admins only */}
+              {canEdit && (
+                <Button
+                  size="lg"
+                  className="w-full gap-2"
+                  onClick={() => setRecordingOpen(true)}
+                >
+                  <Mic className="h-4 w-4" />
+                  Record a Conversation
+                </Button>
+              )}
 
-              {selectedProcessId && (
+              {canEdit && selectedProcessId && (
                 <RecordingModal
                   open={recordingOpen}
                   onOpenChange={setRecordingOpen}
@@ -918,7 +925,7 @@ export function MillerColumns() {
                     ) : (
                       <MarkdownSummary content={selectedProcess.rollingSummary} />
                     )}
-                    {selectedProcessId && (processConversations?.filter(c => c.status === "done").length ?? 0) > 1 && (
+                    {canEdit && selectedProcessId && (processConversations?.filter(c => c.status === "done").length ?? 0) > 1 && (
                       <Button
                         variant="outline"
                         size="sm"

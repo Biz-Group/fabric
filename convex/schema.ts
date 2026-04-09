@@ -12,6 +12,7 @@ export default defineSchema({
     department: v.optional(v.string()),
     hireDate: v.optional(v.string()),
     profileComplete: v.boolean(),
+    role: v.optional(v.union(v.literal("admin"), v.literal("contributor"), v.literal("viewer"))),
   })
     .index("by_tokenIdentifier", ["tokenIdentifier"])
     .index("by_email", ["email"]),

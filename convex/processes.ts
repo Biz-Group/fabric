@@ -1,7 +1,7 @@
 import { v } from "convex/values";
 import { query, mutation } from "./_generated/server";
 import { internal } from "./_generated/api";
-import { requireAuth } from "./lib/auth";
+import { requireAuth, requireContributor } from "./lib/auth";
 
 export const listByDepartment = query({
   args: { departmentId: v.id("departments") },
@@ -28,7 +28,7 @@ export const get = query({
 export const create = mutation({
   args: { departmentId: v.id("departments"), name: v.string() },
   handler: async (ctx, args) => {
-    await requireAuth(ctx);
+    await requireContributor(ctx);
     const existing = await ctx.db
       .query("processes")
       .withIndex("by_departmentId", (q) => q.eq("departmentId", args.departmentId))
@@ -55,7 +55,7 @@ export const update = mutation({
     departmentId: v.optional(v.id("departments")),
   },
   handler: async (ctx, args) => {
-    await requireAuth(ctx);
+    await requireContributor(ctx);
     const proc = await ctx.db.get(args.processId);
     if (!proc) throw new Error("Process not found");
 
@@ -110,7 +110,7 @@ export const update = mutation({
 export const remove = mutation({
   args: { processId: v.id("processes") },
   handler: async (ctx, args) => {
-    await requireAuth(ctx);
+    await requireContributor(ctx);
     // Delete child conversations
     const conversations = await ctx.db
       .query("conversations")

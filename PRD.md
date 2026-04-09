@@ -4,7 +4,7 @@
 
 ---
 
-**Version:** 0.7 (POC — Audio Streamed from ElevenLabs + User Authentication)
+**Version:** 0.8 (POC — Audio Streamed from ElevenLabs + User Authentication + RBAC)
 **Author:** Saish / Biz Group
 **Date:** March 2026
 **Status:** Draft
@@ -485,7 +485,7 @@ const process = useQuery(api.processes.get, { processId: selectedProcessId });
 **Provider:** Clerk (hosted auth with prebuilt UI components)
 **Sign-in method:** Email + password (managed by Clerk)
 **Tenancy:** Single-tenant (one organization)
-**RBAC:** Not implemented for POC — all authenticated users get full access
+**RBAC:** Three roles — **admin** (full access + user management + future admin dashboard), **contributor** (CRUD + recording + viewing), **viewer** (browse hierarchy + view summaries only). Roles stored in Convex `users` table. New users default to `viewer`; admins promote via `setUserRole` mutation. Role checks enforced server-side via `requireContributor`/`requireAdmin` helpers in `convex/lib/auth.ts`. Frontend conditionally renders CRUD controls, Record button, and admin features based on `user.role` from `getMe` query.
 
 **Why Clerk:** First-class Convex integration via JWT validation. Prebuilt `<SignIn />`, `<SignUp />`, and `<UserButton />` React components — no custom auth UI to build or maintain. Clerk handles all auth infrastructure (account creation, password hashing, session management, JWT signing) externally, keeping the Convex backend focused on business logic. Can be extended with SSO/SAML and organization management for enterprise use.
 
@@ -501,6 +501,7 @@ const process = useQuery(api.processes.get, { processId: selectedProcessId });
 | `department` | optional string | Org department (e.g., "Payroll") — selected from `departments` table |
 | `hireDate` | optional string | ISO date string |
 | `profileComplete` | boolean | `false` until onboarding is done |
+| `role` | optional string | `"admin"` \| `"contributor"` \| `"viewer"` — defaults to `"viewer"` on creation. `v.optional` for backward compatibility with existing docs (treated as `"viewer"` when undefined) |
 
 **Conversations table change:** Add optional `userId` field (`v.id("users")`) linking conversations to authenticated users. The existing `contributorName` field is preserved as a denormalized display name.
 
@@ -513,6 +514,9 @@ const process = useQuery(api.processes.get, { processId: selectedProcessId });
 6. After completing onboarding → user accesses the main app
 7. All Convex queries/mutations require authentication via `ctx.auth.getUserIdentity()`
 8. User identity is never passed as a function argument — always derived server-side
+9. Write mutations (create/update/delete on hierarchy, recording conversations) require `contributor` or `admin` role — enforced server-side via `requireContributor(ctx)` in `convex/lib/auth.ts`
+10. User role management (`setUserRole`, `listAllUsers`) requires `admin` role — enforced via `requireAdmin(ctx)`
+11. Frontend conditionally renders CRUD buttons, Record button, and admin features based on `user.role` from `getMe` query
 
 **Packages:** `@clerk/nextjs`
 **Config files:** `convex/auth.config.ts` (Clerk JWT issuer), `src/proxy.ts` (Clerk middleware)
@@ -762,6 +766,7 @@ Alternatively, the entire modal can use the **Conversation Bar** component, whic
 - **Move / reparent** — departments can be moved to a different function, and processes can be moved to a different department (including across functions) via the edit modal, which includes a location dropdown. When a process or department is moved, summaries on both old and new parents are marked stale. If the old parent has no remaining processes with summaries, its department summary is cleared automatically
 - **English only** for POC (ElevenLabs agent language set to `"en"`)
 - **User authentication** — Clerk with prebuilt sign-in/sign-up UI, Convex JWT validation, auth gates on all Convex functions, user profiles with organizational attributes (Job Title, Function, Department, Hire Date), required profile onboarding on first login, Clerk `<UserButton />` in header (Phase 5)
+- **Role-based access control** — three roles (admin, contributor, viewer) stored in Convex `users` table. Admin: full access + user role management + future admin dashboard. Contributor: CRUD hierarchy, record conversations, view summaries. Viewer: browse hierarchy and view summaries only (no CRUD, no recording). New users default to viewer. Role enforcement on both backend (server-side guards on mutations/actions) and frontend (conditional UI rendering). First admin bootstrapped via CLI. (Phase 12)
 - ElevenLabs voice agent integration via `@elevenlabs/react` SDK with dynamic context injection
 - Recording UI using **ElevenLabs UI** components (Orb, Conversation, Message, Waveform, Voice Button)
 - **Contributor name prompt** — auto-filled from authenticated user profile; shadcn Dialog still allows override before recording starts
@@ -782,9 +787,9 @@ Alternatively, the entire modal can use the **Conversation Bar** component, whic
 
 ### Out of Scope (Phase 2+)
 
-- Role-based access control (admin, contributor, viewer roles)
+- ~~Role-based access control (admin, contributor, viewer roles)~~ → **Moved to Phase 1 (see section 3.6)**
 - Conversation deletion / editing
-- Admin UI for managing the org hierarchy (bulk import/export, role-based editing permissions)
+- Admin UI for managing the org hierarchy (bulk import/export, admin dashboard)
 - Semantic search and Q&A over captured knowledge ("Ask Fabric")
 - Onboarding flows for new joiners
 - Integrations (Slack, Teams, email digests)
@@ -807,6 +812,7 @@ Alternatively, the entire modal can use the **Conversation Bar** component, whic
 8. A synthesized process summary box is visible at the top of each process and updates with each new conversation.
 9. The app is usable on mobile viewports (stacked navigation) and desktop (Miller columns).
 10. Only authenticated users can access the app. Users can sign up, sign in, complete a profile with organizational attributes, and sign out. Conversations are linked to authenticated user identities.
+11. Viewers can browse the hierarchy and view summaries but cannot create/edit/delete items or record conversations. Contributors can do everything viewers can plus CRUD and recording. Admins can do everything contributors can plus manage user roles.
 
 ---
 

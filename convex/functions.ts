@@ -1,6 +1,6 @@
 import { v } from "convex/values";
 import { query, mutation } from "./_generated/server";
-import { requireAuth } from "./lib/auth";
+import { requireAuth, requireContributor } from "./lib/auth";
 
 export const list = query({
   args: {},
@@ -24,7 +24,7 @@ export const get = query({
 export const create = mutation({
   args: { name: v.string() },
   handler: async (ctx, args) => {
-    await requireAuth(ctx);
+    await requireContributor(ctx);
     const existing = await ctx.db.query("functions").order("desc").take(1);
     const maxSortOrder = existing.length > 0 ? existing[0].sortOrder : 0;
     return await ctx.db.insert("functions", {
@@ -37,7 +37,7 @@ export const create = mutation({
 export const update = mutation({
   args: { functionId: v.id("functions"), name: v.string() },
   handler: async (ctx, args) => {
-    await requireAuth(ctx);
+    await requireContributor(ctx);
     await ctx.db.patch(args.functionId, { name: args.name });
   },
 });
@@ -45,7 +45,7 @@ export const update = mutation({
 export const remove = mutation({
   args: { functionId: v.id("functions") },
   handler: async (ctx, args) => {
-    await requireAuth(ctx);
+    await requireContributor(ctx);
     // Delete child departments and their processes
     const departments = await ctx.db
       .query("departments")
