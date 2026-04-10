@@ -51,9 +51,7 @@ export async function requireRole(
 
   const role = effectiveRole(user);
   if (ROLE_HIERARCHY[role] < ROLE_HIERARCHY[minimumRole]) {
-    throw new Error(
-      `Insufficient permissions: requires "${minimumRole}", you have "${role}"`,
-    );
+    throw new Error("Insufficient permissions");
   }
 
   return user;
@@ -80,8 +78,6 @@ export function checkRoleFromUser(
   if (!user) throw new Error("User record not found");
   const role = (user.role ?? "viewer") as Role;
   if (ROLE_HIERARCHY[role] < ROLE_HIERARCHY[minimumRole]) {
-    throw new Error(
-      `Insufficient permissions: requires "${minimumRole}", you have "${role}"`,
-    );
+    throw new Error("Insufficient permissions");
   }
 }

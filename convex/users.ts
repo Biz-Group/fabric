@@ -134,9 +134,27 @@ export const setUserRole = mutation({
     role: v.union(v.literal("admin"), v.literal("contributor"), v.literal("viewer")),
   },
   handler: async (ctx, args) => {
-    await requireAdmin(ctx);
+    const caller = await requireAdmin(ctx);
+
+    // Prevent self-demotion
+    if (caller._id === args.targetUserId) {
+      throw new Error("Cannot change your own role");
+    }
+
     const target = await ctx.db.get(args.targetUserId);
     if (!target) throw new Error("Target user not found");
+
+    // Prevent removing the last admin
+    if (target.role === "admin" && args.role !== "admin") {
+      const admins = await ctx.db
+        .query("users")
+        .filter((q) => q.eq(q.field("role"), "admin"))
+        .collect();
+      if (admins.length <= 1) {
+        throw new Error("Cannot demote the last admin");
+      }
+    }
+
     await ctx.db.patch(args.targetUserId, { role: args.role });
   },
 });
@@ -145,7 +163,7 @@ export const listAllUsers = query({
   args: {},
   handler: async (ctx) => {
     await requireAdmin(ctx);
-    return await ctx.db.query("users").collect();
+    return await ctx.db.query("users").take(1000);
   },
 });
 

@@ -14,8 +14,8 @@ import { requireAuth, checkRoleFromUser } from "./lib/auth";
 // Our UI expects { role: "ai"|"user", content: string, time_in_call_secs: number }
 function normalizeTranscript(
   raw: Array<{ role: string; message?: string; time_in_call_secs?: number }> | null,
-): Array<{ role: string; content: string; time_in_call_secs: number }> | null {
-  if (!raw || !Array.isArray(raw)) return null;
+): Array<{ role: string; content: string; time_in_call_secs: number }> | undefined {
+  if (!raw || !Array.isArray(raw)) return undefined;
   return raw.map((msg) => ({
     role: msg.role === "agent" ? "ai" : msg.role,
     content: msg.message ?? "",
@@ -31,11 +31,23 @@ export const insertConversation = internalMutation({
     elevenlabsConversationId: v.string(),
     contributorName: v.string(),
     userId: v.optional(v.id("users")),
-    transcript: v.optional(v.any()),
+    transcript: v.optional(
+      v.array(
+        v.object({
+          role: v.string(),
+          content: v.string(),
+          time_in_call_secs: v.number(),
+        }),
+      ),
+    ),
     summary: v.optional(v.string()),
     analysis: v.optional(v.any()),
     durationSeconds: v.optional(v.number()),
-    status: v.string(),
+    status: v.union(
+      v.literal("processing"),
+      v.literal("done"),
+      v.literal("failed"),
+    ),
   },
   handler: async (ctx, args) => {
     return await ctx.db.insert("conversations", {
@@ -129,10 +141,9 @@ export const fetchConversation = action({
   args: {
     elevenlabsConversationId: v.string(),
     processId: v.id("processes"),
-    contributorName: v.string(),
   },
   handler: async (ctx, args) => {
-    // Auth: derive userId server-side
+    // Auth: derive userId and contributorName server-side
     const identity = await requireAuth(ctx);
     const user = await ctx.runQuery(
       internal.postCall.getUserByToken,
@@ -141,6 +152,7 @@ export const fetchConversation = action({
     // Role check: recording requires contributor
     checkRoleFromUser(user, "contributor");
     const userId = user?._id ?? undefined;
+    const contributorName = user?.name ?? "Anonymous";
 
     const apiKey = process.env.ELEVENLABS_API_KEY;
     if (!apiKey) {
@@ -174,7 +186,7 @@ export const fetchConversation = action({
           await ctx.runMutation(internal.postCall.insertConversation, {
             processId: args.processId,
             elevenlabsConversationId: args.elevenlabsConversationId,
-            contributorName: args.contributorName,
+            contributorName,
             userId,
             status: "failed",
           });
@@ -202,7 +214,7 @@ export const fetchConversation = action({
         await ctx.runMutation(internal.postCall.insertConversation, {
           processId: args.processId,
           elevenlabsConversationId: args.elevenlabsConversationId,
-          contributorName: args.contributorName,
+          contributorName,
           userId,
           status: "failed",
         });
@@ -222,7 +234,7 @@ export const fetchConversation = action({
         await ctx.runMutation(internal.postCall.insertConversation, {
           processId: args.processId,
           elevenlabsConversationId: args.elevenlabsConversationId,
-          contributorName: args.contributorName,
+          contributorName,
           userId,
           transcript,
           summary,
@@ -245,7 +257,7 @@ export const fetchConversation = action({
         await ctx.runMutation(internal.postCall.insertConversation, {
           processId: args.processId,
           elevenlabsConversationId: args.elevenlabsConversationId,
-          contributorName: args.contributorName,
+          contributorName,
           userId,
           status: "failed",
         });
@@ -260,7 +272,7 @@ export const fetchConversation = action({
     await ctx.runMutation(internal.postCall.insertConversation, {
       processId: args.processId,
       elevenlabsConversationId: args.elevenlabsConversationId,
-      contributorName: args.contributorName,
+      contributorName,
       userId,
       status: "processing",
     });
@@ -282,12 +294,26 @@ export const getUserByToken = internalQuery({
   },
 });
 
+// Helper query: verify an ElevenLabs conversation ID exists in our DB
+export const conversationExistsByElevenLabsId = internalQuery({
+  args: { elevenlabsConversationId: v.string() },
+  handler: async (ctx, args) => {
+    const conv = await ctx.db
+      .query("conversations")
+      .withIndex("by_elevenlabsConversationId", (q) =>
+        q.eq("elevenlabsConversationId", args.elevenlabsConversationId),
+      )
+      .first();
+    return conv !== null;
+  },
+});
+
 // --- Internal helper: get all imported ElevenLabs conversation IDs ---
 
 export const getImportedConversationIds = internalQuery({
   args: {},
   handler: async (ctx) => {
-    const conversations = await ctx.db.query("conversations").collect();
+    const conversations = await ctx.db.query("conversations").take(10000);
     return conversations.map((c) => c.elevenlabsConversationId);
   },
 });

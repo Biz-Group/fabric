@@ -272,6 +272,32 @@ export function MillerColumns() {
   const [crudTargetId, setCrudTargetId] = useState<string | null>(null);
   const [crudCurrentLocationId, setCrudCurrentLocationId] = useState<string | null>(null);
 
+  // Child-count queries for delete pre-check
+  const deleteFnChildCount = useQuery(
+    api.functions.childCount,
+    crudMode === "delete" && crudEntity === "Function" && crudTargetId
+      ? { functionId: crudTargetId as Id<"functions"> }
+      : "skip"
+  );
+  const deleteDeptChildCount = useQuery(
+    api.departments.childCount,
+    crudMode === "delete" && crudEntity === "Department" && crudTargetId
+      ? { departmentId: crudTargetId as Id<"departments"> }
+      : "skip"
+  );
+  const deleteProcChildCount = useQuery(
+    api.processes.childCount,
+    crudMode === "delete" && crudEntity === "Process" && crudTargetId
+      ? { processId: crudTargetId as Id<"processes"> }
+      : "skip"
+  );
+  const deleteChildCount =
+    crudEntity === "Function"
+      ? deleteFnChildCount
+      : crudEntity === "Department"
+        ? deleteDeptChildCount
+        : deleteProcChildCount;
+
   const openCrud = useCallback(
     (
       mode: "create" | "edit" | "delete",
@@ -1025,6 +1051,7 @@ export function MillerColumns() {
               ? "Department"
               : undefined
         }
+        childCount={crudMode === "delete" ? deleteChildCount : undefined}
         onConfirm={handleCrudConfirm}
       />
     </div>

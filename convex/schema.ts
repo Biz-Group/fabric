@@ -48,13 +48,28 @@ export default defineSchema({
     elevenlabsConversationId: v.string(),
     contributorName: v.string(),
     userId: v.optional(v.id("users")),
-    transcript: v.optional(v.any()),
+    transcript: v.optional(
+      v.array(
+        v.object({
+          role: v.string(),
+          content: v.string(),
+          time_in_call_secs: v.number(),
+        }),
+      ),
+    ),
     summary: v.optional(v.string()),
+    // Opaque ElevenLabs analysis payload — kept as v.any() because the
+    // upstream schema is not under our control and may change.
     analysis: v.optional(v.any()),
     durationSeconds: v.optional(v.number()),
-    status: v.string(), // "processing" | "done" | "failed"
+    status: v.union(
+      v.literal("processing"),
+      v.literal("done"),
+      v.literal("failed"),
+    ),
   })
     .index("by_processId", ["processId"])
     .index("by_status", ["status"])
-    .index("by_userId", ["userId"]),
+    .index("by_userId", ["userId"])
+    .index("by_elevenlabsConversationId", ["elevenlabsConversationId"]),
 });

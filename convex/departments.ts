@@ -97,17 +97,30 @@ export const update = mutation({
   },
 });
 
+export const childCount = query({
+  args: { departmentId: v.id("departments") },
+  handler: async (ctx, args) => {
+    await requireAuth(ctx);
+    const children = await ctx.db
+      .query("processes")
+      .withIndex("by_departmentId", (q) => q.eq("departmentId", args.departmentId))
+      .collect();
+    return children.length;
+  },
+});
+
 export const remove = mutation({
   args: { departmentId: v.id("departments") },
   handler: async (ctx, args) => {
     await requireContributor(ctx);
-    // Delete child processes
-    const processes = await ctx.db
+    const children = await ctx.db
       .query("processes")
       .withIndex("by_departmentId", (q) => q.eq("departmentId", args.departmentId))
-      .collect();
-    for (const proc of processes) {
-      await ctx.db.delete(proc._id);
+      .take(1);
+    if (children.length > 0) {
+      throw new Error(
+        "Cannot delete this department because it still has processes. Remove all processes first."
+      );
     }
     const dept = await ctx.db.get(args.departmentId);
     const functionId = dept?.functionId;

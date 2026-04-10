@@ -39,6 +39,8 @@ interface CrudDialogProps {
   currentLocationId?: string;
   locationOptions?: LocationOption[];
   locationLabel?: string;
+  /** Number of children the target entity has. Used in delete mode to block deletion. undefined = still loading. */
+  childCount?: number;
   onConfirm: (name: string, newLocationId?: string) => Promise<void>;
 }
 
@@ -51,6 +53,7 @@ export function CrudDialog({
   currentLocationId,
   locationOptions,
   locationLabel,
+  childCount,
   onConfirm,
 }: CrudDialogProps) {
   const [name, setName] = useState("");
@@ -58,20 +61,25 @@ export function CrudDialog({
     string | undefined
   >(undefined);
   const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     if (open) {
       setName(mode === "edit" ? currentName ?? "" : "");
       setSelectedLocationId(mode === "edit" ? currentLocationId : undefined);
+      setError(null);
     }
   }, [open, mode, currentName, currentLocationId]);
 
   const handleSubmit = async () => {
     if (mode !== "delete" && !name.trim()) return;
     setLoading(true);
+    setError(null);
     try {
       await onConfirm(name.trim(), selectedLocationId);
       onOpenChange(false);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Something went wrong.");
     } finally {
       setLoading(false);
     }
@@ -115,8 +123,23 @@ export function CrudDialog({
           <DialogTitle>{title}</DialogTitle>
           {mode === "delete" ? (
             <DialogDescription>
-              Are you sure you want to delete <strong>{currentName}</strong>? All
-              child items will also be removed. This action cannot be undone.
+              {childCount !== undefined && childCount > 0 ? (
+                <>
+                  <strong>{currentName}</strong> cannot be deleted because it has{" "}
+                  {childCount}{" "}
+                  {entityType === "Function"
+                    ? childCount === 1 ? "department" : "departments"
+                    : entityType === "Department"
+                      ? childCount === 1 ? "process" : "processes"
+                      : childCount === 1 ? "conversation" : "conversations"}
+                  . Remove all child items first.
+                </>
+              ) : (
+                <>
+                  Are you sure you want to delete <strong>{currentName}</strong>?
+                  This action cannot be undone.
+                </>
+              )}
             </DialogDescription>
           ) : (
             <DialogDescription>
@@ -180,6 +203,10 @@ export function CrudDialog({
           </div>
         )}
 
+        {error && (
+          <p className="text-sm text-destructive">{error}</p>
+        )}
+
         <DialogFooter>
           <DialogClose render={<Button variant="outline" size="sm" />}>
             Cancel
@@ -187,7 +214,12 @@ export function CrudDialog({
           <Button
             size="sm"
             variant={mode === "delete" ? "destructive" : "default"}
-            disabled={loading || (mode !== "delete" && !name.trim())}
+            disabled={
+              loading ||
+              !!error ||
+              (mode === "delete" && (childCount === undefined || childCount > 0)) ||
+              (mode !== "delete" && !name.trim())
+            }
             onClick={handleSubmit}
           >
             {loading

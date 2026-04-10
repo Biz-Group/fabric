@@ -1,7 +1,12 @@
 import { httpRouter } from "convex/server";
 import { httpAction } from "./_generated/server";
+import { internal } from "./_generated/api";
 
 const http = httpRouter();
+
+function getAllowedOrigin(): string {
+  return process.env.CLIENT_ORIGIN ?? "*";
+}
 
 // Audio proxy: streams MP3 audio from ElevenLabs without exposing the API key.
 // Frontend calls GET /audio/{elevenlabsConversationId} — we use pathPrefix
@@ -9,13 +14,30 @@ const http = httpRouter();
 http.route({
   pathPrefix: "/audio/",
   method: "GET",
-  handler: httpAction(async (_ctx, req) => {
+  handler: httpAction(async (ctx, req) => {
+    const origin = getAllowedOrigin();
+
     const url = new URL(req.url);
     // Path is /audio/{id} — grab everything after "/audio/"
     const elevenlabsConversationId = url.pathname.replace(/^\/audio\//, "");
 
     if (!elevenlabsConversationId) {
       return new Response("Missing conversation ID", { status: 400 });
+    }
+
+    // Verify caller is authenticated
+    const identity = await ctx.auth.getUserIdentity();
+    if (!identity) {
+      // Fall back to DB check — <audio> elements can't send auth headers,
+      // so we verify the conversation exists in our DB to prevent
+      // enumeration of arbitrary ElevenLabs conversation IDs.
+      const exists: boolean = await ctx.runQuery(
+        internal.postCall.conversationExistsByElevenLabsId,
+        { elevenlabsConversationId },
+      );
+      if (!exists) {
+        return new Response("Not found", { status: 404 });
+      }
     }
 
     const apiKey = process.env.ELEVENLABS_API_KEY;
@@ -45,7 +67,7 @@ http.route({
         "Content-Type": "audio/mpeg",
         "Content-Length": audioBytes.byteLength.toString(),
         "Cache-Control": "public, max-age=3600",
-        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Origin": origin,
       },
     });
   }),
@@ -56,10 +78,11 @@ http.route({
   pathPrefix: "/audio/",
   method: "OPTIONS",
   handler: httpAction(async () => {
+    const origin = getAllowedOrigin();
     return new Response(null, {
       status: 204,
       headers: {
-        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Origin": origin,
         "Access-Control-Allow-Methods": "GET, OPTIONS",
         "Access-Control-Allow-Headers": "Content-Type",
         "Access-Control-Max-Age": "86400",

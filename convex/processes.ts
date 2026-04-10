@@ -107,17 +107,30 @@ export const update = mutation({
   },
 });
 
+export const childCount = query({
+  args: { processId: v.id("processes") },
+  handler: async (ctx, args) => {
+    await requireAuth(ctx);
+    const children = await ctx.db
+      .query("conversations")
+      .withIndex("by_processId", (q) => q.eq("processId", args.processId))
+      .collect();
+    return children.length;
+  },
+});
+
 export const remove = mutation({
   args: { processId: v.id("processes") },
   handler: async (ctx, args) => {
     await requireContributor(ctx);
-    // Delete child conversations
-    const conversations = await ctx.db
+    const children = await ctx.db
       .query("conversations")
       .withIndex("by_processId", (q) => q.eq("processId", args.processId))
-      .collect();
-    for (const conv of conversations) {
-      await ctx.db.delete(conv._id);
+      .take(1);
+    if (children.length > 0) {
+      throw new Error(
+        "Cannot delete this process because it still has conversations. Remove all conversations first."
+      );
     }
     const process = await ctx.db.get(args.processId);
     const departmentId = process?.departmentId;

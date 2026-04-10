@@ -2,7 +2,7 @@ import { v } from "convex/values";
 import { action } from "./_generated/server";
 import { internal } from "./_generated/api";
 import { Doc, Id } from "./_generated/dataModel";
-import { requireAuth } from "./lib/auth";
+import { requireAuth, checkRoleFromUser } from "./lib/auth";
 
 // --- Shared Prompt Constants ---
 
@@ -61,7 +61,12 @@ export const generateDepartmentSummary = action({
     forceRefresh: v.optional(v.boolean()),
   },
   handler: async (ctx, args): Promise<{ summary: string | null; message: string | null }> => {
-    await requireAuth(ctx);
+    const identity = await requireAuth(ctx);
+    const user = await ctx.runQuery(
+      internal.postCall.getUserByToken,
+      { tokenIdentifier: identity.tokenIdentifier },
+    );
+    checkRoleFromUser(user, "contributor");
 
     // Token guard: skip LLM call if summary is fresh
     const dept: Doc<"departments"> | null = await ctx.runQuery(
@@ -169,7 +174,12 @@ export const generateFunctionSummary = action({
     forceRefresh: v.optional(v.boolean()),
   },
   handler: async (ctx, args): Promise<{ summary: string | null; message: string | null }> => {
-    await requireAuth(ctx);
+    const identity = await requireAuth(ctx);
+    const user = await ctx.runQuery(
+      internal.postCall.getUserByToken,
+      { tokenIdentifier: identity.tokenIdentifier },
+    );
+    checkRoleFromUser(user, "contributor");
 
     // Token guard: skip LLM call if summary is fresh
     const func: Doc<"functions"> | null = await ctx.runQuery(
@@ -310,7 +320,12 @@ export const forceRefreshProcessSummary = action({
     processId: v.id("processes"),
   },
   handler: async (ctx, args): Promise<{ message: string | null }> => {
-    await requireAuth(ctx);
+    const identity = await requireAuth(ctx);
+    const user = await ctx.runQuery(
+      internal.postCall.getUserByToken,
+      { tokenIdentifier: identity.tokenIdentifier },
+    );
+    checkRoleFromUser(user, "contributor");
     await ctx.scheduler.runAfter(0, internal.postCall.regenerateProcessSummary, {
       processId: args.processId,
       forceRefresh: true,

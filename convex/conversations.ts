@@ -10,6 +10,6 @@ export const listByProcess = query({
       .query("conversations")
       .withIndex("by_processId", (q) => q.eq("processId", args.processId))
       .order("desc")
-      .collect();
+      .take(200);
   },
 });

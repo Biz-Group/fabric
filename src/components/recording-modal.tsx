@@ -280,7 +280,6 @@ export function RecordingModal({
         fetchConversation({
           elevenlabsConversationId: currentConvId,
           processId,
-          contributorName: contributorName.trim(),
         })
           .then((result) => {
             setPostCallResult({ status: result.status });
