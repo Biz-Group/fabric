@@ -15,6 +15,7 @@ import {
   AudioPlayerProvider,
   AudioPlayerButton,
   AudioPlayerProgress,
+  useAudioPlayer,
 } from "@/components/ui/audio-player";
 import {
   MessageSquare,
@@ -55,6 +56,67 @@ interface TranscriptMessage {
   role: string;
   content: string;
   time_in_call_secs: number;
+}
+
+// --- Speed Toggle ---
+
+function SpeedToggle({ itemId }: { itemId: string | number }) {
+  const player = useAudioPlayer();
+  const isActive = player.isItemActive(itemId);
+  const is2x = isActive && player.playbackRate === 2;
+
+  return (
+    <button
+      type="button"
+      onClick={() => player.setPlaybackRate(is2x ? 1 : 2)}
+      className={cn(
+        "shrink-0 rounded px-1.5 py-0.5 text-[10px] font-semibold tabular-nums transition-colors",
+        is2x
+          ? "bg-primary text-primary-foreground"
+          : "bg-muted text-muted-foreground hover:text-foreground"
+      )}
+      aria-label={is2x ? "Switch to normal speed" : "Switch to 2x speed"}
+    >
+      2x
+    </button>
+  );
+}
+
+// --- Per-Conversation Audio Controls ---
+
+function ConversationAudioControls({
+  conversationId,
+  audioUrl,
+  durationSeconds,
+}: {
+  conversationId: Id<"conversations">;
+  audioUrl: string;
+  durationSeconds?: number;
+}) {
+  const player = useAudioPlayer();
+  const isActive = player.isItemActive(conversationId);
+
+  return (
+    <div className="flex items-center gap-3">
+      <AudioPlayerButton
+        item={{ id: conversationId, src: audioUrl }}
+        variant="ghost"
+        size="icon"
+        className="h-8 w-8 shrink-0"
+      />
+      {isActive ? (
+        <AudioPlayerProgress className="flex-1" />
+      ) : (
+        <div className="flex h-4 flex-1 items-center">
+          <div className="h-[4px] w-full rounded-full bg-muted" />
+        </div>
+      )}
+      <SpeedToggle itemId={conversationId} />
+      <span className="shrink-0 text-xs tabular-nums text-muted-foreground">
+        {durationSeconds != null ? formatDuration(durationSeconds) : "--:--"}
+      </span>
+    </div>
+  );
 }
 
 // --- Conversation Entry ---
@@ -133,23 +195,11 @@ function ConversationEntry({
 
         {/* Audio Player — play/pause + scrub bar + duration */}
         {conversation.status === "done" && (
-          <div className="flex items-center gap-3">
-            <AudioPlayerButton
-              item={{
-                id: conversation._id,
-                src: audioUrl,
-              }}
-              variant="ghost"
-              size="icon"
-              className="h-8 w-8 shrink-0"
-            />
-            <AudioPlayerProgress className="flex-1" />
-            <span className="shrink-0 text-xs tabular-nums text-muted-foreground">
-              {conversation.durationSeconds != null
-                ? formatDuration(conversation.durationSeconds)
-                : "--:--"}
-            </span>
-          </div>
+          <ConversationAudioControls
+            conversationId={conversation._id}
+            audioUrl={audioUrl}
+            durationSeconds={conversation.durationSeconds ?? undefined}
+          />
         )}
 
         {/* Full transcript — collapsible, default collapsed */}

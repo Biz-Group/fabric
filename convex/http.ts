@@ -60,12 +60,37 @@ http.route({
     // Buffer the full response — Convex HTTP actions don't support
     // streaming a ReadableStream body directly.
     const audioBytes = await upstream.arrayBuffer();
+    const totalSize = audioBytes.byteLength;
+
+    // Support Range requests so the browser can seek within the audio.
+    const rangeHeader = req.headers.get("Range");
+    if (rangeHeader) {
+      const match = rangeHeader.match(/bytes=(\d+)-(\d*)/);
+      if (match) {
+        const start = parseInt(match[1], 10);
+        const end = match[2] ? parseInt(match[2], 10) : totalSize - 1;
+        const chunk = audioBytes.slice(start, end + 1);
+
+        return new Response(chunk, {
+          status: 206,
+          headers: {
+            "Content-Type": "audio/mpeg",
+            "Content-Length": chunk.byteLength.toString(),
+            "Content-Range": `bytes ${start}-${end}/${totalSize}`,
+            "Accept-Ranges": "bytes",
+            "Cache-Control": "public, max-age=3600",
+            "Access-Control-Allow-Origin": origin,
+          },
+        });
+      }
+    }
 
     return new Response(audioBytes, {
       status: 200,
       headers: {
         "Content-Type": "audio/mpeg",
-        "Content-Length": audioBytes.byteLength.toString(),
+        "Content-Length": totalSize.toString(),
+        "Accept-Ranges": "bytes",
         "Cache-Control": "public, max-age=3600",
         "Access-Control-Allow-Origin": origin,
       },
@@ -84,7 +109,7 @@ http.route({
       headers: {
         "Access-Control-Allow-Origin": origin,
         "Access-Control-Allow-Methods": "GET, OPTIONS",
-        "Access-Control-Allow-Headers": "Content-Type",
+        "Access-Control-Allow-Headers": "Content-Type, Range",
         "Access-Control-Max-Age": "86400",
       },
     });
