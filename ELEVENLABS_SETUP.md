@@ -261,15 +261,34 @@ Add the following criteria (these produce boolean results per conversation):
 
 #### Data Collection
 
-Add the following extraction fields:
+##### Core graph fields (JSON-structured strings)
+
+These fields output structured JSON that the process flow extraction pipeline consumes directly. They replace the legacy `steps_described` and `tools_mentioned` fields.
+
+| Field Name | Type | Description |
+|---|---|---|
+| `process_steps` | String | Extract the process steps as a JSON array of objects. Each step has: `id` (kebab-case), `name`, `type` (action/decision/handoff/wait), `actor`, `tools` (array), `duration` (or null). See plan for full prompt. |
+| `step_connections` | String | Extract how steps connect as a JSON array: `{from, to, condition}`. Condition is null for sequential flow. |
+| `step_issues` | String | For steps with problems, extract: `{step_id, pain_point, is_bottleneck, bottleneck_reason, automation_potential, workaround}`. |
+
+##### Qualitative context fields (plain strings)
+
+| Field Name | Type | Description |
+|---|---|---|
+| `dependencies` | String | People, teams, or external parties the contributor depends on |
+| `frequency` | String | How often the process runs (e.g., "weekly", "monthly", "daily") |
+| `edge_cases` | String | Edge cases, exceptions, or "when things go wrong" scenarios described |
+| `total_process_duration` | String | End-to-end process duration if mentioned (e.g., "5-7 business days"). Null if not mentioned. |
+| `compliance_or_approvals` | String | Approval gates, sign-offs, or compliance checks. Format: "check — who approves". Null if none. |
+
+##### Legacy fields (deprecated — keep for backward compatibility)
 
 | Field Name | Type | Description |
 |---|---|---|
 | `steps_described` | List of strings | The specific steps the contributor described in their process |
 | `tools_mentioned` | List of strings | Tools, software, or systems the contributor mentioned using |
-| `dependencies` | List of strings | People, teams, or external parties the contributor depends on |
-| `frequency` | String | How often the process runs (e.g., "weekly", "monthly", "daily") |
-| `edge_cases` | List of strings | Edge cases, exceptions, or "when things go wrong" scenarios described |
+
+> **Note:** The code handles both new structured fields and legacy flat fields gracefully. Conversations recorded before the field restructure will use `steps_described`/`tools_mentioned`; newer conversations use `process_steps`/`step_connections`/`step_issues`.
 
 #### Where these results end up
 

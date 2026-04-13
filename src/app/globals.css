@@ -138,3 +138,49 @@
     }
   }
 }
+
+/* React Flow theme overrides — map to Shadcn/Tailwind CSS variables */
+.react-flow {
+  --xy-background-color: var(--background);
+  --xy-node-border-radius: var(--radius);
+  --xy-edge-stroke: var(--border);
+  --xy-edge-stroke-selected: var(--primary);
+  --xy-connectionline-stroke: var(--primary);
+  --xy-minimap-background: var(--muted);
+  --xy-minimap-mask-background: oklch(0 0 0 / 8%);
+  --xy-controls-button-background: var(--background);
+  --xy-controls-button-border-color: var(--border);
+  --xy-controls-button-color: var(--foreground);
+}
+
+.dark .react-flow {
+  --xy-minimap-mask-background: oklch(0 0 0 / 30%);
+}
+
+/* Remove default React Flow node styling — we use custom card nodes */
+.react-flow__node {
+  padding: 0;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  font-size: inherit;
+  color: inherit;
+  width: auto;
+}
+
+.react-flow__node.selected {
+  box-shadow: none;
+}
+
+/* Edge hover: thicken and brighten */
+.react-flow__edge:hover .react-flow__edge-path {
+  stroke-width: 3 !important;
+  opacity: 1 !important;
+}
+
+/* Edge label badges */
+.react-flow__edgelabel-renderer .react-flow__edge-text {
+  font-size: 10px;
+  fill: var(--muted-foreground);
+}

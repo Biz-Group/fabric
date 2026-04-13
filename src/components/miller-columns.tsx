@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useCallback } from "react";
+import { useState, useCallback, lazy, Suspense } from "react";
 import { useQuery, useAction, useMutation } from "convex/react";
 import { api } from "../../convex/_generated/api";
 import type { Id } from "../../convex/_generated/dataModel";
@@ -42,6 +42,12 @@ import { UserMenu } from "@/components/user-menu";
 import { RecordingModal } from "@/components/recording-modal";
 import { CrudDialog } from "@/components/crud-dialog";
 import { MarkdownSummary } from "@/components/markdown-summary";
+import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
+import { GitBranch } from "lucide-react";
+
+const ProcessFlow = lazy(() =>
+  import("@/components/process-flow").then((m) => ({ default: m.ProcessFlow }))
+);
 
 // --- Types ---
 
@@ -899,99 +905,131 @@ export function MillerColumns() {
             </Breadcrumb>
           </div>
 
-          <div className="flex-1 overflow-y-auto scrollbar-hide">
-            <div className="space-y-6 p-4 md:p-6">
-              {/* Record a Conversation — contributors and admins only */}
-              {canEdit && (
-                <Button
-                  size="lg"
-                  className="w-full gap-2"
-                  onClick={() => setRecordingOpen(true)}
-                >
-                  <Mic className="h-4 w-4" />
-                  Record a Conversation
-                </Button>
-              )}
-
-              {canEdit && selectedProcessId && (
-                <RecordingModal
-                  open={recordingOpen}
-                  onOpenChange={setRecordingOpen}
-                  processId={selectedProcessId}
-                  processName={selectedProcessName}
-                  functionName={selectedFunctionName}
-                  departmentName={selectedDepartmentName}
-                />
-              )}
-
-              {/* Process Summary Card */}
-              <Card>
-                <CardHeader>
-                  <CardTitle className="flex items-center gap-2 text-base">
-                    <FileText className="h-4 w-4 text-muted-foreground" />
-                    Process Summary
-                  </CardTitle>
-                  {!selectedProcess?.rollingSummary && (
-                    <CardDescription>
-                      No summary yet — record a conversation to get started.
-                    </CardDescription>
-                  )}
-                </CardHeader>
-                {selectedProcess?.rollingSummary && (
-                  <CardContent className="space-y-3">
-                    {processSummaryRefreshing ? (
-                      <div className="relative">
-                        <div className="opacity-50">
-                          <MarkdownSummary content={selectedProcess.rollingSummary} />
-                        </div>
-                        <div className="absolute inset-0 flex items-center justify-center">
-                          <Loader2 className="h-6 w-6 animate-spin text-primary" />
-                        </div>
-                      </div>
-                    ) : (
-                      <MarkdownSummary content={selectedProcess.rollingSummary} />
-                    )}
-                    {canEdit && selectedProcessId && (processConversations?.filter(c => c.status === "done").length ?? 0) > 1 && (
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        className="gap-2"
-                        disabled={processSummaryRefreshing}
-                        onClick={async () => {
-                          if (!selectedProcessId) return;
-                          setProcessSummaryRefreshing(true);
-                          try {
-                            await forceRefreshProcessSummary({
-                              processId: selectedProcessId,
-                            });
-                          } catch {
-                            // Error is logged server-side
-                          } finally {
-                            setProcessSummaryRefreshing(false);
-                          }
-                        }}
-                      >
-                        {processSummaryRefreshing ? (
-                          <>
-                            <Loader2 className="h-4 w-4 animate-spin" />
-                            Rebuilding...
-                          </>
-                        ) : (
-                          <>
-                            <Sparkles className="h-4 w-4" />
-                            Rebuild from all transcripts
-                          </>
-                        )}
-                      </Button>
-                    )}
-                  </CardContent>
-                )}
-              </Card>
-
-              {/* Conversations section */}
-              <ConversationLog processId={selectedProcessId!} />
+          <Tabs defaultValue={0} className="flex flex-1 flex-col overflow-hidden gap-0">
+            <div className="shrink-0 border-b px-4">
+              <TabsList variant="line" className="h-9">
+                <TabsTrigger value={0} className="gap-1.5 text-xs">
+                  <Mic className="h-3.5 w-3.5" />
+                  Conversations
+                </TabsTrigger>
+                <TabsTrigger value={1} className="gap-1.5 text-xs">
+                  <GitBranch className="h-3.5 w-3.5" />
+                  Process Flow
+                </TabsTrigger>
+              </TabsList>
             </div>
-          </div>
+
+            {/* Conversations tab */}
+            <TabsContent value={0} className="flex-1 overflow-y-auto scrollbar-hide">
+              <div className="space-y-6 p-4 md:p-6">
+                {/* Record a Conversation — contributors and admins only */}
+                {canEdit && (
+                  <Button
+                    size="lg"
+                    className="w-full gap-2"
+                    onClick={() => setRecordingOpen(true)}
+                  >
+                    <Mic className="h-4 w-4" />
+                    Record a Conversation
+                  </Button>
+                )}
+
+                {canEdit && selectedProcessId && (
+                  <RecordingModal
+                    open={recordingOpen}
+                    onOpenChange={setRecordingOpen}
+                    processId={selectedProcessId}
+                    processName={selectedProcessName}
+                    functionName={selectedFunctionName}
+                    departmentName={selectedDepartmentName}
+                  />
+                )}
+
+                {/* Process Summary Card */}
+                <Card>
+                  <CardHeader>
+                    <CardTitle className="flex items-center gap-2 text-base">
+                      <FileText className="h-4 w-4 text-muted-foreground" />
+                      Process Summary
+                    </CardTitle>
+                    {!selectedProcess?.rollingSummary && (
+                      <CardDescription>
+                        No summary yet — record a conversation to get started.
+                      </CardDescription>
+                    )}
+                  </CardHeader>
+                  {selectedProcess?.rollingSummary && (
+                    <CardContent className="space-y-3">
+                      {processSummaryRefreshing ? (
+                        <div className="relative">
+                          <div className="opacity-50">
+                            <MarkdownSummary content={selectedProcess.rollingSummary} />
+                          </div>
+                          <div className="absolute inset-0 flex items-center justify-center">
+                            <Loader2 className="h-6 w-6 animate-spin text-primary" />
+                          </div>
+                        </div>
+                      ) : (
+                        <MarkdownSummary content={selectedProcess.rollingSummary} />
+                      )}
+                      {canEdit && selectedProcessId && (processConversations?.filter(c => c.status === "done").length ?? 0) > 1 && (
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          className="gap-2"
+                          disabled={processSummaryRefreshing}
+                          onClick={async () => {
+                            if (!selectedProcessId) return;
+                            setProcessSummaryRefreshing(true);
+                            try {
+                              await forceRefreshProcessSummary({
+                                processId: selectedProcessId,
+                              });
+                            } catch {
+                              // Error is logged server-side
+                            } finally {
+                              setProcessSummaryRefreshing(false);
+                            }
+                          }}
+                        >
+                          {processSummaryRefreshing ? (
+                            <>
+                              <Loader2 className="h-4 w-4 animate-spin" />
+                              Rebuilding...
+                            </>
+                          ) : (
+                            <>
+                              <Sparkles className="h-4 w-4" />
+                              Rebuild from all transcripts
+                            </>
+                          )}
+                        </Button>
+                      )}
+                    </CardContent>
+                  )}
+                </Card>
+
+                {/* Conversations section */}
+                <ConversationLog processId={selectedProcessId!} />
+              </div>
+            </TabsContent>
+
+            {/* Process Flow tab */}
+            <TabsContent value={1} className="flex flex-1 overflow-hidden">
+              <Suspense
+                fallback={
+                  <div className="flex flex-1 items-center justify-center">
+                    <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+                  </div>
+                }
+              >
+                <ProcessFlow
+                  processId={selectedProcessId!}
+                  conversationCount={processConversations?.filter(c => c.status === "done").length ?? 0}
+                />
+              </Suspense>
+            </TabsContent>
+          </Tabs>
         </div>
       )}
     </div>

@@ -432,6 +432,90 @@ export const importConversation = internalAction({
   },
 });
 
+// --- Backfill: refresh analysis data for an existing conversation from ElevenLabs ---
+
+export const refreshConversationAnalysis = internalAction({
+  args: { elevenlabsConversationId: v.string() },
+  handler: async (ctx, args) => {
+    const apiKey = process.env.ELEVENLABS_API_KEY;
+    if (!apiKey) throw new Error("ELEVENLABS_API_KEY is not configured");
+
+    // Find the existing conversation in our DB
+    const existing = await ctx.runQuery(
+      internal.postCall.getConversationByElevenLabsId,
+      { elevenlabsConversationId: args.elevenlabsConversationId },
+    );
+    if (!existing) {
+      throw new Error(`Conversation ${args.elevenlabsConversationId} not found in DB`);
+    }
+
+    // Fetch fresh data from ElevenLabs
+    const response = await fetch(
+      `https://api.elevenlabs.io/v1/convai/conversations/${args.elevenlabsConversationId}`,
+      { headers: { "xi-api-key": apiKey } },
+    );
+    if (!response.ok) {
+      throw new Error(`ElevenLabs API error: ${response.status}`);
+    }
+
+    const data = await response.json();
+    const transcript = normalizeTranscript(data.transcript);
+    const summary = data.analysis?.transcript_summary ?? existing.summary;
+    const analysis = data.analysis ?? existing.analysis;
+    const durationSeconds = data.metadata?.call_duration_secs ?? existing.durationSeconds;
+
+    // Update the existing record
+    await ctx.runMutation(internal.postCall.updateConversationAnalysis, {
+      conversationId: existing._id,
+      transcript,
+      summary,
+      analysis,
+      durationSeconds,
+    });
+
+    console.log(`Refreshed analysis for ${args.elevenlabsConversationId}`);
+    return { status: "updated" as const };
+  },
+});
+
+export const getConversationByElevenLabsId = internalQuery({
+  args: { elevenlabsConversationId: v.string() },
+  handler: async (ctx, args) => {
+    return await ctx.db
+      .query("conversations")
+      .withIndex("by_elevenlabsConversationId", (q) =>
+        q.eq("elevenlabsConversationId", args.elevenlabsConversationId),
+      )
+      .first();
+  },
+});
+
+export const updateConversationAnalysis = internalMutation({
+  args: {
+    conversationId: v.id("conversations"),
+    transcript: v.optional(
+      v.array(
+        v.object({
+          role: v.string(),
+          content: v.string(),
+          time_in_call_secs: v.number(),
+        }),
+      ),
+    ),
+    summary: v.optional(v.string()),
+    analysis: v.optional(v.any()),
+    durationSeconds: v.optional(v.number()),
+  },
+  handler: async (ctx, args) => {
+    await ctx.db.patch(args.conversationId, {
+      transcript: args.transcript,
+      summary: args.summary,
+      analysis: args.analysis,
+      durationSeconds: args.durationSeconds,
+    });
+  },
+});
+
 // --- Internal action: regenerateProcessSummary ---
 // Incrementally builds a structured process summary using Claude Haiku 4.5.
 // First conversation: full transcript → initial structured summary.
@@ -571,6 +655,10 @@ export const regenerateProcessSummary = internalAction({
           processId: args.processId,
           rollingSummary,
         });
+        // Mark process flow as stale
+        await ctx.runMutation(internal.processFlows.markFlowStale, {
+          processId: args.processId,
+        });
         const departmentId: string | null = await ctx.runQuery(
           internal.postCall.getProcessDepartmentId,
           { processId: args.processId },
@@ -664,6 +752,10 @@ export const regenerateProcessSummary = internalAction({
       await ctx.runMutation(internal.postCall.updateRollingSummary, {
         processId: args.processId,
         rollingSummary,
+      });
+      // Mark process flow as stale
+      await ctx.runMutation(internal.processFlows.markFlowStale, {
+        processId: args.processId,
       });
       // Mark department (and cascading function) summary as stale
       const departmentId: string | null = await ctx.runQuery(

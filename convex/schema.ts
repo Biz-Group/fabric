@@ -72,4 +72,78 @@ export default defineSchema({
     .index("by_status", ["status"])
     .index("by_userId", ["userId"])
     .index("by_elevenlabsConversationId", ["elevenlabsConversationId"]),
+
+  // Process flow diagrams — one per process, generated from conversation data
+  processFlows: defineTable({
+    processId: v.id("processes"),
+    status: v.union(
+      v.literal("generating"),
+      v.literal("ready"),
+      v.literal("failed"),
+    ),
+    stale: v.boolean(),
+    generatedAt: v.number(),
+    conversationCount: v.number(),
+    errorMessage: v.optional(v.string()),
+
+    nodes: v.array(
+      v.object({
+        id: v.string(),
+        label: v.string(),
+        description: v.string(),
+        category: v.union(
+          v.literal("start"),
+          v.literal("end"),
+          v.literal("action"),
+          v.literal("decision"),
+          v.literal("handoff"),
+          v.literal("wait"),
+        ),
+        actors: v.array(v.string()),
+        tools: v.array(v.string()),
+        estimatedDuration: v.optional(v.string()),
+        painPoints: v.array(v.string()),
+        automationPotential: v.union(
+          v.literal("none"),
+          v.literal("low"),
+          v.literal("medium"),
+          v.literal("high"),
+        ),
+        confidence: v.union(
+          v.literal("high"),
+          v.literal("medium"),
+          v.literal("low"),
+        ),
+        isBottleneck: v.boolean(),
+        isTribalKnowledge: v.boolean(),
+        riskIndicators: v.array(v.string()),
+        sources: v.array(v.string()),
+      }),
+    ),
+
+    edges: v.array(
+      v.object({
+        id: v.string(),
+        source: v.string(),
+        target: v.string(),
+        type: v.union(
+          v.literal("sequential"),
+          v.literal("conditional"),
+          v.literal("parallel"),
+          v.literal("fallback"),
+        ),
+        label: v.optional(v.string()),
+        isHappyPath: v.boolean(),
+      }),
+    ),
+
+    insights: v.object({
+      totalEstimatedDuration: v.optional(v.string()),
+      criticalPath: v.array(v.string()),
+      handoffCount: v.number(),
+      toolCount: v.number(),
+      automationOpportunities: v.array(v.string()),
+      topBottlenecks: v.array(v.string()),
+    }),
+  }).index("by_processId", ["processId"]),
 });
