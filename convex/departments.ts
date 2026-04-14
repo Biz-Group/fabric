@@ -41,6 +41,10 @@ export const create = mutation({
   args: { functionId: v.id("functions"), name: v.string() },
   handler: async (ctx, args) => {
     await requireContributor(ctx);
+    const parentFunction = await ctx.db.get(args.functionId);
+    if (!parentFunction) {
+      throw new Error("Function not found");
+    }
     const existing = await ctx.db
       .query("departments")
       .withIndex("by_functionId", (q) => q.eq("functionId", args.functionId))
@@ -72,9 +76,14 @@ export const update = mutation({
     if (!dept) throw new Error("Department not found");
 
     const patch: Record<string, unknown> = { name: args.name };
-    const isMoving = args.functionId && args.functionId !== dept.functionId;
+    const isMoving =
+      args.functionId !== undefined && args.functionId !== dept.functionId;
 
     if (isMoving) {
+      const targetFunction = await ctx.db.get(args.functionId!);
+      if (!targetFunction) {
+        throw new Error("Target function not found");
+      }
       const existing = await ctx.db
         .query("departments")
         .withIndex("by_functionId", (q) => q.eq("functionId", args.functionId!))
@@ -87,9 +96,12 @@ export const update = mutation({
     await ctx.db.patch(args.departmentId, patch);
 
     if (isMoving) {
-      await ctx.runMutation(internal.summariesHelpers.markFunctionSummaryStale, {
-        functionId: dept.functionId,
-      });
+      const oldFunction = await ctx.db.get(dept.functionId);
+      if (oldFunction) {
+        await ctx.runMutation(internal.summariesHelpers.markFunctionSummaryStale, {
+          functionId: dept.functionId,
+        });
+      }
       await ctx.runMutation(internal.summariesHelpers.markFunctionSummaryStale, {
         functionId: args.functionId!,
       });
@@ -127,9 +139,12 @@ export const remove = mutation({
     await ctx.db.delete(args.departmentId);
     // Mark function summary as stale
     if (functionId) {
-      await ctx.runMutation(internal.summariesHelpers.markFunctionSummaryStale, {
-        functionId,
-      });
+      const parentFunction = await ctx.db.get(functionId);
+      if (parentFunction) {
+        await ctx.runMutation(internal.summariesHelpers.markFunctionSummaryStale, {
+          functionId,
+        });
+      }
     }
   },
 });

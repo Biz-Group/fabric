@@ -212,6 +212,7 @@ export default defineSchema({
 **Convex features used:**
 
 - **Document database** — schema-validated tables with typed fields, references via `v.id()`, and flexible `v.any()` for transcript/analysis storage
+- **Hierarchy integrity guards** — department/process create and move mutations must verify the target parent exists before writing. If legacy orphaned records are found, they are rewired non-destructively into recovery parents rather than deleting child processes, conversations, or process flows.
 - **Server functions** — `actions` for external API calls (ElevenLabs, OpenRouter), `mutations` for database writes, `queries` for reads, `httpAction` for HTTP endpoints (audio proxy)
 - **Built-in reactivity** — all `useQuery` hooks auto-update when data changes. No manual subscriptions needed — the UI updates live when a new conversation is inserted or its status changes
 - **Auth** — Clerk (hosted auth with prebuilt UI) + Convex JWT validation, auth gates on all queries, user profiles with onboarding on first login (Phase 5)
@@ -836,6 +837,7 @@ Alternatively, the entire modal can use the **Conversation Bar** component, whic
 - **Responsive layout** — Miller columns on desktop; stacked drill-down navigation on mobile/tablet (collapse to single-column with back navigation)
 - **Org hierarchy CRUD** — users can create, rename, and delete functions, departments, and processes directly from the Miller column UI via inline add/edit/delete controls (pencil and trash icons on each item, plus button in column headers)
 - **Move / reparent** — departments can be moved to a different function, and processes can be moved to a different department (including across functions) via the edit modal, which includes a location dropdown. When a process or department is moved, summaries on both old and new parents are marked stale. If the old parent has no remaining processes with summaries, its department summary is cleared automatically
+- **Non-destructive hierarchy repair** — if orphaned departments or processes are detected in Convex, Fabric reattaches them to recovery parents instead of deleting the affected records. Existing process ids stay stable, so attached conversations and process flows are preserved.
 - **English only** for POC (ElevenLabs agent language set to `"en"`)
 - **User authentication** — Clerk with prebuilt sign-in/sign-up UI, Convex JWT validation, auth gates on all Convex functions, user profiles with organizational attributes (Job Title, Function, Department, Hire Date), required profile onboarding on first login, Clerk `<UserButton />` in header (Phase 5)
 - **Role-based access control** — three roles (admin, contributor, viewer) stored in Convex `users` table. Admin: full access + user role management + future admin dashboard. Contributor: CRUD hierarchy, record conversations, view summaries. Viewer: browse hierarchy and view summaries only (no CRUD, no recording). New users default to viewer. Role enforcement on both backend (server-side guards on mutations/actions) and frontend (conditional UI rendering). First admin bootstrapped via CLI. (Phase 12)

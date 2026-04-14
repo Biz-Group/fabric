@@ -29,6 +29,10 @@ export const create = mutation({
   args: { departmentId: v.id("departments"), name: v.string() },
   handler: async (ctx, args) => {
     await requireContributor(ctx);
+    const parentDepartment = await ctx.db.get(args.departmentId);
+    if (!parentDepartment) {
+      throw new Error("Department not found");
+    }
     const existing = await ctx.db
       .query("processes")
       .withIndex("by_departmentId", (q) => q.eq("departmentId", args.departmentId))
@@ -60,9 +64,15 @@ export const update = mutation({
     if (!proc) throw new Error("Process not found");
 
     const patch: Record<string, unknown> = { name: args.name };
-    const isMoving = args.departmentId && args.departmentId !== proc.departmentId;
+    const isMoving =
+      args.departmentId !== undefined &&
+      args.departmentId !== proc.departmentId;
 
     if (isMoving) {
+      const targetDepartment = await ctx.db.get(args.departmentId!);
+      if (!targetDepartment) {
+        throw new Error("Target department not found");
+      }
       const existing = await ctx.db
         .query("processes")
         .withIndex("by_departmentId", (q) => q.eq("departmentId", args.departmentId!))
@@ -75,26 +85,26 @@ export const update = mutation({
     await ctx.db.patch(args.processId, patch);
 
     if (isMoving) {
+      const previousDepartment = await ctx.db.get(proc.departmentId);
       // Check if old department still has processes with summaries
       const remaining = await ctx.db
         .query("processes")
         .withIndex("by_departmentId", (q) => q.eq("departmentId", proc.departmentId))
         .collect();
       const hasSummaries = remaining.some((p) => p.rollingSummary);
-      if (remaining.length === 0 || !hasSummaries) {
+      if (previousDepartment && (remaining.length === 0 || !hasSummaries)) {
         // No processes or none with summaries — clear the department summary
         await ctx.db.patch(proc.departmentId, {
           summary: undefined,
           summaryUpdatedAt: undefined,
           summaryStale: undefined,
         });
-        const dept = await ctx.db.get(proc.departmentId);
-        if (dept) {
+        if (previousDepartment) {
           await ctx.runMutation(internal.summariesHelpers.markFunctionSummaryStale, {
-            functionId: dept.functionId,
+            functionId: previousDepartment.functionId,
           });
         }
-      } else {
+      } else if (previousDepartment) {
         await ctx.runMutation(internal.summariesHelpers.markDepartmentSummaryStale, {
           departmentId: proc.departmentId,
         });
@@ -137,24 +147,24 @@ export const remove = mutation({
     await ctx.db.delete(args.processId);
     // Clean up department summary
     if (departmentId) {
+      const department = await ctx.db.get(departmentId);
       const remaining = await ctx.db
         .query("processes")
         .withIndex("by_departmentId", (q) => q.eq("departmentId", departmentId))
         .collect();
       const hasSummaries = remaining.some((p) => p.rollingSummary);
-      if (remaining.length === 0 || !hasSummaries) {
+      if (department && (remaining.length === 0 || !hasSummaries)) {
         await ctx.db.patch(departmentId, {
           summary: undefined,
           summaryUpdatedAt: undefined,
           summaryStale: undefined,
         });
-        const dept = await ctx.db.get(departmentId);
-        if (dept) {
+        if (department) {
           await ctx.runMutation(internal.summariesHelpers.markFunctionSummaryStale, {
-            functionId: dept.functionId,
+            functionId: department.functionId,
           });
         }
-      } else {
+      } else if (department) {
         await ctx.runMutation(internal.summariesHelpers.markDepartmentSummaryStale, {
           departmentId,
         });
