@@ -40,3 +40,6 @@ yarn-error.log*
 *.tsbuildinfo
 next-env.d.ts
 todo.txt
+/.vscode
+.codex
+BRANDING_KIT.md

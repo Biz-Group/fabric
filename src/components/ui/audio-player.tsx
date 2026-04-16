@@ -14,7 +14,7 @@ import {
   useState,
 } from "react"
 import * as SliderPrimitive from "@radix-ui/react-slider"
-import { Check, PauseIcon, PlayIcon, Settings } from "lucide-react"
+import { Check, PauseIcon, PlayIcon, RotateCcw, RotateCw, Settings } from "lucide-react"
 
 import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
@@ -484,6 +484,70 @@ export function AudioPlayerButton<TData = unknown>({
         player.isItemActive(item.id) && player.isBuffering && player.isPlaying
       }
     />
+  )
+}
+
+export interface AudioPlayerSkipButtonProps
+  extends React.ComponentProps<typeof Button> {
+  seconds?: number
+}
+
+export function AudioPlayerSkipButton({
+  seconds = 10,
+  className,
+  variant = "ghost",
+  size = "icon",
+  onClick,
+  ...props
+}: AudioPlayerSkipButtonProps) {
+  const player = useAudioPlayer()
+  const Icon = seconds > 0 ? RotateCw : RotateCcw
+
+  return (
+    <Button
+      variant={variant}
+      size={size}
+      className={cn("h-8 w-8 shrink-0", className)}
+      onClick={(e) => {
+        const current = player.ref.current?.currentTime ?? 0
+        const max = player.duration ?? 0
+        player.seek(Math.max(0, Math.min(current + seconds, max)))
+        onClick?.(e)
+      }}
+      aria-label={`Skip ${Math.abs(seconds)} seconds ${seconds > 0 ? "forward" : "back"}`}
+      type="button"
+      {...props}
+    >
+      <Icon className="size-3.5" />
+    </Button>
+  )
+}
+
+export function AudioPlayerTimeToggle({
+  className,
+  ...otherProps
+}: HTMLProps<HTMLSpanElement>) {
+  const [showRemaining, setShowRemaining] = useState(false)
+  const player = useAudioPlayer()
+  const time = useAudioPlayerTime()
+
+  const display =
+    showRemaining && player.duration && Number.isFinite(player.duration)
+      ? `-${formatTime(player.duration - time)}`
+      : formatTime(time)
+
+  return (
+    <span
+      {...otherProps}
+      onClick={() => setShowRemaining((r) => !r)}
+      className={cn(
+        "cursor-pointer text-sm tabular-nums text-muted-foreground select-none",
+        className
+      )}
+      title={showRemaining ? "Show elapsed time" : "Show remaining time"}
+    >
+      {display}
+    </span>
   )
 }
 

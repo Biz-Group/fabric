@@ -477,6 +477,7 @@ export const AudioScrubber = ({
         barRadius={barRadius}
         barWidth={barWidth}
         barHeight={barHeight}
+        height={height}
         data={waveformData}
         fadeEdges={false}
       />

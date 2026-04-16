@@ -13,7 +13,7 @@
 
 ## 1. Overview
 
-Fabric is a web-based tool that lets organizations capture how their business actually runs — not through documentation projects or process audits, but through natural voice conversations between employees and an AI agent. Employees navigate to their function, department, and process, then simply talk about what they do. The system records, transcribes, summarizes, and stitches those conversations into a living, hierarchical knowledge base of the entire company's operations.
+Fabric is a web-based tool that lets organizations capture how their business actually runs — not through documentation projects or process audits, but through natural voice conversations between employees and an AI agent. Employees navigate to their function, department, and process, then simply talk about what they do. The system records, transcribes, summarizes, and stitches those conversations into a living, hierarchical knowledge base — synthesizing insights at every level from individual processes up through departments and functions. Captured knowledge is also automatically converted into interactive process flow diagrams that surface bottlenecks, automation opportunities, tribal knowledge risks, and handoff points directly from what employees describe in their own words.
 
 ### 1.1 The Problem
 
