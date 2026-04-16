@@ -43,3 +43,5 @@ todo.txt
 /.vscode
 .codex
 BRANDING_KIT.md
+/.claude
+/.agents

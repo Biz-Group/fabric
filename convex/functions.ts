@@ -38,7 +38,21 @@ export const update = mutation({
   args: { functionId: v.id("functions"), name: v.string() },
   handler: async (ctx, args) => {
     await requireContributor(ctx);
+    const existing = await ctx.db.get(args.functionId);
+    if (!existing) throw new Error("Function not found");
+    const oldName = existing.name;
     await ctx.db.patch(args.functionId, { name: args.name });
+
+    // Cascade name change to all users referencing the old function name
+    if (oldName !== args.name) {
+      const usersWithOldName = await ctx.db
+        .query("users")
+        .withIndex("by_function", (q) => q.eq("function", oldName))
+        .collect();
+      for (const user of usersWithOldName) {
+        await ctx.db.patch(user._id, { function: args.name });
+      }
+    }
   },
 });
 

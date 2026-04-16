@@ -15,7 +15,9 @@ export default defineSchema({
     role: v.optional(v.union(v.literal("admin"), v.literal("contributor"), v.literal("viewer"))),
   })
     .index("by_tokenIdentifier", ["tokenIdentifier"])
-    .index("by_email", ["email"]),
+    .index("by_email", ["email"])
+    .index("by_function", ["function"])
+    .index("by_department", ["department"]),
 
   // Organizational hierarchy
   functions: defineTable({

@@ -24,6 +24,8 @@ import { cn } from "@/lib/utils";
 import {
   ChevronLeft,
   ChevronRight,
+  ChevronsLeft,
+  ChevronsRight,
   Building2,
   Layers,
   Cog,
@@ -37,6 +39,13 @@ import {
   Trash2,
   Clock,
 } from "lucide-react";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
+import { useColumnCollapse } from "@/hooks/use-column-collapse";
 import { ConversationLog } from "@/components/conversation-log";
 import { UserMenu } from "@/components/user-menu";
 import { RecordingModal } from "@/components/recording-modal";
@@ -165,11 +174,45 @@ function ColumnHeader({
   title,
   count,
   onAdd,
+  icon: Icon,
+  collapsed,
+  onToggle,
 }: {
   title: string;
   count?: number;
   onAdd?: () => void;
+  icon?: React.ComponentType<{ className?: string }>;
+  collapsed?: boolean;
+  onToggle?: () => void;
 }) {
+  if (collapsed && Icon) {
+    return (
+      <div className="shrink-0 border-b bg-muted/30 px-1 py-3">
+        <div className="flex flex-col items-center gap-1">
+          <Tooltip>
+            <TooltipTrigger
+              className="rounded-md p-1.5 text-muted-foreground"
+            >
+              <Icon className="h-4 w-4" />
+            </TooltipTrigger>
+            <TooltipContent side="right">
+              {title}{count !== undefined ? ` (${count})` : ""}
+            </TooltipContent>
+          </Tooltip>
+          <Tooltip>
+            <TooltipTrigger
+              className="rounded-md p-1 text-muted-foreground hover:bg-accent hover:text-accent-foreground transition-colors"
+              onClick={onToggle}
+            >
+              <ChevronsRight className="h-3.5 w-3.5" />
+            </TooltipTrigger>
+            <TooltipContent side="right">Expand</TooltipContent>
+          </Tooltip>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="shrink-0 border-b bg-muted/30 px-4 py-3">
       <div className="flex items-center justify-between">
@@ -191,6 +234,15 @@ function ColumnHeader({
               <Plus className="h-3.5 w-3.5" />
             </button>
           )}
+          {onToggle && (
+            <button
+              onClick={onToggle}
+              className="rounded-md p-1 text-muted-foreground hover:bg-accent hover:text-accent-foreground transition-colors"
+              title={`Collapse ${title}`}
+            >
+              <ChevronsLeft className="h-3.5 w-3.5" />
+            </button>
+          )}
         </div>
       </div>
     </div>
@@ -203,6 +255,59 @@ function LoadingSpinner() {
   return (
     <div className="flex items-center justify-center py-12">
       <div className="h-5 w-5 animate-spin rounded-full border-2 border-primary/30 border-t-primary" />
+    </div>
+  );
+}
+
+// --- Collapsed Column Rail ---
+
+function CollapsedColumnRail({
+  icon: Icon,
+  emptyHint,
+  items,
+  onSelect,
+}: {
+  icon: React.ComponentType<{ className?: string }>;
+  emptyHint?: string;
+  items: Array<{ id: string; label: string; selected: boolean }>;
+  onSelect: (id: string) => void;
+}) {
+  if (items.length === 0) {
+    return (
+      <div className="flex flex-1 flex-col items-center justify-center gap-2 py-4 px-1">
+        <Icon className="h-5 w-5 text-muted-foreground/30" />
+        {emptyHint && (
+          <span className="text-[9px] text-center leading-tight text-muted-foreground/40">
+            {emptyHint}
+          </span>
+        )}
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex-1 overflow-y-auto scrollbar-hide">
+      <div className="flex flex-col items-center gap-0.5 py-2">
+        {items.map((item) => (
+          <Tooltip key={item.id}>
+            <TooltipTrigger
+              onClick={() => onSelect(item.id)}
+              className={cn(
+                "flex h-7 w-7 items-center justify-center rounded-md transition-colors",
+                item.selected
+                  ? "bg-primary/15 text-primary"
+                  : "text-muted-foreground/50 hover:bg-accent hover:text-accent-foreground"
+              )}
+            >
+              <span className={cn(
+                "flex h-2 w-2 rounded-full",
+                item.selected ? "bg-primary" : "bg-current"
+              )} />
+            </TooltipTrigger>
+            <TooltipContent side="right">{item.label}</TooltipContent>
+          </Tooltip>
+        ))}
+      </div>
     </div>
   );
 }
@@ -227,6 +332,9 @@ export function MillerColumns() {
   const currentUser = useQuery(api.users.getMe);
   const userRole = currentUser?.role ?? "viewer";
   const canEdit = userRole === "admin" || userRole === "contributor";
+
+  // Column collapse state
+  const { collapsed, toggle } = useColumnCollapse();
 
   // Selection state
   const [selectedFunctionId, setSelectedFunctionId] =
@@ -476,7 +584,7 @@ export function MillerColumns() {
 
   // --- Column renderers ---
 
-  const functionsColumn = (mobile?: boolean) => (
+  const functionsColumn = (mobile?: boolean, collapsed?: boolean) => (
     <div className="flex h-full flex-col">
       {mobile && (
         <div className="flex shrink-0 items-center justify-between border-b bg-background px-4 py-3">
@@ -488,36 +596,55 @@ export function MillerColumns() {
         title="Functions"
         count={functions?.length}
         onAdd={canEdit ? () => openCrud("create", "Function") : undefined}
+        icon={Building2}
+        collapsed={collapsed}
+        onToggle={!mobile ? () => toggle("functions") : undefined}
       />
-      <div className="flex-1 overflow-y-auto scrollbar-hide">
-        <div className="space-y-0.5 p-2">
-          {functions === undefined ? (
-            <LoadingSpinner />
-          ) : functions.length === 0 ? (
-            <EmptyState
-              icon={Building2}
-              title="No functions yet"
-              description="Organizational functions will appear here."
-            />
-          ) : (
-            functions.map((fn) => (
-              <ColumnItem
-                key={fn._id}
-                label={fn.name}
-                selected={selectedFunctionId === fn._id}
-                indicator="arrow"
-                onClick={() => handleSelectFunction(fn._id, fn.name)}
-                onEdit={canEdit ? () => openCrud("edit", "Function", fn.name, fn._id) : undefined}
-                onDelete={canEdit ? () => openCrud("delete", "Function", fn.name, fn._id) : undefined}
+      {collapsed ? (
+        <CollapsedColumnRail
+          icon={Building2}
+          items={(functions ?? []).map((fn) => ({
+            id: fn._id,
+            label: fn.name,
+            selected: selectedFunctionId === fn._id,
+          }))}
+          onSelect={(id) => {
+            const fn = functions?.find((f) => f._id === id);
+            if (fn) handleSelectFunction(fn._id, fn.name);
+          }}
+          emptyHint="No functions"
+        />
+      ) : (
+        <div className="flex-1 overflow-y-auto scrollbar-hide">
+          <div className="space-y-0.5 p-2">
+            {functions === undefined ? (
+              <LoadingSpinner />
+            ) : functions.length === 0 ? (
+              <EmptyState
+                icon={Building2}
+                title="No functions yet"
+                description="Organizational functions will appear here."
               />
-            ))
-          )}
+            ) : (
+              functions.map((fn) => (
+                <ColumnItem
+                  key={fn._id}
+                  label={fn.name}
+                  selected={selectedFunctionId === fn._id}
+                  indicator="arrow"
+                  onClick={() => handleSelectFunction(fn._id, fn.name)}
+                  onEdit={canEdit ? () => openCrud("edit", "Function", fn.name, fn._id) : undefined}
+                  onDelete={canEdit ? () => openCrud("delete", "Function", fn.name, fn._id) : undefined}
+                />
+              ))
+            )}
+          </div>
         </div>
-      </div>
+      )}
     </div>
   );
 
-  const departmentsColumn = (mobile?: boolean) => (
+  const departmentsColumn = (mobile?: boolean, collapsed?: boolean) => (
     <div className="flex h-full flex-col">
       {mobile && selectedFunctionId && (
         <div className="shrink-0 border-b bg-background">
@@ -536,42 +663,65 @@ export function MillerColumns() {
         title="Departments"
         count={departments?.length}
         onAdd={canEdit && selectedFunctionId ? () => openCrud("create", "Department") : undefined}
+        icon={Layers}
+        collapsed={collapsed}
+        onToggle={!mobile ? () => toggle("departments") : undefined}
       />
-      <div className="flex-1 overflow-y-auto scrollbar-hide">
-        <div className="space-y-0.5 p-2">
-          {!selectedFunctionId ? (
-            <EmptyState
-              icon={Layers}
-              title="Select a function"
-              description="Choose a function from the list to see its departments."
-            />
-          ) : departments === undefined ? (
-            <LoadingSpinner />
-          ) : departments.length === 0 ? (
-            <EmptyState
-              icon={Layers}
-              title="No departments"
-              description="This function has no departments defined yet."
-            />
-          ) : (
-            departments.map((dept) => (
-              <ColumnItem
-                key={dept._id}
-                label={dept.name}
-                selected={selectedDepartmentId === dept._id}
-                indicator="arrow"
-                onClick={() => handleSelectDepartment(dept._id, dept.name)}
-                onEdit={canEdit ? () => openCrud("edit", "Department", dept.name, dept._id, dept.functionId) : undefined}
-                onDelete={canEdit ? () => openCrud("delete", "Department", dept.name, dept._id) : undefined}
+      {collapsed ? (
+        <CollapsedColumnRail
+          icon={Layers}
+          emptyHint={!selectedFunctionId ? "Select a function" : "No departments"}
+          items={
+            !selectedFunctionId
+              ? []
+              : (departments ?? []).map((dept) => ({
+                  id: dept._id,
+                  label: dept.name,
+                  selected: selectedDepartmentId === dept._id,
+                }))
+          }
+          onSelect={(id) => {
+            const dept = departments?.find((d) => d._id === id);
+            if (dept) handleSelectDepartment(dept._id, dept.name);
+          }}
+        />
+      ) : (
+        <div className="flex-1 overflow-y-auto scrollbar-hide">
+          <div className="space-y-0.5 p-2">
+            {!selectedFunctionId ? (
+              <EmptyState
+                icon={Layers}
+                title="Select a function"
+                description="Choose a function from the list to see its departments."
               />
-            ))
-          )}
+            ) : departments === undefined ? (
+              <LoadingSpinner />
+            ) : departments.length === 0 ? (
+              <EmptyState
+                icon={Layers}
+                title="No departments"
+                description="This function has no departments defined yet."
+              />
+            ) : (
+              departments.map((dept) => (
+                <ColumnItem
+                  key={dept._id}
+                  label={dept.name}
+                  selected={selectedDepartmentId === dept._id}
+                  indicator="arrow"
+                  onClick={() => handleSelectDepartment(dept._id, dept.name)}
+                  onEdit={canEdit ? () => openCrud("edit", "Department", dept.name, dept._id, dept.functionId) : undefined}
+                  onDelete={canEdit ? () => openCrud("delete", "Department", dept.name, dept._id) : undefined}
+                />
+              ))
+            )}
+          </div>
         </div>
-      </div>
+      )}
     </div>
   );
 
-  const processesColumn = (mobile?: boolean) => (
+  const processesColumn = (mobile?: boolean, collapsed?: boolean) => (
     <div className="flex h-full flex-col">
       {mobile && selectedDepartmentId && (
         <div className="shrink-0 border-b bg-background">
@@ -590,38 +740,61 @@ export function MillerColumns() {
         title="Processes"
         count={processes?.length}
         onAdd={canEdit && selectedDepartmentId ? () => openCrud("create", "Process") : undefined}
+        icon={Cog}
+        collapsed={collapsed}
+        onToggle={!mobile ? () => toggle("processes") : undefined}
       />
-      <div className="flex-1 overflow-y-auto scrollbar-hide">
-        <div className="space-y-0.5 p-2">
-          {!selectedDepartmentId ? (
-            <EmptyState
-              icon={Cog}
-              title="Select a department"
-              description="Choose a department to see its processes."
-            />
-          ) : processes === undefined ? (
-            <LoadingSpinner />
-          ) : processes.length === 0 ? (
-            <EmptyState
-              icon={Cog}
-              title="No processes"
-              description="No processes defined yet for this department."
-            />
-          ) : (
-            processes.map((proc) => (
-              <ColumnItem
-                key={proc._id}
-                label={proc.name}
-                selected={selectedProcessId === proc._id}
-                indicator="dot"
-                onClick={() => handleSelectProcess(proc._id, proc.name)}
-                onEdit={canEdit ? () => openCrud("edit", "Process", proc.name, proc._id, proc.departmentId) : undefined}
-                onDelete={canEdit ? () => openCrud("delete", "Process", proc.name, proc._id) : undefined}
+      {collapsed ? (
+        <CollapsedColumnRail
+          icon={Cog}
+          emptyHint={!selectedDepartmentId ? "Select a department" : "No processes"}
+          items={
+            !selectedDepartmentId
+              ? []
+              : (processes ?? []).map((proc) => ({
+                  id: proc._id,
+                  label: proc.name,
+                  selected: selectedProcessId === proc._id,
+                }))
+          }
+          onSelect={(id) => {
+            const proc = processes?.find((p) => p._id === id);
+            if (proc) handleSelectProcess(proc._id, proc.name);
+          }}
+        />
+      ) : (
+        <div className="flex-1 overflow-y-auto scrollbar-hide">
+          <div className="space-y-0.5 p-2">
+            {!selectedDepartmentId ? (
+              <EmptyState
+                icon={Cog}
+                title="Select a department"
+                description="Choose a department to see its processes."
               />
-            ))
-          )}
+            ) : processes === undefined ? (
+              <LoadingSpinner />
+            ) : processes.length === 0 ? (
+              <EmptyState
+                icon={Cog}
+                title="No processes"
+                description="No processes defined yet for this department."
+              />
+            ) : (
+              processes.map((proc) => (
+                <ColumnItem
+                  key={proc._id}
+                  label={proc.name}
+                  selected={selectedProcessId === proc._id}
+                  indicator="dot"
+                  onClick={() => handleSelectProcess(proc._id, proc.name)}
+                  onEdit={canEdit ? () => openCrud("edit", "Process", proc.name, proc._id, proc.departmentId) : undefined}
+                  onDelete={canEdit ? () => openCrud("delete", "Process", proc.name, proc._id) : undefined}
+                />
+              ))
+            )}
+          </div>
         </div>
-      </div>
+      )}
     </div>
   );
 
@@ -1036,6 +1209,7 @@ export function MillerColumns() {
   );
 
   return (
+    <TooltipProvider>
     <div className="flex h-full flex-col bg-background">
       {/* App header — desktop only (mobile shows header inside functions column) */}
       <header className="hidden shrink-0 items-center justify-between border-b bg-background px-6 py-3 md:flex">
@@ -1045,14 +1219,23 @@ export function MillerColumns() {
 
       {/* Desktop: 4 side-by-side columns */}
       <div className="hidden flex-1 overflow-hidden md:flex">
-        <div className="flex w-[220px] shrink-0 flex-col border-r bg-muted/10">
-          {functionsColumn()}
+        <div className={cn(
+          "flex shrink-0 flex-col border-r bg-muted/10 transition-[width] duration-200 ease-linear overflow-hidden",
+          collapsed.functions ? "w-12" : "w-[220px]"
+        )}>
+          {functionsColumn(false, collapsed.functions)}
         </div>
-        <div className="flex w-[220px] shrink-0 flex-col border-r bg-muted/10">
-          {departmentsColumn()}
+        <div className={cn(
+          "flex shrink-0 flex-col border-r bg-muted/10 transition-[width] duration-200 ease-linear overflow-hidden",
+          collapsed.departments ? "w-12" : "w-[220px]"
+        )}>
+          {departmentsColumn(false, collapsed.departments)}
         </div>
-        <div className="flex w-[220px] shrink-0 flex-col border-r bg-muted/10">
-          {processesColumn()}
+        <div className={cn(
+          "flex shrink-0 flex-col border-r bg-muted/10 transition-[width] duration-200 ease-linear overflow-hidden",
+          collapsed.processes ? "w-12" : "w-[220px]"
+        )}>
+          {processesColumn(false, collapsed.processes)}
         </div>
         <div className="flex flex-1 flex-col">
           {detailPanel()}
@@ -1093,5 +1276,6 @@ export function MillerColumns() {
         onConfirm={handleCrudConfirm}
       />
     </div>
+    </TooltipProvider>
   );
 }

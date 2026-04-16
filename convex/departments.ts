@@ -75,6 +75,7 @@ export const update = mutation({
     const dept = await ctx.db.get(args.departmentId);
     if (!dept) throw new Error("Department not found");
 
+    const oldName = dept.name;
     const patch: Record<string, unknown> = { name: args.name };
     const isMoving =
       args.functionId !== undefined && args.functionId !== dept.functionId;
@@ -94,6 +95,17 @@ export const update = mutation({
     }
 
     await ctx.db.patch(args.departmentId, patch);
+
+    // Cascade name change to all users referencing the old department name
+    if (oldName !== args.name) {
+      const usersWithOldName = await ctx.db
+        .query("users")
+        .withIndex("by_department", (q) => q.eq("department", oldName))
+        .collect();
+      for (const user of usersWithOldName) {
+        await ctx.db.patch(user._id, { department: args.name });
+      }
+    }
 
     if (isMoving) {
       const oldFunction = await ctx.db.get(dept.functionId);
