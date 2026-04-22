@@ -45,3 +45,7 @@ todo.txt
 BRANDING_KIT.md
 /.claude
 /.agents
+
+# One-shot dev→prod migration dumps (contain real conversation data)
+dump.json
+/scripts/dump*.json

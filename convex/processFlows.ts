@@ -7,8 +7,11 @@ import {
   query,
 } from "./_generated/server";
 import { internal } from "./_generated/api";
-import { Id } from "./_generated/dataModel";
-import { requireAuth, requireRole, checkRoleFromUser } from "./lib/auth";
+import {
+  assertOrgOwns,
+  requireOrgMember,
+  resolveOrgForAction,
+} from "./lib/orgAuth";
 
 // ---------------------------------------------------------------------------
 // System prompt for process flow extraction
@@ -152,13 +155,11 @@ function formatConversationData(
     return `[Conversation ${index} — ${conv.contributorName}]\nNo structured data available.`;
   }
 
-  // Try structured JSON fields first (new format)
   const structuredSteps = tryParseJson<StructuredStep[]>(dc.process_steps);
   const connections = tryParseJson<StepConnection[]>(dc.step_connections);
   const issues = tryParseJson<StepIssue[]>(dc.step_issues);
 
   if (structuredSteps && structuredSteps.length > 0) {
-    // New structured format
     const parts: string[] = [
       `[Conversation ${index} — ${conv.contributorName}] (structured)`,
       `Steps Graph: ${JSON.stringify(structuredSteps)}`,
@@ -177,7 +178,6 @@ function formatConversationData(
     return parts.join("\n");
   }
 
-  // Legacy flat format
   const parts: string[] = [
     `[Conversation ${index} — ${conv.contributorName}] (legacy)`,
   ];
@@ -210,28 +210,35 @@ function formatConversationData(
 }
 
 // ---------------------------------------------------------------------------
-// Internal queries
+// Internal queries — org-scoped via explicit clerkOrgId arg
 // ---------------------------------------------------------------------------
 
 export const getFlowByProcess = internalQuery({
-  args: { processId: v.id("processes") },
+  args: { processId: v.id("processes"), clerkOrgId: v.string() },
   handler: async (ctx, args) => {
     return await ctx.db
       .query("processFlows")
-      .withIndex("by_processId", (q) => q.eq("processId", args.processId))
+      .withIndex("by_clerkOrgId_and_processId", (q) =>
+        q.eq("clerkOrgId", args.clerkOrgId).eq("processId", args.processId),
+      )
       .first();
   },
 });
 
 export const getFlowGenerationData = internalQuery({
-  args: { processId: v.id("processes") },
+  args: { processId: v.id("processes"), clerkOrgId: v.string() },
   handler: async (ctx, args) => {
     const process = await ctx.db.get(args.processId);
-    const rollingSummary = process?.rollingSummary ?? null;
+    if (!process || process.clerkOrgId !== args.clerkOrgId) {
+      throw new Error("Process not found in this organization");
+    }
+    const rollingSummary = process.rollingSummary ?? null;
 
     const conversations = await ctx.db
       .query("conversations")
-      .withIndex("by_processId", (q) => q.eq("processId", args.processId))
+      .withIndex("by_clerkOrgId_and_processId", (q) =>
+        q.eq("clerkOrgId", args.clerkOrgId).eq("processId", args.processId),
+      )
       .order("asc")
       .collect();
 
@@ -247,6 +254,21 @@ export const getFlowGenerationData = internalQuery({
   },
 });
 
+/**
+ * Internal query used by the public generateProcessFlow action to assert
+ * that the caller's org owns the given processId before scheduling work.
+ */
+export const assertProcessInOrg = internalQuery({
+  args: { processId: v.id("processes"), clerkOrgId: v.string() },
+  handler: async (ctx, args) => {
+    const doc = await ctx.db.get(args.processId);
+    if (!doc || doc.clerkOrgId !== args.clerkOrgId) {
+      throw new Error("Process not found");
+    }
+    return { ok: true as const };
+  },
+});
+
 // ---------------------------------------------------------------------------
 // Internal mutations
 // ---------------------------------------------------------------------------
@@ -254,6 +276,7 @@ export const getFlowGenerationData = internalQuery({
 export const saveProcessFlow = internalMutation({
   args: {
     processId: v.id("processes"),
+    clerkOrgId: v.string(),
     status: v.union(
       v.literal("generating"),
       v.literal("ready"),
@@ -328,11 +351,14 @@ export const saveProcessFlow = internalMutation({
   handler: async (ctx, args) => {
     const existing = await ctx.db
       .query("processFlows")
-      .withIndex("by_processId", (q) => q.eq("processId", args.processId))
+      .withIndex("by_clerkOrgId_and_processId", (q) =>
+        q.eq("clerkOrgId", args.clerkOrgId).eq("processId", args.processId),
+      )
       .first();
 
     const doc = {
       processId: args.processId,
+      clerkOrgId: args.clerkOrgId,
       status: args.status,
       stale: false,
       generatedAt: Date.now(),
@@ -358,11 +384,13 @@ export const saveProcessFlow = internalMutation({
 });
 
 export const markFlowStale = internalMutation({
-  args: { processId: v.id("processes") },
+  args: { processId: v.id("processes"), clerkOrgId: v.string() },
   handler: async (ctx, args) => {
     const flow = await ctx.db
       .query("processFlows")
-      .withIndex("by_processId", (q) => q.eq("processId", args.processId))
+      .withIndex("by_clerkOrgId_and_processId", (q) =>
+        q.eq("clerkOrgId", args.clerkOrgId).eq("processId", args.processId),
+      )
       .first();
     if (flow && flow.status === "ready") {
       await ctx.db.patch(flow._id, { stale: true });
@@ -377,26 +405,31 @@ export const markFlowStale = internalMutation({
 export const getProcessFlow = query({
   args: { processId: v.id("processes") },
   handler: async (ctx, args) => {
-    await requireRole(ctx, "viewer");
+    const caller = await requireOrgMember(ctx);
+    const process = await ctx.db.get(args.processId);
+    if (!process || process.clerkOrgId !== caller.orgId) return null;
     return await ctx.db
       .query("processFlows")
-      .withIndex("by_processId", (q) => q.eq("processId", args.processId))
+      .withIndex("by_clerkOrgId_and_processId", (q) =>
+        q.eq("clerkOrgId", caller.orgId).eq("processId", args.processId),
+      )
       .first();
   },
 });
 
 // ---------------------------------------------------------------------------
-// Internal action: the actual LLM call
+// Internal action: the actual LLM call (expects clerkOrgId threaded through)
 // ---------------------------------------------------------------------------
 
 export const generateFlowInternal = internalAction({
-  args: { processId: v.id("processes") },
+  args: { processId: v.id("processes"), clerkOrgId: v.string() },
   handler: async (ctx, args) => {
     const openrouterKey = process.env.OPENROUTER_API_KEY;
     if (!openrouterKey) {
       console.error("OPENROUTER_API_KEY is not configured — skipping flow generation");
       await ctx.runMutation(internal.processFlows.saveProcessFlow, {
         processId: args.processId,
+        clerkOrgId: args.clerkOrgId,
         status: "failed",
         conversationCount: 0,
         errorMessage: "Flow generation is not configured (missing API key).",
@@ -404,7 +437,6 @@ export const generateFlowInternal = internalAction({
       return;
     }
 
-    // Fetch all data needed for generation
     const data: {
       rollingSummary: string | null;
       conversations: Array<{
@@ -414,11 +446,13 @@ export const generateFlowInternal = internalAction({
       }>;
     } = await ctx.runQuery(internal.processFlows.getFlowGenerationData, {
       processId: args.processId,
+      clerkOrgId: args.clerkOrgId,
     });
 
     if (data.conversations.length === 0) {
       await ctx.runMutation(internal.processFlows.saveProcessFlow, {
         processId: args.processId,
+        clerkOrgId: args.clerkOrgId,
         status: "failed",
         conversationCount: 0,
         errorMessage: "No completed conversations available. Record conversations first.",
@@ -426,7 +460,6 @@ export const generateFlowInternal = internalAction({
       return;
     }
 
-    // Assemble the user prompt
     const conversationBlocks = data.conversations
       .map((c, i) => formatConversationData(c, i + 1))
       .join("\n\n---\n\n");
@@ -438,7 +471,6 @@ export const generateFlowInternal = internalAction({
       userContent += `Conversation Data:\n\n${conversationBlocks}`;
     }
 
-    // Call LLM
     const response = await fetch(
       "https://openrouter.ai/api/v1/chat/completions",
       {
@@ -463,6 +495,7 @@ export const generateFlowInternal = internalAction({
       console.error("OpenRouter API error:", response.status, errorText);
       await ctx.runMutation(internal.processFlows.saveProcessFlow, {
         processId: args.processId,
+        clerkOrgId: args.clerkOrgId,
         status: "failed",
         conversationCount: data.conversations.length,
         errorMessage: "Failed to generate process flow. Please try again.",
@@ -476,6 +509,7 @@ export const generateFlowInternal = internalAction({
     if (!content) {
       await ctx.runMutation(internal.processFlows.saveProcessFlow, {
         processId: args.processId,
+        clerkOrgId: args.clerkOrgId,
         status: "failed",
         conversationCount: data.conversations.length,
         errorMessage: "Empty response from AI. Please try again.",
@@ -483,7 +517,6 @@ export const generateFlowInternal = internalAction({
       return;
     }
 
-    // Strip markdown fences if present
     const jsonStr = content.replace(/^```(?:json)?\s*/, "").replace(/\s*```$/, "");
 
     let parsed: {
@@ -497,6 +530,7 @@ export const generateFlowInternal = internalAction({
       console.error("Failed to parse flow JSON:", e, "\nRaw content:", content);
       await ctx.runMutation(internal.processFlows.saveProcessFlow, {
         processId: args.processId,
+        clerkOrgId: args.clerkOrgId,
         status: "failed",
         conversationCount: data.conversations.length,
         errorMessage: "Failed to parse AI response. Please try again.",
@@ -504,7 +538,6 @@ export const generateFlowInternal = internalAction({
       return;
     }
 
-    // Validate and normalize nodes
     const validCategories = new Set(["start", "end", "action", "decision", "handoff", "wait"]);
     const validAutomation = new Set(["none", "low", "medium", "high"]);
     const validConfidence = new Set(["high", "medium", "low"]);
@@ -578,6 +611,7 @@ export const generateFlowInternal = internalAction({
 
     await ctx.runMutation(internal.processFlows.saveProcessFlow, {
       processId: args.processId,
+      clerkOrgId: args.clerkOrgId,
       status: "ready",
       nodes,
       edges,
@@ -594,16 +628,20 @@ export const generateFlowInternal = internalAction({
 export const generateProcessFlow = action({
   args: { processId: v.id("processes") },
   handler: async (ctx, args): Promise<{ message: string | null }> => {
-    const identity = await requireAuth(ctx);
-    const user = await ctx.runQuery(
-      internal.postCall.getUserByToken,
-      { tokenIdentifier: identity.tokenIdentifier },
-    );
-    checkRoleFromUser(user, "contributor");
+    const { orgId } = await resolveOrgForAction(ctx);
+
+    // Assert caller is a contributor in this org AND the process belongs to
+    // this org before we burn any LLM tokens.
+    await ctx.runQuery(internal.postCall.requireOrgContributorInternal, {});
+    await ctx.runQuery(internal.processFlows.assertProcessInOrg, {
+      processId: args.processId,
+      clerkOrgId: orgId,
+    });
 
     // Set status to "generating" immediately so the UI can show loading state
     await ctx.runMutation(internal.processFlows.saveProcessFlow, {
       processId: args.processId,
+      clerkOrgId: orgId,
       status: "generating",
       conversationCount: 0,
     });
@@ -611,6 +649,7 @@ export const generateProcessFlow = action({
     // Schedule the actual generation as a separate action
     await ctx.scheduler.runAfter(0, internal.processFlows.generateFlowInternal, {
       processId: args.processId,
+      clerkOrgId: orgId,
     });
 
     return { message: null as string | null };

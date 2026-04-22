@@ -1,8 +1,8 @@
 "use client";
 
 import { useQuery, useMutation } from "convex/react";
-import { api } from "../../../../convex/_generated/api";
-import { Doc, Id } from "../../../../convex/_generated/dataModel";
+import { api } from "../../../../../convex/_generated/api";
+import { Id } from "../../../../../convex/_generated/dataModel";
 import { useState, useMemo } from "react";
 import {
   Table,
@@ -33,19 +33,19 @@ const roleBadgeVariant: Record<Role, "default" | "secondary" | "outline"> = {
 };
 
 function RoleSelect({
-  userId,
+  membershipId,
   currentRole,
   isSelf,
 }: {
-  userId: Id<"users">;
+  membershipId: Id<"memberships">;
   currentRole: Role;
   isSelf: boolean;
 }) {
-  const setUserRole = useMutation(api.users.setUserRole);
+  const setMembershipRole = useMutation(api.users.setMembershipRole);
 
   const handleChange = async (value: Role) => {
     if (value === currentRole) return;
-    await setUserRole({ targetUserId: userId, role: value });
+    await setMembershipRole({ membershipId, role: value });
   };
 
   if (isSelf) {
@@ -81,24 +81,23 @@ function formatDate(timestamp: number) {
 }
 
 export default function AdminUsersPage() {
-  const users = useQuery(api.users.listAllUsers);
+  const members = useQuery(api.users.listOrgMembers);
   const me = useQuery(api.users.getMe);
   const [search, setSearch] = useState("");
 
   const filtered = useMemo(() => {
-    if (!users) return [];
-    if (!search.trim()) return users;
+    if (!members) return [];
+    if (!search.trim()) return members;
     const q = search.toLowerCase();
-    return users.filter(
-      (u) =>
-        u.name.toLowerCase().includes(q) ||
-        u.email.toLowerCase().includes(q) ||
-        (u.department ?? "").toLowerCase().includes(q) ||
-        (u.function ?? "").toLowerCase().includes(q),
+    return members.filter(
+      (m) =>
+        m.name.toLowerCase().includes(q) ||
+        m.email.toLowerCase().includes(q) ||
+        (m.jobTitle ?? "").toLowerCase().includes(q),
     );
-  }, [users, search]);
+  }, [members, search]);
 
-  if (users === undefined) {
+  if (members === undefined) {
     return (
       <div className="flex h-64 items-center justify-center">
         <div className="h-5 w-5 animate-spin rounded-full border-2 border-primary/30 border-t-primary" />
@@ -109,9 +108,9 @@ export default function AdminUsersPage() {
   return (
     <div className="space-y-6">
       <div>
-        <h2 className="text-lg font-semibold">Users</h2>
+        <h2 className="text-lg font-semibold">Members</h2>
         <p className="text-sm text-muted-foreground">
-          Manage user accounts and roles across your organization.
+          Manage members and roles for this organization.
         </p>
       </div>
 
@@ -119,7 +118,7 @@ export default function AdminUsersPage() {
       <div className="relative max-w-sm">
         <Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
         <Input
-          placeholder="Search by name, email, department..."
+          placeholder="Search by name, email, job title..."
           value={search}
           onChange={(e) => setSearch(e.target.value)}
           className="pl-9"
@@ -134,44 +133,67 @@ export default function AdminUsersPage() {
               <TableHead>Name</TableHead>
               <TableHead>Email</TableHead>
               <TableHead>Role</TableHead>
-              <TableHead>Department</TableHead>
-              <TableHead>Function</TableHead>
+              <TableHead>Job Title</TableHead>
+              <TableHead>Platform</TableHead>
               <TableHead>Profile</TableHead>
-              <TableHead>Joined</TableHead>
+              <TableHead>Joined Org</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
             {filtered.length === 0 ? (
               <TableRow>
-                <TableCell colSpan={7} className="h-24 text-center text-muted-foreground">
-                  {search ? "No users match your search." : "No users yet."}
+                <TableCell
+                  colSpan={7}
+                  className="h-24 text-center text-muted-foreground"
+                >
+                  {search ? "No members match your search." : "No members yet."}
                 </TableCell>
               </TableRow>
             ) : (
-              filtered.map((user) => {
-                const role = (user.role ?? "viewer") as Role;
-                const isSelf = me?._id === user._id;
+              filtered.map((m) => {
+                const role = m.role as Role;
+                const isSelf = me?._id === m.userId;
                 return (
-                  <TableRow key={user._id}>
+                  <TableRow key={m.membershipId}>
                     <TableCell className="font-medium">
-                      {user.name}
+                      {m.name}
                       {isSelf && (
-                        <span className="ml-1.5 text-xs text-muted-foreground">(you)</span>
+                        <span className="ml-1.5 text-xs text-muted-foreground">
+                          (you)
+                        </span>
                       )}
                     </TableCell>
-                    <TableCell className="text-muted-foreground">{user.email}</TableCell>
-                    <TableCell>
-                      <RoleSelect userId={user._id} currentRole={role} isSelf={isSelf} />
+                    <TableCell className="text-muted-foreground">
+                      {m.email}
                     </TableCell>
-                    <TableCell>{user.department ?? <span className="text-muted-foreground">--</span>}</TableCell>
-                    <TableCell>{user.function ?? <span className="text-muted-foreground">--</span>}</TableCell>
                     <TableCell>
-                      <Badge variant={user.profileComplete ? "secondary" : "outline"}>
-                        {user.profileComplete ? "Complete" : "Incomplete"}
+                      <RoleSelect
+                        membershipId={m.membershipId}
+                        currentRole={role}
+                        isSelf={isSelf}
+                      />
+                    </TableCell>
+                    <TableCell>
+                      {m.jobTitle ?? (
+                        <span className="text-muted-foreground">--</span>
+                      )}
+                    </TableCell>
+                    <TableCell>
+                      {m.platformRole === "superAdmin" ? (
+                        <Badge variant="default">Super Admin</Badge>
+                      ) : (
+                        <span className="text-muted-foreground">--</span>
+                      )}
+                    </TableCell>
+                    <TableCell>
+                      <Badge
+                        variant={m.profileComplete ? "secondary" : "outline"}
+                      >
+                        {m.profileComplete ? "Complete" : "Incomplete"}
                       </Badge>
                     </TableCell>
                     <TableCell className="text-muted-foreground">
-                      {formatDate(user._creationTime)}
+                      {formatDate(m.createdAt)}
                     </TableCell>
                   </TableRow>
                 );
@@ -182,7 +204,7 @@ export default function AdminUsersPage() {
       </div>
 
       <p className="text-xs text-muted-foreground">
-        {filtered.length} of {users.length} users shown
+        {filtered.length} of {members.length} members shown
       </p>
     </div>
   );

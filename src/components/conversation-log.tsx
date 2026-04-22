@@ -60,10 +60,14 @@ function formatDate(timestamp: number): string {
   }).format(new Date(timestamp));
 }
 
-function getAudioUrl(elevenlabsConversationId: string): string {
+function getAudioUrl(
+  clerkOrgId: string | null | undefined,
+  elevenlabsConversationId: string,
+): string | null {
+  if (!clerkOrgId) return null;
   const convexUrl = process.env.NEXT_PUBLIC_CONVEX_URL ?? "";
   const siteUrl = convexUrl.replace(".cloud", ".site");
-  return `${siteUrl}/audio/${elevenlabsConversationId}`;
+  return `${siteUrl}/audio/${clerkOrgId}/${elevenlabsConversationId}`;
 }
 
 // --- localStorage Hooks ---
@@ -184,7 +188,7 @@ function ConversationAudioControls({
   onListened,
 }: {
   conversationId: Id<"conversations">;
-  audioUrl: string;
+  audioUrl: string | null;
   durationSeconds?: number;
   transcript?: TranscriptMessage[];
   contributorName: string;
@@ -225,9 +229,11 @@ function ConversationAudioControls({
   }, [isActive, player, position]);
 
   const item = useMemo(
-    () => ({ id: conversationId, src: audioUrl, data: { contributorName } }),
+    () => ({ id: conversationId, src: audioUrl ?? "", data: { contributorName } }),
     [conversationId, audioUrl, contributorName]
   );
+
+  if (!audioUrl) return null;
 
   return (
     <div className="flex items-center gap-2">
@@ -311,7 +317,7 @@ function SyncedTranscript({
   conversationId: Id<"conversations">;
   transcript: TranscriptMessage[];
   contributorName: string;
-  audioUrl: string;
+  audioUrl: string | null;
 }) {
   const player = useAudioPlayer();
   const time = useAudioPlayerTime();
@@ -401,7 +407,7 @@ function SyncedTranscript({
                       if (isActive) {
                         player.seek(msg.time_in_call_secs);
                         if (!player.isPlaying) player.play();
-                      } else {
+                      } else if (audioUrl) {
                         await player.play({
                           id: conversationId,
                           src: audioUrl,
@@ -592,7 +598,10 @@ function ConversationEntry({
 }) {
   const isProcessing = conversation.status === "processing";
   const isFailed = conversation.status === "failed";
-  const audioUrl = getAudioUrl(conversation.elevenlabsConversationId);
+  const audioUrl = getAudioUrl(
+    conversation.clerkOrgId,
+    conversation.elevenlabsConversationId,
+  );
   const transcript = conversation.transcript as
     | TranscriptMessage[]
     | undefined;

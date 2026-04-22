@@ -111,7 +111,8 @@ export function RecordingModal({
 
   // Name prompt state
   const user = useQuery(api.users.getMe);
-  const userRole = user?.role ?? "viewer";
+  const membership = useQuery(api.users.getMyMembership);
+  const userRole = membership?.role ?? "viewer";
 
   const [contributorName, setContributorName] = useState("");
   const [nameInitialized, setNameInitialized] = useState(false);

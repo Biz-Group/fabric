@@ -2,7 +2,8 @@ import { defineSchema, defineTable } from "convex/server";
 import { v } from "convex/values";
 
 export default defineSchema({
-  // App-level user profiles (linked to Clerk identity via tokenIdentifier)
+  // App-level user profiles (linked to Clerk identity via tokenIdentifier).
+  // Identity is global — membership in a specific org lives in `memberships`.
   users: defineTable({
     tokenIdentifier: v.string(),
     name: v.string(),
@@ -12,12 +13,36 @@ export default defineSchema({
     department: v.optional(v.string()),
     hireDate: v.optional(v.string()),
     profileComplete: v.boolean(),
-    role: v.optional(v.union(v.literal("admin"), v.literal("contributor"), v.literal("viewer"))),
+    // Platform-level role, orthogonal to per-org roles. Only "superAdmin" today.
+    // Absent = regular user. Grants: create/delete orgs, fan-out action, future
+    // cross-org dashboards. Does NOT by itself grant access to any tenant's data —
+    // super-admins gain that via auto-provisioned memberships (Model A).
+    platformRole: v.optional(v.literal("superAdmin")),
   })
     .index("by_tokenIdentifier", ["tokenIdentifier"])
     .index("by_email", ["email"])
     .index("by_function", ["function"])
-    .index("by_department", ["department"]),
+    .index("by_department", ["department"])
+    .index("by_platformRole", ["platformRole"]),
+
+  // Per-(user, org) role assignments. Fabric owns roles — not Clerk — so a user
+  // can hold different roles in different orgs. Auto-provisioned on first
+  // authenticated request into an org (see `users.store`).
+  memberships: defineTable({
+    tokenIdentifier: v.string(),
+    userId: v.id("users"),
+    clerkOrgId: v.string(),
+    role: v.union(
+      v.literal("admin"),
+      v.literal("contributor"),
+      v.literal("viewer"),
+    ),
+    invitedBy: v.optional(v.id("users")),
+    createdAt: v.number(),
+  })
+    .index("by_tokenIdentifier_and_clerkOrgId", ["tokenIdentifier", "clerkOrgId"])
+    .index("by_clerkOrgId", ["clerkOrgId"])
+    .index("by_userId", ["userId"]),
 
   // Organizational hierarchy
   functions: defineTable({
@@ -26,7 +51,8 @@ export default defineSchema({
     summary: v.optional(v.string()),
     summaryUpdatedAt: v.optional(v.number()),
     summaryStale: v.optional(v.boolean()),
-  }),
+    clerkOrgId: v.string(),
+  }).index("by_clerkOrgId", ["clerkOrgId"]),
 
   departments: defineTable({
     functionId: v.id("functions"),
@@ -35,14 +61,16 @@ export default defineSchema({
     summary: v.optional(v.string()),
     summaryUpdatedAt: v.optional(v.number()),
     summaryStale: v.optional(v.boolean()),
-  }).index("by_functionId", ["functionId"]),
+    clerkOrgId: v.string(),
+  }).index("by_clerkOrgId_and_functionId", ["clerkOrgId", "functionId"]),
 
   processes: defineTable({
     departmentId: v.id("departments"),
     name: v.string(),
     sortOrder: v.number(),
     rollingSummary: v.optional(v.string()),
-  }).index("by_departmentId", ["departmentId"]),
+    clerkOrgId: v.string(),
+  }).index("by_clerkOrgId_and_departmentId", ["clerkOrgId", "departmentId"]),
 
   // Conversation records
   conversations: defineTable({
@@ -69,11 +97,14 @@ export default defineSchema({
       v.literal("done"),
       v.literal("failed"),
     ),
+    clerkOrgId: v.string(),
   })
-    .index("by_processId", ["processId"])
-    .index("by_status", ["status"])
-    .index("by_userId", ["userId"])
-    .index("by_elevenlabsConversationId", ["elevenlabsConversationId"]),
+    .index("by_clerkOrgId_and_processId", ["clerkOrgId", "processId"])
+    .index("by_clerkOrgId_and_status", ["clerkOrgId", "status"])
+    .index("by_clerkOrgId_and_elevenlabsConversationId", [
+      "clerkOrgId",
+      "elevenlabsConversationId",
+    ]),
 
   // Process flow diagrams — one per process, generated from conversation data
   processFlows: defineTable({
@@ -147,5 +178,7 @@ export default defineSchema({
       automationOpportunities: v.array(v.string()),
       topBottlenecks: v.array(v.string()),
     }),
-  }).index("by_processId", ["processId"]),
+
+    clerkOrgId: v.string(),
+  }).index("by_clerkOrgId_and_processId", ["clerkOrgId", "processId"]),
 });

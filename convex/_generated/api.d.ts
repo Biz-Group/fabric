@@ -13,8 +13,10 @@ import type * as conversations from "../conversations.js";
 import type * as departments from "../departments.js";
 import type * as functions from "../functions.js";
 import type * as http from "../http.js";
-import type * as lib_auth from "../lib/auth.js";
+import type * as lib_orgAuth from "../lib/orgAuth.js";
+import type * as migrations from "../migrations.js";
 import type * as orgIntegrity from "../orgIntegrity.js";
+import type * as platform from "../platform.js";
 import type * as postCall from "../postCall.js";
 import type * as processFlows from "../processFlows.js";
 import type * as processes from "../processes.js";
@@ -35,8 +37,10 @@ declare const fullApi: ApiFromModules<{
   departments: typeof departments;
   functions: typeof functions;
   http: typeof http;
-  "lib/auth": typeof lib_auth;
+  "lib/orgAuth": typeof lib_orgAuth;
+  migrations: typeof migrations;
   orgIntegrity: typeof orgIntegrity;
+  platform: typeof platform;
   postCall: typeof postCall;
   processFlows: typeof processFlows;
   processes: typeof processes;
@@ -72,4 +76,6 @@ export declare const internal: FilterApi<
   FunctionReference<any, "internal">
 >;
 
-export declare const components: {};
+export declare const components: {
+  migrations: import("@convex-dev/migrations/_generated/component.js").ComponentApi<"migrations">;
+};
