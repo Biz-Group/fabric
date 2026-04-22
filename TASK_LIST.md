@@ -1,6 +1,6 @@
 # Fabric — Phased Task List
 
-Derived from [PRD.md](PRD.md) v0.8 (POC — Audio Streamed from ElevenLabs + User Authentication + RBAC)
+Derived from [PRD.md](PRD.md) v1.0 (Multi-Tenant — Subdomain-Native)
 
 ---
 
@@ -444,7 +444,7 @@ Derived from [PRD.md](PRD.md) v0.8 (POC — Audio Streamed from ElevenLabs + Use
   - This is a lightweight call — concatenating short summary strings
   - **Phase 10 upgrades this to persistent, staleness-tracked summaries with token efficiency guards and cascade generation**
 
-- [ ] **Configure ElevenLabs Conversation Analysis on the platform** _(manual platform task)_
+- [x] **Configure ElevenLabs Conversation Analysis on the platform** _(manual platform task)_
   - Log into the ElevenLabs platform and configure the agent's analysis settings:
   - **Success Evaluation** — define custom criteria to assess each conversation:
     - "Did the contributor describe specific steps in their process?"
@@ -459,7 +459,7 @@ Derived from [PRD.md](PRD.md) v0.8 (POC — Audio Streamed from ElevenLabs + Use
   - These results are returned in the `analysis` field of the Conversations API response and stored in `conversations.analysis` field
   - **Confirm ElevenLabs pricing tier** supports Conversation Analysis (Success Evaluation, Data Collection, transcript summary) — these may not be available on starter/free tier (PRD section 8.3)
 
-- [ ] **Configure the ElevenLabs agent system prompt on the platform** _(manual platform task)_
+- [x] **Configure the ElevenLabs agent system prompt on the platform** _(manual platform task)_
   - Set the base system prompt on the ElevenLabs platform agent configuration — see full prompt in [ELEVENLABS_SETUP.md](ELEVENLABS_SETUP.md) section 2.2 and [PRD.md](PRD.md) section 4
   - The prompt includes structured sections: Personality, Environment, Tone, Goal, Guardrails, Tools
   - Set the agent language to `"en"` (English only for POC)
@@ -643,18 +643,18 @@ Derived from [PRD.md](PRD.md) v0.8 (POC — Audio Streamed from ElevenLabs + Use
 
 ### Testing & Validation
 
-- [ ] **Test incremental summary generation end-to-end**
+- [x] **Test incremental summary generation end-to-end**
   - Record 3+ conversations on a single process → verify summary builds incrementally with contributor citations
   - Verify contradictions between contributors are surfaced in "Tensions & Gaps" section
   - Verify force refresh produces equivalent (or better) quality to incremental
   - Verify first conversation produces a valid structured summary from transcript alone
 
-- [ ] **Test department and function summary generation**
+- [x] **Test department and function summary generation**
   - Verify structured markdown output with cross-process/cross-department citations
   - Verify staleness propagation still works correctly with new prompts
   - Verify cascade generation (function → missing department summaries) works with new structured prompts
 
-- [ ] **Verify markdown rendering across all summary levels**
+- [x] **Verify markdown rendering across all summary levels**
   - Process, department, and function summaries render correctly as styled markdown
   - Mobile responsive — markdown doesn't break on narrow viewports
   - Old plain-text summaries (generated before this upgrade) still display correctly
@@ -667,13 +667,13 @@ Derived from [PRD.md](PRD.md) v0.8 (POC — Audio Streamed from ElevenLabs + Use
 
 ### Schema Changes
 
-- [ ] **Add `role` field to `users` table in `convex/schema.ts`**
+- [x] **Add `role` field to `users` table in `convex/schema.ts`**
   - Add `role: v.optional(v.union(v.literal("admin"), v.literal("contributor"), v.literal("viewer")))` after `profileComplete`
   - `v.optional` for backward compatibility — existing user documents without `role` are treated as `"viewer"` by the auth helpers
 
 ### Auth Helpers
 
-- [ ] **Extend auth helpers in `convex/lib/auth.ts`**
+- [x] **Extend auth helpers in `convex/lib/auth.ts`**
   - Keep existing `requireAuth` unchanged (used by read-only queries)
   - Add `requireRole(ctx, minimumRole)` — looks up user by `tokenIdentifier`, checks role against hierarchy (`viewer: 0, contributor: 1, admin: 2`), returns user doc
   - Add `requireContributor(ctx)` — shorthand for `requireRole(ctx, "contributor")`
@@ -683,42 +683,42 @@ Derived from [PRD.md](PRD.md) v0.8 (POC — Audio Streamed from ElevenLabs + Use
 
 ### User Mutations
 
-- [ ] **Update `store` mutation in `convex/users.ts` to set default role**
+- [x] **Update `store` mutation in `convex/users.ts` to set default role**
   - Add `role: "viewer"` to the `ctx.db.insert` call for new users
 
-- [ ] **Add role management mutations in `convex/users.ts`**
+- [x] **Add role management mutations in `convex/users.ts`**
   - `setUserRole` mutation — requires `admin` role, takes `targetUserId` + `role`, patches target user
   - `listAllUsers` query — requires `admin` role, returns all user documents (for future admin dashboard)
 
-- [ ] **Add internal mutations for bootstrapping in `convex/users.ts`**
+- [x] **Add internal mutations for bootstrapping in `convex/users.ts`**
   - `backfillRoles` internal mutation — patches all users missing `role` with a given default role (run via `npx convex run`)
   - `bootstrapAdmin` internal mutation — promotes a user to `admin` by email (run via `npx convex run`)
 
 ### Backend Guards — Write Mutations
 
-- [ ] **Guard write mutations in `convex/functions.ts`**
+- [x] **Guard write mutations in `convex/functions.ts`**
   - Import `requireContributor` from `./lib/auth`
   - `create`, `update`, `remove` mutations: replace `requireAuth(ctx)` with `requireContributor(ctx)`
   - `list`, `get` queries: keep `requireAuth(ctx)` unchanged (viewers can browse)
 
-- [ ] **Guard write mutations in `convex/departments.ts`**
+- [x] **Guard write mutations in `convex/departments.ts`**
   - Import `requireContributor` from `./lib/auth`
   - `create`, `update`, `remove` mutations: replace `requireAuth(ctx)` with `requireContributor(ctx)`
   - `listByFunction`, `get`, `listAll` queries: keep `requireAuth(ctx)` unchanged
 
-- [ ] **Guard write mutations in `convex/processes.ts`**
+- [x] **Guard write mutations in `convex/processes.ts`**
   - Import `requireContributor` from `./lib/auth`
   - `create`, `update`, `remove` mutations: replace `requireAuth(ctx)` with `requireContributor(ctx)`
   - `listByDepartment`, `get` queries: keep `requireAuth(ctx)` unchanged
 
-- [ ] **Guard recording action in `convex/postCall.ts`**
+- [x] **Guard recording action in `convex/postCall.ts`**
   - Import `checkRoleFromUser` from `./lib/auth`
   - In `fetchConversation` action, after the existing `getUserByToken` call, add `checkRoleFromUser(user, "contributor")`
   - No changes needed to summary generation actions (read operations, accessible to all roles)
 
 ### Frontend — Conditional Rendering
 
-- [ ] **Add role-based conditional rendering in `src/components/miller-columns.tsx`**
+- [x] **Add role-based conditional rendering in `src/components/miller-columns.tsx`**
   - At the top of `MillerColumns`, derive role from `useQuery(api.users.getMe)`:
     ```typescript
     const user = useQuery(api.users.getMe);
@@ -732,23 +732,23 @@ Derived from [PRD.md](PRD.md) v0.8 (POC — Audio Streamed from ElevenLabs + Use
   - "Rebuild from all transcripts" button: only render when `canEdit` is true
   - "Generate Summary" buttons: keep visible to all roles (read operation)
 
-- [ ] **Add role badge to `src/components/user-menu.tsx`**
+- [x] **Add role badge to `src/components/user-menu.tsx`**
   - Show user's role as a small badge next to the Clerk `<UserButton />`
   - Uses `useQuery(api.users.getMe)` to get role
 
-- [ ] **Add defense-in-depth role check to `src/components/recording-modal.tsx`**
+- [x] **Add defense-in-depth role check to `src/components/recording-modal.tsx`**
   - Early return `null` if `userRole === "viewer"` (backup — already hidden by MillerColumns guard)
 
 ### Deployment & Bootstrapping
 
-- [ ] **Deploy and run backfill**
+- [x] **Deploy and run backfill**
   - Deploy all changes (schema + code) — backward compatible due to `v.optional`
   - Run `npx convex run users:backfillRoles '{"defaultRole": "contributor"}'` to promote all existing users
   - Run `npx convex run users:bootstrapAdmin '{"email": "<admin-email>"}'` to bootstrap first admin
 
 ### Verification
 
-- [ ] **Verify RBAC end-to-end**
+- [x] **Verify RBAC end-to-end**
   - **Viewer test**: New user signs up → gets `viewer` role → can browse hierarchy and view summaries → cannot see +/edit/delete buttons or Record button → calling a write mutation from console returns "Insufficient permissions"
   - **Contributor test**: Promoted user → can see all CRUD buttons and Record button → can create/edit/delete items and record conversations → cannot call `setUserRole` or `listAllUsers`
   - **Admin test**: Bootstrapped admin → can see everything contributor sees → can call `setUserRole` to change another user's role → can call `listAllUsers`
@@ -756,9 +756,418 @@ Derived from [PRD.md](PRD.md) v0.8 (POC — Audio Streamed from ElevenLabs + Use
 
 ---
 
+## Phase 13: Multi-Tenancy via Clerk Organizations (Subdomain-Native)
+
+> **Goal:** Convert Fabric into a multi-tenant SaaS where every organization is accessed via its own subdomain (`biz-group.fabric.com` in prod, `biz-group.lvh.me:3000` in dev). Row-level authorization on every Convex query/mutation/action. Clerk owns identity + org membership; Fabric owns roles via a new `memberships` table. All current data is attributed to a new "Biz Group" org. Migration follows the widen-migrate-narrow pattern with `@convex-dev/migrations`. See PRD section 3.7 for architecture.
+
+### 13.0 Clerk Dashboard Setup (manual, must precede all code work)
+
+- [ ] **Enable Clerk Organizations**
+  - Clerk Dashboard → Organizations → toggle "Enable Organizations" on
+  - Turn OFF "Allow users to create organizations" (admin-provisioned only)
+  - Turn OFF "Allow users to delete organizations"
+
+- [ ] **Update the `convex` JWT template to include org claims**
+  - Clerk Dashboard → Sessions → JWT Templates → `convex`
+  - Add claims:
+    ```json
+    {
+      "orgId": "{{org.id}}",
+      "orgSlug": "{{org.slug}}"
+    }
+    ```
+  - Deliberately omit `orgRole` — Fabric's role comes from the `memberships` table, not Clerk
+  - Keep the pre-mapped `aud: "convex"` claim
+
+- [ ] **Create the "Biz Group" organization in Clerk Dashboard**
+  - Name: `Biz Group`, slug: `biz-group`
+  - Copy the generated `org_...` id — it will be needed as `BIZ_GROUP_CLERK_ORG_ID` for the Phase 13.3 backfill
+  - Invite every existing Fabric user into Biz Group (bulk invite from the application's user list)
+  - Set the initial admin's Clerk org role to `org:admin` so the seeded membership row maps correctly
+
+- [ ] **Smoke-test the JWT**
+  - Sign in as one invited user, open dev-tools, decode the Clerk session JWT, confirm `orgId` and `orgSlug` claims are present
+
+### 13.1 Install `@convex-dev/migrations` component
+
+- [x] **Add the migrations component dependency**
+  - `npm i @convex-dev/migrations` (installed 0.3.3)
+
+- [x] **Create `convex/convex.config.ts` and register the component**
+  - Uses `@convex-dev/migrations/convex.config.js` import (per the package README)
+  - Verified `components.migrations` appears in [convex/_generated/api.d.ts](convex/_generated/api.d.ts) after `npx convex codegen`
+
+- [x] **Create the canonical `convex/migrations.ts` home for all migration definitions**
+  - Scaffold with `Migrations<DataModel>` instance + `run = migrations.runner()` export
+  - Codegen + TypeScript check passed; migration definitions will be added in Phase 13.3
+
+### 13.2 Widen the Convex schema (`clerkOrgId` optional)
+
+- [x] **Add the `memberships` table to `convex/schema.ts`**
+  - Added with fields: `tokenIdentifier`, `userId`, `clerkOrgId`, `role` (admin/contributor/viewer union), `invitedBy` (optional), `createdAt`
+  - Indexes: `by_tokenIdentifier_and_clerkOrgId`, `by_clerkOrgId`, `by_userId`
+
+- [x] **Add `clerkOrgId: v.optional(v.string())` to every tenant-scoped table**
+  - Added to: `functions`, `departments`, `processes`, `conversations`, `processFlows`
+  - `users` table kept org-agnostic — identity is global, membership is in the new table
+
+- [x] **Add compound indexes prefixed by `clerkOrgId`**
+  - `functions.by_clerkOrgId`
+  - `departments.by_clerkOrgId_and_functionId`
+  - `processes.by_clerkOrgId_and_departmentId`
+  - `conversations.by_clerkOrgId_and_processId`, `by_clerkOrgId_and_status`, `by_clerkOrgId_and_elevenlabsConversationId`
+  - `processFlows.by_clerkOrgId_and_processId`
+  - All legacy single-field indexes retained (removed in Phase 13.8)
+
+- [x] **Push schema and verify**
+  - `npx convex codegen` completed cleanly (reached "Running TypeScript..." with no errors) — existing documents validate because `clerkOrgId` is optional
+
+- [x] **Follow-on widening: add `users.platformRole` for superadmins**
+  - Added `platformRole: v.optional(v.literal("superAdmin"))` to the `users` table
+  - Added index `by_platformRole` — deployment confirmed `[+] users.by_platformRole   platformRole, _creationTime`
+  - Backward compatible (optional field). Saish is promoted by running the bootstrap mutation in Phase 13.4f
+
+### 13.3 Backfill data for Biz Group
+
+- [x] **Set the `BIZ_GROUP_CLERK_ORG_ID` env var in Convex**
+  - Set to `org_3Ca1s1y5S6JRO7LnpgqHvBHAtE5` (Biz Group org from Phase 13.0)
+
+- [x] **Define `seedMembershipsForBizGroup` migration in `convex/migrations.ts`**
+  - Iterates every row in `users`; inserts a `memberships` row in Biz Group with role mapped from the legacy `users.role` (`admin → admin`, `viewer → viewer`, else `contributor`)
+  - Idempotent — skips if a matching membership already exists
+
+- [x] **Define per-table `backfill<Table>Org` migrations**
+  - One `migrations.define` per tenant table: `functions`, `departments`, `processes`, `conversations`, `processFlows`
+  - Each patches `clerkOrgId = BIZ_GROUP_CLERK_ORG_ID` only on rows where it is unset
+
+- [x] **Run the backfill migrations in order**
+  - `seedMembershipsForBizGroup`: processed 4 users
+  - `backfillFunctionsOrg`: processed 4 rows
+  - `backfillDepartmentsOrg`: processed 13 rows
+  - `backfillProcessesOrg`: processed 5 rows
+  - `backfillConversationsOrg`: processed 2 rows
+  - `backfillProcessFlowsOrg`: processed 1 row
+
+- [x] **Verify the backfill**
+  - Added `verifyOrgBackfill` internalQuery in [convex/migrations.ts](convex/migrations.ts) that counts total + unset rows per tenant table
+  - Result: `functions 4/0 unset`, `departments 13/0 unset`, `processes 5/0 unset`, `conversations 2/0 unset`, `processFlows 1/0 unset`, `memberships 4` (matches 4 users) ✓
+
+- [x] **Clean up the temporary env var after verification**
+  - `npx convex env remove BIZ_GROUP_CLERK_ORG_ID` — confirmed gone via `npx convex env list`
+
+### 13.4 Authorization helpers, super-admin layer & membership fan-out
+
+> **Decision locked in after Phase 13.3:** Fabric runs a two-layer authorization model — `users.platformRole` (platform super-admin) plus `memberships.role` (per-org role). Super-admins access client orgs via **auto-membership** (Model A): a fan-out action makes them real Clerk members of every org, so no bypass logic ever enters the per-request auth path. Initial super-admin is `saish.gaonkar@bizgroup.ae`, bootstrapped via an internal mutation. Org creation in Clerk Dashboard stays manual; the fan-out is invoked via `npx convex run` for now.
+
+#### 13.4a — Schema follow-on widening (super-admin support)
+
+- [x] **Add `platformRole` to `users` in `convex/schema.ts`** *(completed at the end of Phase 13.2)*
+  - Field: `platformRole: v.optional(v.literal("superAdmin"))`
+  - Index: `.index("by_platformRole", ["platformRole"])`
+
+- [x] **Push schema change** *(completed at the end of Phase 13.2)*
+  - `npx convex dev --once` reported `[+] users.by_platformRole   platformRole, _creationTime`
+
+#### 13.4b — Org-scope auth helpers (`convex/lib/orgAuth.ts`)
+
+- [x] **Create `convex/lib/orgAuth.ts` with the core per-request helpers**
+  - Exported `Role` type + `RANK` record
+  - `requireOrgMember`, `requireOrgRole`, `requireOrgContributor`, `requireOrgAdmin` — all consult only `memberships` (no platformRole bypass)
+  - `assertOrgOwns(caller, doc)` — throws `"Not found"` on mismatch
+  - `resolveOrgForAction(ctx)` — action-safe variant
+
+- [x] **Add platform-scope helpers to the same file**
+  - `requireSuperAdmin(ctx)` — reads identity, looks up user by `tokenIdentifier`, asserts `platformRole === "superAdmin"`, returns the user doc. Does not need `identity.orgId` — works at apex routes
+  - `requireSuperAdminForAction(ctx)` — action-context variant
+
+- [x] **Keep `convex/lib/auth.ts` temporarily** — existing code still imports it; removed in Phase 13.10
+
+#### 13.4c — Membership auto-provisioning on first touch
+
+- [x] **Update `convex/users.ts :: store` mutation**
+  - Reads `identity.orgId` from the JWT after upserting the user record
+  - Inserts a `memberships` row if missing: role `admin` for super-admins, `contributor` for everyone else
+
+#### 13.4d — Super-admin bootstrap & management (`convex/platform.ts`)
+
+- [x] **Create `convex/platform.ts`**
+
+- [x] **`bootstrapSuperAdmin` internal mutation**
+  - Args: `{ email: string }`. Sets `platformRole: "superAdmin"` on the matching user. Idempotent
+  - Does NOT backfill memberships into existing orgs — Saish is already an admin member of Biz Group from Phase 13.3's seed; additional orgs require a separate fan-out call
+
+- [x] **`setPlatformRole` public mutation** (super-admin-only)
+  - Args: `{ targetUserId, platformRole: "superAdmin" | null }`
+  - Self-demotion guard preserved
+  - Only toggles the flag — per-org Clerk invitations still require running `fanOutSuperAdminMembershipsInternal` for each org
+
+- [x] **`listSuperAdmins` public query** (super-admin-only)
+  - Uses `by_platformRole` index
+
+- [x] **`getSuperAdminsInternal` / `requireSuperAdminInternal`** — internal queries used by the fan-out action
+
+#### 13.4e — Fan-out action for new orgs
+
+- [x] **`fanOutSuperAdminMemberships` public action + `fanOutSuperAdminMembershipsInternal` internalAction**
+  - Shared `fanOutImpl` helper — the UI-facing `action` gates via `requireSuperAdminInternal`, the CLI-friendly `internalAction` skips the JWT gate (deployment-key auth instead)
+  - Logic: list all super-admins → for each, `POST /v1/organizations/:orgId/memberships` with `CLERK_SECRET_KEY` → idempotently insert/upgrade Fabric `memberships` row
+  - Clerk idempotency: parses response body for `errors[].code === "already_a_member_in_organization"` and treats it as a success (Clerk returns 400, not 422, for this case)
+  - Returns `{ clerkOrgId, superAdminsProcessed, membershipsInserted, membershipsUpgraded, clerkApiErrors }`
+
+- [x] **`insertSuperAdminMembershipInternal` internal mutation**
+  - Idempotent via `by_tokenIdentifier_and_clerkOrgId`: inserts if missing, upgrades role to `admin` if it was lower
+
+#### 13.4f — Bootstrap & verification
+
+- [x] **Run the super-admin bootstrap**
+  - `npx convex run platform:bootstrapSuperAdmin '{"email":"saish.gaonkar@bizgroup.ae"}'` returned `{ alreadySuperAdmin: false, userId: "kd7862...zzjj" }` — Saish's `platformRole` is now `"superAdmin"`
+
+- [x] **Idempotency smoke test against Biz Group**
+  - `npx convex run platform:fanOutSuperAdminMembershipsInternal '{"clerkOrgId":"org_3Ca1s1y5S6JRO7LnpgqHvBHAtE5"}'`
+  - Returned `{ superAdminsProcessed: 1, membershipsInserted: 0, membershipsUpgraded: 0, clerkApiErrors: [] }` — Clerk's "already a member" 400 is correctly treated as success, Fabric membership already present, no-op end-to-end
+
+- [ ] **Future: new-org smoke test** — when the first client org is created in Clerk Dashboard, run `fanOutSuperAdminMembershipsInternal` for its `org_...` id and confirm the super-admin is added as `org:admin` in Clerk with a matching `memberships` row. Deferred until an actual client org exists
+
+### 13.5 Migrate every Convex function to org scoping
+
+> **Pattern:** (1) replace `requireAuth` / `requireAdmin` / `requireContributor` with the `requireOrg*` equivalent, (2) filter every read by `clerkOrgId` via compound index, (3) stamp `clerkOrgId` on every insert, (4) call `assertOrgOwns` before any `ctx.db.get`-then-mutate. Internal functions accept `clerkOrgId` as an explicit arg — they do not re-read `ctx.auth`.
+
+- [x] **Migrate `convex/functions.ts` (6 fns)** — all reads via `by_clerkOrgId`; `get` returns `null` on cross-org; insert stamps `clerkOrgId`; `update`/`remove`/`childCount` call `assertOrgOwns`; cascade on rename preserved with documented cross-org caveat
+
+- [x] **Migrate `convex/departments.ts` (7 fns)** — reads via `by_clerkOrgId_and_functionId`; `listAll` uses prefix-only (clerkOrgId) query on the compound index; `create`/`update` assert parent function belongs to caller's org; move operation asserts the target function is org-owned too
+
+- [x] **Migrate `convex/processes.ts` (6 fns)** — reads via `by_clerkOrgId_and_departmentId`; `create`/`update` assert parent department is org-owned; summary-cascade cleanup on move/remove stays within the caller's org
+
+- [x] **Migrate `convex/conversations.ts`** — `listByProcess` asserts the process is org-owned then filters via `by_clerkOrgId_and_processId`
+
+- [x] **Migrate `convex/processFlows.ts` (7 fns)** — all reads via `by_clerkOrgId_and_processId`; `saveProcessFlow` stamps `clerkOrgId` on insert AND replace; new `assertProcessInOrg` internal query; `generateFlowInternal` threads `clerkOrgId` through every mutation/query; public `generateProcessFlow` uses `resolveOrgForAction` + `requireOrgContributorInternal` + `assertProcessInOrg`
+
+- [x] **Migrate `convex/summaries.ts` (3 fns)** — `generateDepartmentSummary`, `generateFunctionSummary`, `forceRefreshProcessSummary` all use `resolveOrgForAction` + `requireOrgContributorInternal`; thread `clerkOrgId` to every internal; cascade dept-gen call carries `clerkOrgId`
+
+- [x] **Migrate `convex/summariesHelpers.ts` (9 internals)** — `getDepartment`/`getFunction`/`getProcessSummariesByDepartment`/`getDepartmentSummariesByFunction` take `clerkOrgId` + compound index; `generateDepartmentSummaryInternal` takes `clerkOrgId` and threads it; staleness markers defensively verify doc exists before patching
+
+- [x] **Migrate `convex/postCall.ts` (16 fns)** — every internal accepts `clerkOrgId`; `insertConversation` stamps it after asserting the parent process belongs to the org; `fetchConversation` uses `resolveOrgForAction` + `requireOrgContributorInternal`; `regenerateProcessSummary` threads `clerkOrgId` through every call including `processFlows.markFlowStale` and `summariesHelpers.markDepartmentSummaryStale`; backfill helpers (`listUnimported`, `importConversation`, `refreshConversationAnalysis`, `getImportedConversationIds`, `getConversationByElevenLabsId`, `updateConversationAnalysis`) all take explicit `clerkOrgId`; added `requireOrgContributorInternal` and org-scoped `conversationExistsByElevenLabsId`
+
+- [x] **Migrate `convex/orgIntegrity.ts`** — both audits scope by `clerkOrgId` via compound indexes; recovered function/department insertion stamps `clerkOrgId`; added new `auditAllOrgs` internalQuery that flags rows missing `clerkOrgId` or whose `clerkOrgId` doesn't match their parent's
+
+- [x] **Migrate `convex/seed.ts` and `convex/cleanup.ts`** — both require `clerkOrgId: v.string()` arg. Seed skips if the target org already has functions; every insert stamps `clerkOrgId`. Cleanup scopes the "remove test conversations" operation by org
+
+- [x] **Add org-scoped member management in `convex/users.ts`** — `listOrgMembers` (admin-only, `by_clerkOrgId`, joined to user profile + surfaces `platformRole`), `setMembershipRole` (admin-only, self-demotion guard + last-admin guard), `removeMembership` (admin-only, last-admin guard + cannot-remove-self), `getMyMembership` (returns caller's role for UI gating). Legacy `setUserRole` / `listAllUsers` / `backfillRoles` / `bootstrapAdmin` kept in place for backward compatibility — they are deleted in Phase 13.10
+
+- [x] **Push + verify** — `npx convex dev --once` clean; `npx convex run orgIntegrity:auditAllOrgs` returns zero missing `clerkOrgId` and zero parent/child org mismatches; `auditHierarchyIntegrity` on Biz Group returns zero orphans
+
+### 13.6 Frontend — Subdomain-native routing
+
+- [x] **Update `src/proxy.ts` with subdomain extraction + internal rewrite**
+  - Reads `Host` header, extracts subdomain via `NEXT_PUBLIC_ROOT_DOMAIN`
+  - Apex requests fall through to marketing + auth routes
+  - Subdomain requests internally rewrite `/<anything>` → `/<subdomain>/<anything>` so the `src/app/[org]/...` tree resolves
+  - `organizationSyncOptions.organizationPatterns: ["/:slug", "/:slug/(.*)"]` configured — Clerk auto-activates the matching org on every authenticated request
+  - `auth.protect()` runs on all non-public routes after rewrite; apex skips protection for marketing/landing
+
+- [x] **Set root-domain env vars**
+  - `.env.local`: `NEXT_PUBLIC_ROOT_DOMAIN=lvh.me:3000` (added)
+  - Prod: `NEXT_PUBLIC_ROOT_DOMAIN=fabric.com` (set at deploy time)
+
+- [x] **Move the protected app tree under `src/app/[org]/...`**
+  - Former `src/app/page.tsx` signed-in content → `src/app/[org]/page.tsx`
+  - `src/app/admin/layout.tsx` + `page.tsx` + `users/page.tsx` → `src/app/[org]/admin/...`
+  - `src/app/sign-in/` and `src/app/sign-up/` kept at apex (public auth routes)
+
+- [x] **Create `src/app/[org]/layout.tsx` — the slug ↔ active-org guard**
+  - Client component using `useOrganization` / `useOrganizationList` (Clerk hooks)
+  - If middleware didn't auto-activate, tries client-side `setActive({ organization })` using the slug-to-membership map
+  - Wrong subdomain for the user's memberships → renders `<OrganizationList hidePersonal />` with a contextual message
+  - No active org at all → same picker
+  - All success paths render `children`
+
+- [x] **Rewrite `src/app/page.tsx` as an apex landing / redirector**
+  - Signed-out → existing marketing landing with Clerk `<SignIn />`
+  - Signed-in with active org → `window.location.replace` to `${protocol}//${slug}.${rootHostname}:${port}/`
+  - Signed-in without any membership → static message telling the user to ask their admin
+
+- [x] **Add an `<OrganizationSwitcher />` to the authenticated app shell**
+  - Placed in `src/components/user-menu.tsx` next to the role badge + `<UserButton />`
+  - `afterSelectOrganizationUrl` composed at runtime as `${protocol}//:slug.${rootHost}:${port}/` so dev (`lvh.me:3000`) and prod both work
+  - `hidePersonal` enabled — Fabric is B2B-only
+
+- [x] **Update legacy role checks to use `getMyMembership`**
+  - `src/components/miller-columns.tsx`, `src/components/recording-modal.tsx`, `src/components/user-menu.tsx`, `src/app/[org]/admin/layout.tsx` — all now read `api.users.getMyMembership.role` instead of `api.users.getMe.role`
+  - Admin users table page (`src/app/[org]/admin/users/page.tsx`) now uses `api.users.listOrgMembers` + `api.users.setMembershipRole` (the new org-scoped surface); legacy `setUserRole` / `listAllUsers` kept in the backend until Phase 13.10
+
+- [x] **Verify compile**
+  - `rm -rf .next` to clear stale route validators from the admin tree
+  - `npx tsc --noEmit` exits 0
+  - `npx convex dev --once` pushes cleanly
+
+> **⚠ 13.6 end-to-end verification is blocked on purchasing a production domain.**
+> Clerk's development instance shows "Refreshing the session token resulted in an infinite redirect loop" when signing in across subdomains of `lvh.me`. Root cause: dev-browser handshake between `*.lvh.me` and Clerk's `accounts.dev` doesn't propagate the dev browser token across host changes. "Allowed Subdomains" in the Clerk dashboard is production-only; Satellite domains are Pro-tier. Resolution requires:
+> 1. Purchase a production domain (e.g. `fabric.com`).
+> 2. Create a Clerk **production instance** bound to that domain.
+> 3. Enable "Allowed Subdomains" for `*.fabric.com` in the production instance.
+> 4. Set up wildcard DNS (`*.fabric.com → Vercel`), wildcard TLS cert, and Clerk's allowed origins.
+> 5. Set `NEXT_PUBLIC_ROOT_DOMAIN=fabric.com` + production `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY` + `CLERK_SECRET_KEY` in prod env.
+>
+> Until those are in place, **Phases 13.8 (narrow schema), 13.9 (tests), 13.10 (retire legacy), and 13.11 (E2E verification) stay paused.** The code for 13.0 through 13.7 is deployed and will begin working the moment the production instance is wired up.
+
+---
+
+### 13.6b — Dev → Prod data migration (one-shot, run during production bring-up)
+
+> Landed ahead of the production deploy so the tooling is ready when needed. Migrates every tenant row from the dev Convex deployment into prod, re-stamped with the new production Biz Group org id. Skips `users` + `memberships` (they auto-provision on prod sign-in).
+
+**What migrates:** functions, departments, processes, conversations, processFlows (~112KB of data on current dev: 4 functions + 13 departments + 5 processes + 2 conversations + 1 processFlow).
+
+**What does NOT migrate and why:**
+- `users` — dev Clerk tokenIdentifiers don't exist in prod; `users.store` auto-creates them on first sign-in
+- `memberships` — same reason
+- `conversations.userId` — nulled during import; `contributorName` is preserved for display
+
+**Files:**
+- [convex/migrations.ts](convex/migrations.ts) — `exportForOrg` (internalQuery), `prodImportGenerateUploadUrl` (internalMutation), `prodImportFromStorage` (internalAction), `prodImport_insertAll` (internalMutation). Pre-flight guard refuses to import if target org already has functions.
+- [scripts/migrate-dev-to-prod.mjs](scripts/migrate-dev-to-prod.mjs) — Node orchestrator. Exports from dev, HTTP-POSTs the dump to prod's Convex storage, triggers the import action, runs the integrity audit.
+- `dump.json` gitignored (contains real conversation content).
+
+**How to run (after production Convex is deployed and the prod Biz Group org exists in prod Clerk):**
+```
+# 1. (Optional) verify the export step works without touching prod
+node scripts/migrate-dev-to-prod.mjs <PROD_ORG_ID> --dry-run
+
+# 2. Full migration — exports, uploads, imports, verifies
+node scripts/migrate-dev-to-prod.mjs <PROD_ORG_ID>
+```
+
+The script prints row counts at every step. If prod already contains Biz Group data, the `prodImport_insertAll` mutation aborts with a clear error — clear the target via the Convex dashboard and re-run.
+
+**Post-migration tasks (corrected bring-up sequence):**
+
+The original sequence assumed users.store would have already created Saish's user row in prod Convex before bootstrap runs. In practice, that row only exists after someone signs into the deployed app, which creates a chicken-and-egg problem during bring-up. Use `seedAndBootstrapSuperAdmin` instead — it looks Saish up via the Clerk Admin API and creates the row directly:
+
+1. Ensure Saish has been invited into the Biz Group org in production Clerk and has accepted the invite (just the email/org membership, no sign-in required).
+2. Push the latest code to prod and seed the super-admin in one shot:
+   ```
+   npx convex run --prod --push platform:seedAndBootstrapSuperAdmin '{"email":"saish.gaonkar@bizgroup.ae"}'
+   ```
+   This calls Clerk's `GET /v1/users` with `CLERK_SECRET_KEY`, constructs the tokenIdentifier as `<CLERK_JWT_ISSUER_DOMAIN>|<clerk_user_id>`, and upserts a `users` row with `platformRole: "superAdmin"`. When Saish later signs in, `users.store` finds the existing row via `by_tokenIdentifier` and reuses it (no duplicate).
+3. `npx convex run --prod platform:fanOutSuperAdminMembershipsInternal '{"clerkOrgId":"<PROD_ORG_ID>"}'` to add Saish as `org:admin` in the Biz Group Clerk org (via Clerk API) and upsert a Fabric `memberships` row with role `admin`. Idempotent — Clerk returning "already a member" is treated as success.
+4. Verify: `npx convex run --prod orgIntegrity:auditHierarchyIntegrity '{"clerkOrgId":"<PROD_ORG_ID>"}'` → should show the imported hierarchy counts with zero orphans.
+5. Saish can now sign in at `https://bizfabric.ai/sign-in`. The existing user row + membership are reused; no duplicates.
+
+**Requirements on the prod Convex deployment env:**
+- `CLERK_SECRET_KEY` — the prod `sk_live_...` key
+- `CLERK_JWT_ISSUER_DOMAIN` — e.g. `https://clerk.bizfabric.ai`
+- `CLERK_FRONTEND_API_URL` — same value (used elsewhere)
+
+Set them before running the bootstrap:
+```
+npx convex env set --prod CLERK_SECRET_KEY sk_live_xxx
+npx convex env set --prod CLERK_JWT_ISSUER_DOMAIN https://clerk.bizfabric.ai
+npx convex env set --prod CLERK_FRONTEND_API_URL https://clerk.bizfabric.ai
+```
+
+**Verified on dev:** `--dry-run` exports the 112KB payload in ~6s, structure matches expectations (oldId / oldFunctionId / oldDepartmentId / oldProcessId keys for FK remapping; nodes and edges preserved verbatim on the processFlow).
+
+### 13.7 Org-scope the HTTP audio proxy *(bundled with 13.6)*
+
+- [x] **Update `convex/http.ts` — new path `/audio/:clerkOrgId/:elevenlabsConversationId`**
+  - Parses both segments from the URL; returns 400 if either is missing
+  - If the caller has a session and `identity.orgId !== pathOrgId` → 404 (no distinction between wrong-org and not-found)
+  - Always DB-checks conversation existence scoped by `clerkOrgId` via `by_clerkOrgId_and_elevenlabsConversationId`
+  - Preserves existing CORS + Range header handling
+  - Hard-cut — old `/audio/:id` path removed. Seed conversations have backfilled `clerkOrgId` so audio URLs rebuild cleanly
+
+- [x] **Update audio-player URLs on the frontend**
+  - `src/components/conversation-log.tsx :: getAudioUrl(clerkOrgId, elevenlabsConversationId)` — returns `null` if the conversation row lacks a `clerkOrgId` (defensive; should never happen after Phase 13.3 backfill)
+  - `ConversationAudioControls` + `SyncedTranscript` accept `audioUrl: string | null` — early-return / skip play if null
+
+### 13.8 Narrow the schema
+
+- [x] **Flip `clerkOrgId` from optional to required**
+  - Verified zero unset rows in dev and prod via `migrations:verifyOrgBackfill`
+  - Changed `clerkOrgId: v.optional(v.string())` → `v.string()` on `functions`, `departments`, `processes`, `conversations`, `processFlows`
+
+- [x] **Delete the legacy single-field indexes that allow cross-tenant scans**
+  - `departments.by_functionId`, `processes.by_departmentId`, `conversations.by_processId`, `by_status`, `by_userId`, `by_elevenlabsConversationId`, `processFlows.by_processId` — all dropped
+  - Confirmed via grep that no code under `convex/` or `src/` references these indexes
+
+- [x] **Keep users-global indexes**
+  - `users.by_tokenIdentifier` and `users.by_email` stay (identity-level, not tenant-scoped)
+
+### 13.9 Testing
+
+- [x] **Install test tooling**
+  - `npm i -D convex-test vitest @edge-runtime/vm` — installed
+  - `vitest.config.ts` created with `environment: "edge-runtime"` and `server.deps.inline = ["convex-test"]`
+  - `npm test` / `npm run test:watch` scripts added to `package.json`
+
+- [x] **Write cross-tenant isolation tests** (`convex/tenantIsolation.test.ts` — 8 passing)
+  - `functions.list` only returns caller's org rows
+  - `departments.listByFunction` / `processes.listByDepartment` / `conversations.listByProcess` return `[]` for cross-tenant parent id (intentional: "treat cross-org as empty" while still pinning the index to caller's org)
+  - `processes.create` with a cross-tenant `departmentId` → throws via `assertOrgOwns`
+  - `functions.create` stamps `clerkOrgId === caller.orgId`
+  - Identity with `orgId` but no `memberships` row → `requireOrgMember` throws "Not a member of this organization"
+  - `setMembershipRole` targeting another org's membership → throws "Membership not found"
+
+- [ ] **Optional deferred**: HTTP audio proxy 404 + summary-staleness cross-org tests — hold until there's a regression driver; current surface is covered by the 8 isolation tests above
+
+### 13.10 Retire the legacy role system
+
+- [x] **Remove `users.role` field and its indexes**
+  - Dropped `role` from `users` in `convex/schema.ts`; dev push clean
+
+- [x] **Delete `convex/lib/auth.ts`**
+  - Moved `requireAuth` into `convex/lib/orgAuth.ts`; deleted the legacy module
+
+- [x] **Delete the legacy admin fns from `convex/users.ts`**
+  - Removed `setUserRole`, `listAllUsers`, `backfillRoles`, `bootstrapAdmin`; `store` no longer seeds `role: "viewer"`
+  - Deleted `seedMembershipsForBizGroup` migration (already run; referenced the now-dropped `users.role`)
+
+- [x] **Update the admin UI**
+  - Already migrated in Phase 13.5 — `src/app/[org]/admin/users/page.tsx` uses `listOrgMembers` / `setMembershipRole`
+  - All frontend role checks read from `api.users.getMyMembership`, not `users.role`
+
+### 13.11 End-to-End Verification
+
+- [ ] **Local dev subdomain smoke test**
+  - `npm run dev`; visit `http://biz-group.lvh.me:3000/sign-in`; sign in as an invited Biz Group user; expect redirect to `http://biz-group.lvh.me:3000/`
+
+- [ ] **CRUD golden-path**
+  - Create a function → department → process → conversation from the Biz Group subdomain
+  - Confirm every newly-inserted Convex row has `clerkOrgId === biz-group org id`
+
+- [ ] **Audio playback**
+  - Open a conversation's inline audio player; confirm the `<audio>` src is `/audio/org_.../conv_...` and the track plays end-to-end
+
+- [ ] **Cross-tenant isolation (manual)**
+  - Create a second Clerk org (e.g. `test-org`); invite a second test user
+  - Sign in as the test user; visit `http://biz-group.lvh.me:3000/` → expect the `[org]` layout to flip to `<OrganizationList />`
+  - From the Convex dashboard "run function" panel, invoke a query scoped to Biz Group IDs while authenticated as the test user → expect "Not found" or auth errors
+
+- [ ] **Wrong-org ID-substitution defense**
+  - As a `test-org` admin, call `processes.create` with a Biz Group `departmentId` from the Convex dashboard → expect throw
+
+- [ ] **Convex-test suite**
+  - `npx vitest run` — all Phase 13.9 isolation tests green
+
+- [ ] **Orphan / integrity audit**
+  - `npx convex run orgIntegrity:auditAllOrgs` — zero rows with missing or mismatched `clerkOrgId`
+
+- [ ] **Env hygiene**
+  - `npx convex env list` — confirm `BIZ_GROUP_CLERK_ORG_ID` has been unset (it was a one-shot backfill artifact)
+  - Confirm `NEXT_PUBLIC_ROOT_DOMAIN` is set to the production domain in the prod deployment and to `lvh.me:3000` in dev
+
+- [ ] **Production subdomain readiness (when a real domain is purchased)**
+  - Configure wildcard DNS (`*.fabric.com → hosting platform`)
+  - Provision a wildcard TLS certificate
+  - Add the wildcard origin to Clerk's allowed origins
+  - Set `NEXT_PUBLIC_ROOT_DOMAIN=fabric.com` in prod env and redeploy
+  - Visit `https://biz-group.fabric.com/` and rerun the CRUD golden-path
+
+---
+
 ## Phase X: End-to-End Verification
 
-- [ ] **End-to-end verification against all 10 POC success criteria (PRD section 7)**
+- [x] **End-to-end verification against all 10 POC success criteria (PRD section 7)**
   1. **Three-click navigation**: Verify a user can navigate the org hierarchy in three clicks (desktop) or three taps (mobile) to reach any process
   2. **Voice conversation initiation**: Verify a user can initiate a voice conversation with the ElevenLabs agent from any process in the hierarchy
   3. **Consent notice**: Verify a consent notice ("This conversation will be recorded, transcribed, and stored") is shown before the first recording

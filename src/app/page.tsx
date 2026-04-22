@@ -1,38 +1,21 @@
 "use client";
 
-import { useConvexAuth, useQuery, useMutation } from "convex/react";
-import { useEffect } from "react";
+import { useConvexAuth } from "convex/react";
+import { useOrganization, useOrganizationList } from "@clerk/nextjs";
 import { SignIn } from "@clerk/nextjs";
-import { api } from "../../convex/_generated/api";
-import { MillerColumns } from "@/components/miller-columns";
-import { ProfileOnboarding } from "@/components/profile-onboarding";
+import { useEffect, useState } from "react";
 
-function AuthenticatedApp() {
-  const user = useQuery(api.users.getMe);
-  const storeUser = useMutation(api.users.store);
+const ROOT_DOMAIN = process.env.NEXT_PUBLIC_ROOT_DOMAIN ?? "";
 
-  useEffect(() => {
-    storeUser();
-  }, [storeUser]);
+function rootHostname(): string {
+  return ROOT_DOMAIN.split(":")[0] ?? "";
+}
 
-  if (user === undefined) {
-    return (
-      <div className="flex h-screen flex-col items-center justify-center gap-3">
-        <div className="h-5 w-5 animate-spin rounded-full border-2 border-primary/30 border-t-primary" />
-        <p className="text-sm text-muted-foreground">Loading your workspace...</p>
-      </div>
-    );
-  }
-
-  if (user === null || !user.profileComplete) {
-    return <ProfileOnboarding />;
-  }
-
-  return (
-    <div className="flex h-screen flex-col">
-      <MillerColumns />
-    </div>
-  );
+function buildSubdomainUrl(slug: string): string {
+  if (typeof window === "undefined") return "";
+  const { protocol, port } = window.location;
+  const host = port ? `${rootHostname()}:${port}` : rootHostname();
+  return `${protocol}//${slug}.${host}/`;
 }
 
 function LandingPage() {
@@ -40,9 +23,12 @@ function LandingPage() {
     <div className="flex min-h-screen">
       {/* Left panel — branding */}
       <div className="hidden lg:flex lg:w-1/2 relative overflow-hidden bg-neutral-100 flex-col justify-between p-12 text-black">
-        {/* Decorative arcs */}
         <div className="absolute inset-0 opacity-[0.2]">
-          <svg className="absolute -right-32 top-1/4 h-[600px] w-[600px]" viewBox="0 0 600 600" fill="none">
+          <svg
+            className="absolute -right-32 top-1/4 h-[600px] w-[600px]"
+            viewBox="0 0 600 600"
+            fill="none"
+          >
             <circle cx="300" cy="300" r="200" stroke="black" strokeWidth="1" />
             <circle cx="300" cy="300" r="260" stroke="black" strokeWidth="0.5" />
             <circle cx="300" cy="300" r="140" stroke="black" strokeWidth="0.5" />
@@ -54,7 +40,8 @@ function LandingPage() {
             Fabric.
           </h1>
           <p className="mt-6 text-lg text-neutral-600 max-w-md leading-relaxed">
-            Capture how your organization works through conversations. Build a living knowledge base, effortlessly.
+            Capture how your organization works through conversations. Build a
+            living knowledge base, effortlessly.
           </p>
         </div>
 
@@ -104,6 +91,44 @@ function LandingPage() {
   );
 }
 
+/**
+ * Signed-in users hitting the apex domain get bounced to the subdomain of
+ * their active (or first-available) org. Membership data comes from Clerk.
+ */
+function ApexRedirector() {
+  const { organization, isLoaded: orgLoaded } = useOrganization();
+  const { isLoaded: orgListLoaded, userMemberships } = useOrganizationList({
+    userMemberships: true,
+  });
+  const [message, setMessage] = useState<string>("Redirecting...");
+
+  useEffect(() => {
+    if (!orgLoaded || !orgListLoaded) return;
+
+    // Prefer the active org; otherwise pick the first membership.
+    const activeSlug = organization?.slug ?? null;
+    const firstSlug =
+      userMemberships.data?.[0]?.organization.slug ?? null;
+    const target = activeSlug ?? firstSlug;
+
+    if (!target) {
+      setMessage(
+        "You are not a member of any organization. Please contact your administrator for access.",
+      );
+      return;
+    }
+
+    window.location.replace(buildSubdomainUrl(target));
+  }, [orgLoaded, orgListLoaded, organization?.slug, userMemberships.data]);
+
+  return (
+    <div className="flex h-screen flex-col items-center justify-center gap-3 p-6 text-center">
+      <div className="h-5 w-5 animate-spin rounded-full border-2 border-primary/30 border-t-primary" />
+      <p className="text-sm text-muted-foreground max-w-sm">{message}</p>
+    </div>
+  );
+}
+
 export default function Home() {
   const { isAuthenticated, isLoading } = useConvexAuth();
 
@@ -120,5 +145,5 @@ export default function Home() {
     return <LandingPage />;
   }
 
-  return <AuthenticatedApp />;
+  return <ApexRedirector />;
 }

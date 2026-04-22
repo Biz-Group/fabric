@@ -7,7 +7,7 @@ import {
 } from "./_generated/server";
 import { internal } from "./_generated/api";
 import { Id } from "./_generated/dataModel";
-import { requireAuth, checkRoleFromUser } from "./lib/auth";
+import { requireOrgContributor, resolveOrgForAction } from "./lib/orgAuth";
 
 // Normalize ElevenLabs transcript to the shape our UI expects:
 // ElevenLabs returns { role: "agent"|"user", message: string, time_in_call_secs: number }
@@ -23,11 +23,31 @@ function normalizeTranscript(
   }));
 }
 
-// --- Internal helpers (not public) ---
+// ---------------------------------------------------------------------------
+// Internal auth-gating helpers for actions
+// ---------------------------------------------------------------------------
+
+/**
+ * Gate an action on the caller being a contributor (or admin) in their active
+ * org. Actions call this via `ctx.runQuery(internal.postCall.requireOrgContributorInternal, {})`.
+ * Throws if not authenticated, no active org, no membership, or role < contributor.
+ */
+export const requireOrgContributorInternal = internalQuery({
+  args: {},
+  handler: async (ctx) => {
+    const caller = await requireOrgContributor(ctx);
+    return { orgId: caller.orgId, userId: caller.userId };
+  },
+});
+
+// ---------------------------------------------------------------------------
+// Internal helpers — all tenant-scoped via explicit clerkOrgId arg
+// ---------------------------------------------------------------------------
 
 export const insertConversation = internalMutation({
   args: {
     processId: v.id("processes"),
+    clerkOrgId: v.string(),
     elevenlabsConversationId: v.string(),
     contributorName: v.string(),
     userId: v.optional(v.id("users")),
@@ -50,8 +70,14 @@ export const insertConversation = internalMutation({
     ),
   },
   handler: async (ctx, args) => {
+    // Defensive: ensure the parent process belongs to the stamping org.
+    const process = await ctx.db.get(args.processId);
+    if (!process || process.clerkOrgId !== args.clerkOrgId) {
+      throw new Error("Process not found in this organization");
+    }
     return await ctx.db.insert("conversations", {
       processId: args.processId,
+      clerkOrgId: args.clerkOrgId,
       elevenlabsConversationId: args.elevenlabsConversationId,
       contributorName: args.contributorName,
       userId: args.userId,
@@ -65,11 +91,16 @@ export const insertConversation = internalMutation({
 });
 
 export const getConversationSummaries = internalQuery({
-  args: { processId: v.id("processes") },
+  args: {
+    processId: v.id("processes"),
+    clerkOrgId: v.string(),
+  },
   handler: async (ctx, args) => {
     const conversations = await ctx.db
       .query("conversations")
-      .withIndex("by_processId", (q) => q.eq("processId", args.processId))
+      .withIndex("by_clerkOrgId_and_processId", (q) =>
+        q.eq("clerkOrgId", args.clerkOrgId).eq("processId", args.processId),
+      )
       .order("asc")
       .collect();
     return conversations
@@ -83,13 +114,17 @@ export const getConversationSummaries = internalQuery({
   },
 });
 
-// Fetch only the latest done conversation for a process (used by incremental summary path)
 export const getLatestConversation = internalQuery({
-  args: { processId: v.id("processes") },
+  args: {
+    processId: v.id("processes"),
+    clerkOrgId: v.string(),
+  },
   handler: async (ctx, args) => {
     const conversation = await ctx.db
       .query("conversations")
-      .withIndex("by_processId", (q) => q.eq("processId", args.processId))
+      .withIndex("by_clerkOrgId_and_processId", (q) =>
+        q.eq("clerkOrgId", args.clerkOrgId).eq("processId", args.processId),
+      )
       .order("desc")
       .filter((q) => q.eq(q.field("status"), "done"))
       .first();
@@ -103,39 +138,50 @@ export const getLatestConversation = internalQuery({
   },
 });
 
-// Fetch the current rolling summary for a process
 export const getProcessRollingSummary = internalQuery({
-  args: { processId: v.id("processes") },
+  args: {
+    processId: v.id("processes"),
+    clerkOrgId: v.string(),
+  },
   handler: async (ctx, args) => {
     const process = await ctx.db.get(args.processId);
-    return process?.rollingSummary ?? null;
+    if (!process || process.clerkOrgId !== args.clerkOrgId) return null;
+    return process.rollingSummary ?? null;
   },
 });
 
 export const updateRollingSummary = internalMutation({
   args: {
     processId: v.id("processes"),
+    clerkOrgId: v.string(),
     rollingSummary: v.string(),
   },
   handler: async (ctx, args) => {
+    const process = await ctx.db.get(args.processId);
+    if (!process || process.clerkOrgId !== args.clerkOrgId) return;
     await ctx.db.patch(args.processId, {
       rollingSummary: args.rollingSummary,
     });
   },
 });
 
-// Lookup a process's departmentId for staleness cascading
 export const getProcessDepartmentId = internalQuery({
-  args: { processId: v.id("processes") },
+  args: {
+    processId: v.id("processes"),
+    clerkOrgId: v.string(),
+  },
   handler: async (ctx, args) => {
     const process = await ctx.db.get(args.processId);
-    return process?.departmentId ?? null;
+    if (!process || process.clerkOrgId !== args.clerkOrgId) return null;
+    return process.departmentId ?? null;
   },
 });
 
-// --- Public action: fetchConversation ---
-// Called by the frontend after onDisconnect fires.
-// Polls ElevenLabs API until the conversation is processed, then inserts data.
+// ---------------------------------------------------------------------------
+// Public action: fetchConversation
+// Called by the frontend after onDisconnect fires. Polls ElevenLabs API
+// until the conversation is processed, then inserts data.
+// ---------------------------------------------------------------------------
 
 export const fetchConversation = action({
   args: {
@@ -143,15 +189,15 @@ export const fetchConversation = action({
     processId: v.id("processes"),
   },
   handler: async (ctx, args) => {
-    // Auth: derive userId and contributorName server-side
-    const identity = await requireAuth(ctx);
-    const user = await ctx.runQuery(
-      internal.postCall.getUserByToken,
-      { tokenIdentifier: identity.tokenIdentifier },
+    const { orgId, tokenIdentifier } = await resolveOrgForAction(ctx);
+    const caller: { orgId: string; userId: Id<"users"> } = await ctx.runQuery(
+      internal.postCall.requireOrgContributorInternal,
+      {},
     );
-    // Role check: recording requires contributor
-    checkRoleFromUser(user, "contributor");
-    const userId = user?._id ?? undefined;
+    const user = await ctx.runQuery(internal.postCall.getUserByToken, {
+      tokenIdentifier,
+    });
+    const userId = caller.userId;
     const contributorName = user?.name ?? "Anonymous";
 
     const apiKey = process.env.ELEVENLABS_API_KEY;
@@ -161,7 +207,7 @@ export const fetchConversation = action({
 
     const maxRetries = 30;
     const pollIntervalMs = 2000;
-    const maxNetworkErrors = 5; // tolerate up to 5 consecutive network failures
+    const maxNetworkErrors = 5;
     let consecutiveNetworkErrors = 0;
 
     for (let attempt = 0; attempt < maxRetries; attempt++) {
@@ -169,12 +215,9 @@ export const fetchConversation = action({
       try {
         response = await fetch(
           `https://api.elevenlabs.io/v1/convai/conversations/${args.elevenlabsConversationId}`,
-          {
-            headers: { "xi-api-key": apiKey },
-          },
+          { headers: { "xi-api-key": apiKey } },
         );
       } catch (networkError) {
-        // Network-level failure (DNS, timeout, connection refused, etc.)
         consecutiveNetworkErrors++;
         console.error(
           `ElevenLabs network error (attempt ${attempt + 1}, consecutive: ${consecutiveNetworkErrors}):`,
@@ -182,9 +225,9 @@ export const fetchConversation = action({
         );
 
         if (consecutiveNetworkErrors >= maxNetworkErrors) {
-          // Too many consecutive network errors — give up and record as failed
           await ctx.runMutation(internal.postCall.insertConversation, {
             processId: args.processId,
+            clerkOrgId: orgId,
             elevenlabsConversationId: args.elevenlabsConversationId,
             contributorName,
             userId,
@@ -193,16 +236,13 @@ export const fetchConversation = action({
           return { status: "failed" as const };
         }
 
-        // Back off slightly longer on network errors (3 seconds)
         await new Promise((resolve) => setTimeout(resolve, 3000));
         continue;
       }
 
-      // Reset consecutive error counter on successful connection
       consecutiveNetworkErrors = 0;
 
       if (!response.ok) {
-        // Transient server errors (5xx) — retry; client errors (4xx) — fail
         if (response.status >= 500) {
           console.error(
             `ElevenLabs server error ${response.status} on attempt ${attempt + 1} — retrying`,
@@ -210,9 +250,9 @@ export const fetchConversation = action({
           await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
           continue;
         }
-        // 4xx errors are not transient — fail immediately
         await ctx.runMutation(internal.postCall.insertConversation, {
           processId: args.processId,
+          clerkOrgId: orgId,
           elevenlabsConversationId: args.elevenlabsConversationId,
           contributorName,
           userId,
@@ -224,15 +264,14 @@ export const fetchConversation = action({
       const data = await response.json();
 
       if (data.status === "done") {
-        // Extract fields from the ElevenLabs response
         const transcript = normalizeTranscript(data.transcript);
         const summary = data.analysis?.transcript_summary ?? null;
         const analysis = data.analysis ?? null;
         const durationSeconds = data.metadata?.call_duration_secs ?? null;
 
-        // Insert the conversation record
         await ctx.runMutation(internal.postCall.insertConversation, {
           processId: args.processId,
+          clerkOrgId: orgId,
           elevenlabsConversationId: args.elevenlabsConversationId,
           contributorName,
           userId,
@@ -243,11 +282,10 @@ export const fetchConversation = action({
           status: "done",
         });
 
-        // Trigger rolling summary regeneration
         await ctx.scheduler.runAfter(
           0,
           internal.postCall.regenerateProcessSummary,
-          { processId: args.processId },
+          { processId: args.processId, clerkOrgId: orgId },
         );
 
         return { status: "done" as const };
@@ -256,6 +294,7 @@ export const fetchConversation = action({
       if (data.status === "failed") {
         await ctx.runMutation(internal.postCall.insertConversation, {
           processId: args.processId,
+          clerkOrgId: orgId,
           elevenlabsConversationId: args.elevenlabsConversationId,
           contributorName,
           userId,
@@ -264,13 +303,13 @@ export const fetchConversation = action({
         return { status: "failed" as const };
       }
 
-      // Still processing — wait before polling again
       await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
     }
 
     // Max retries exceeded — insert as processing so frontend can detect via reactivity
     await ctx.runMutation(internal.postCall.insertConversation, {
       processId: args.processId,
+      clerkOrgId: orgId,
       elevenlabsConversationId: args.elevenlabsConversationId,
       contributorName,
       userId,
@@ -294,41 +333,51 @@ export const getUserByToken = internalQuery({
   },
 });
 
-// Helper query: verify an ElevenLabs conversation ID exists in our DB
+// Helper query: verify an ElevenLabs conversation exists in our DB for the
+// given org. Used by the audio proxy (Phase 13.7) to authorize playback.
 export const conversationExistsByElevenLabsId = internalQuery({
-  args: { elevenlabsConversationId: v.string() },
+  args: {
+    elevenlabsConversationId: v.string(),
+    clerkOrgId: v.string(),
+  },
   handler: async (ctx, args) => {
     const conv = await ctx.db
       .query("conversations")
-      .withIndex("by_elevenlabsConversationId", (q) =>
-        q.eq("elevenlabsConversationId", args.elevenlabsConversationId),
+      .withIndex("by_clerkOrgId_and_elevenlabsConversationId", (q) =>
+        q
+          .eq("clerkOrgId", args.clerkOrgId)
+          .eq("elevenlabsConversationId", args.elevenlabsConversationId),
       )
       .first();
     return conv !== null;
   },
 });
 
-// --- Internal helper: get all imported ElevenLabs conversation IDs ---
+// ---------------------------------------------------------------------------
+// Internal backfill helpers — always scoped by explicit clerkOrgId arg
+// ---------------------------------------------------------------------------
 
 export const getImportedConversationIds = internalQuery({
-  args: {},
-  handler: async (ctx) => {
-    const conversations = await ctx.db.query("conversations").take(10000);
+  args: { clerkOrgId: v.string() },
+  handler: async (ctx, args) => {
+    const conversations = await ctx.db
+      .query("conversations")
+      .withIndex("by_clerkOrgId_and_processId", (q) =>
+        q.eq("clerkOrgId", args.clerkOrgId),
+      )
+      .take(10000);
     return conversations.map((c) => c.elevenlabsConversationId);
   },
 });
 
-// --- Backfill: list conversations on ElevenLabs not yet in our DB ---
-
 export const listUnimported = internalAction({
-  args: {},
-  handler: async (ctx) => {
+  args: { clerkOrgId: v.string() },
+  handler: async (ctx, args) => {
     const apiKey = process.env.ELEVENLABS_API_KEY;
     if (!apiKey) throw new Error("ELEVENLABS_API_KEY is not configured");
 
     const agentId = process.env.ELEVENLABS_AGENT_ID;
 
-    // Fetch conversations from ElevenLabs (up to 100)
     const url = new URL("https://api.elevenlabs.io/v1/convai/conversations");
     if (agentId) url.searchParams.set("agent_id", agentId);
 
@@ -347,22 +396,19 @@ export const listUnimported = internalAction({
       call_duration_secs?: number;
     }> = data.conversations ?? [];
 
-    // Get IDs already in our DB
     const importedIds: string[] = await ctx.runQuery(
       internal.postCall.getImportedConversationIds,
-      {},
+      { clerkOrgId: args.clerkOrgId },
     );
     const importedSet: Set<string> = new Set(importedIds);
 
-    // Filter to unimported, done conversations
     const unimported: Array<{
       conversationId: string;
       startTime: string | null;
       durationSeconds: number | null;
     }> = allConversations
       .filter(
-        (c) =>
-          !importedSet.has(c.conversation_id) && c.status === "done",
+        (c) => !importedSet.has(c.conversation_id) && c.status === "done",
       )
       .map((c) => ({
         conversationId: c.conversation_id,
@@ -376,13 +422,12 @@ export const listUnimported = internalAction({
   },
 });
 
-// --- Backfill: import a specific ElevenLabs conversation into a process ---
-
 export const importConversation = internalAction({
   args: {
     elevenlabsConversationId: v.string(),
     processId: v.id("processes"),
     contributorName: v.string(),
+    clerkOrgId: v.string(),
   },
   handler: async (ctx, args) => {
     const apiKey = process.env.ELEVENLABS_API_KEY;
@@ -412,6 +457,7 @@ export const importConversation = internalAction({
 
     await ctx.runMutation(internal.postCall.insertConversation, {
       processId: args.processId,
+      clerkOrgId: args.clerkOrgId,
       elevenlabsConversationId: args.elevenlabsConversationId,
       contributorName: args.contributorName,
       transcript,
@@ -421,35 +467,38 @@ export const importConversation = internalAction({
       status: "done",
     });
 
-    // Regenerate rolling summary for the process
     await ctx.scheduler.runAfter(
       0,
       internal.postCall.regenerateProcessSummary,
-      { processId: args.processId },
+      { processId: args.processId, clerkOrgId: args.clerkOrgId },
     );
 
     return { status: "done" as const, summary };
   },
 });
 
-// --- Backfill: refresh analysis data for an existing conversation from ElevenLabs ---
-
 export const refreshConversationAnalysis = internalAction({
-  args: { elevenlabsConversationId: v.string() },
+  args: {
+    elevenlabsConversationId: v.string(),
+    clerkOrgId: v.string(),
+  },
   handler: async (ctx, args) => {
     const apiKey = process.env.ELEVENLABS_API_KEY;
     if (!apiKey) throw new Error("ELEVENLABS_API_KEY is not configured");
 
-    // Find the existing conversation in our DB
     const existing = await ctx.runQuery(
       internal.postCall.getConversationByElevenLabsId,
-      { elevenlabsConversationId: args.elevenlabsConversationId },
+      {
+        elevenlabsConversationId: args.elevenlabsConversationId,
+        clerkOrgId: args.clerkOrgId,
+      },
     );
     if (!existing) {
-      throw new Error(`Conversation ${args.elevenlabsConversationId} not found in DB`);
+      throw new Error(
+        `Conversation ${args.elevenlabsConversationId} not found in org ${args.clerkOrgId}`,
+      );
     }
 
-    // Fetch fresh data from ElevenLabs
     const response = await fetch(
       `https://api.elevenlabs.io/v1/convai/conversations/${args.elevenlabsConversationId}`,
       { headers: { "xi-api-key": apiKey } },
@@ -464,9 +513,9 @@ export const refreshConversationAnalysis = internalAction({
     const analysis = data.analysis ?? existing.analysis;
     const durationSeconds = data.metadata?.call_duration_secs ?? existing.durationSeconds;
 
-    // Update the existing record
     await ctx.runMutation(internal.postCall.updateConversationAnalysis, {
       conversationId: existing._id,
+      clerkOrgId: args.clerkOrgId,
       transcript,
       summary,
       analysis,
@@ -479,12 +528,17 @@ export const refreshConversationAnalysis = internalAction({
 });
 
 export const getConversationByElevenLabsId = internalQuery({
-  args: { elevenlabsConversationId: v.string() },
+  args: {
+    elevenlabsConversationId: v.string(),
+    clerkOrgId: v.string(),
+  },
   handler: async (ctx, args) => {
     return await ctx.db
       .query("conversations")
-      .withIndex("by_elevenlabsConversationId", (q) =>
-        q.eq("elevenlabsConversationId", args.elevenlabsConversationId),
+      .withIndex("by_clerkOrgId_and_elevenlabsConversationId", (q) =>
+        q
+          .eq("clerkOrgId", args.clerkOrgId)
+          .eq("elevenlabsConversationId", args.elevenlabsConversationId),
       )
       .first();
   },
@@ -493,6 +547,7 @@ export const getConversationByElevenLabsId = internalQuery({
 export const updateConversationAnalysis = internalMutation({
   args: {
     conversationId: v.id("conversations"),
+    clerkOrgId: v.string(),
     transcript: v.optional(
       v.array(
         v.object({
@@ -507,6 +562,10 @@ export const updateConversationAnalysis = internalMutation({
     durationSeconds: v.optional(v.number()),
   },
   handler: async (ctx, args) => {
+    const conv = await ctx.db.get(args.conversationId);
+    if (!conv || conv.clerkOrgId !== args.clerkOrgId) {
+      throw new Error("Conversation not found in this organization");
+    }
     await ctx.db.patch(args.conversationId, {
       transcript: args.transcript,
       summary: args.summary,
@@ -516,11 +575,13 @@ export const updateConversationAnalysis = internalMutation({
   },
 });
 
-// --- Internal action: regenerateProcessSummary ---
+// ---------------------------------------------------------------------------
+// Internal action: regenerateProcessSummary
 // Incrementally builds a structured process summary using Claude Haiku 4.5.
 // First conversation: full transcript → initial structured summary.
 // Subsequent: existing rolling summary + new transcript → updated summary.
 // forceRefresh: rebuilds from ALL transcripts (higher token cost).
+// ---------------------------------------------------------------------------
 
 const PROCESS_SUMMARY_SYSTEM_PROMPT = `You are an analyst synthesizing employee accounts of a single business process into a structured brief. Your output must use the following markdown format exactly:
 
@@ -586,6 +647,7 @@ function formatTranscript(
 export const regenerateProcessSummary = internalAction({
   args: {
     processId: v.id("processes"),
+    clerkOrgId: v.string(),
     forceRefresh: v.optional(v.boolean()),
   },
   handler: async (ctx, args) => {
@@ -595,28 +657,26 @@ export const regenerateProcessSummary = internalAction({
       return;
     }
 
-    // Full rebuild: fetch all conversations and regenerate from scratch
     if (args.forceRefresh) {
       const allConversations: Array<{
         contributorName: string;
         summary: string;
         transcript: unknown;
         creationTime: number;
-      }> = await ctx.runQuery(
-        internal.postCall.getConversationSummaries,
-        { processId: args.processId },
-      );
+      }> = await ctx.runQuery(internal.postCall.getConversationSummaries, {
+        processId: args.processId,
+        clerkOrgId: args.clerkOrgId,
+      });
 
       if (allConversations.length === 0) return;
 
       const transcriptBlock = allConversations
-        .map(
-          (c: { contributorName: string; transcript: unknown }, i: number) =>
-            formatTranscript(
-              c.transcript as Array<{ role: string; content: string }> | null,
-              c.contributorName,
-              i + 1,
-            ),
+        .map((c, i) =>
+          formatTranscript(
+            c.transcript as Array<{ role: string; content: string }> | null,
+            c.contributorName,
+            i + 1,
+          ),
         )
         .join("\n\n---\n\n");
 
@@ -653,20 +713,22 @@ export const regenerateProcessSummary = internalAction({
       if (rollingSummary) {
         await ctx.runMutation(internal.postCall.updateRollingSummary, {
           processId: args.processId,
+          clerkOrgId: args.clerkOrgId,
           rollingSummary,
         });
-        // Mark process flow as stale
         await ctx.runMutation(internal.processFlows.markFlowStale, {
           processId: args.processId,
+          clerkOrgId: args.clerkOrgId,
         });
-        const departmentId: string | null = await ctx.runQuery(
+        const departmentId: Id<"departments"> | null = await ctx.runQuery(
           internal.postCall.getProcessDepartmentId,
-          { processId: args.processId },
+          { processId: args.processId, clerkOrgId: args.clerkOrgId },
         );
         if (departmentId) {
-          await ctx.runMutation(internal.summariesHelpers.markDepartmentSummaryStale, {
-            departmentId: departmentId as Id<"departments">,
-          });
+          await ctx.runMutation(
+            internal.summariesHelpers.markDepartmentSummaryStale,
+            { departmentId },
+          );
         }
       }
       return;
@@ -675,7 +737,7 @@ export const regenerateProcessSummary = internalAction({
     // Incremental path: existing summary + latest conversation transcript
     const existingSummary: string | null = await ctx.runQuery(
       internal.postCall.getProcessRollingSummary,
-      { processId: args.processId },
+      { processId: args.processId, clerkOrgId: args.clerkOrgId },
     );
 
     const latestConversation: {
@@ -683,23 +745,22 @@ export const regenerateProcessSummary = internalAction({
       summary: string | null;
       transcript: unknown;
       creationTime: number;
-    } | null = await ctx.runQuery(
-      internal.postCall.getLatestConversation,
-      { processId: args.processId },
-    );
+    } | null = await ctx.runQuery(internal.postCall.getLatestConversation, {
+      processId: args.processId,
+      clerkOrgId: args.clerkOrgId,
+    });
 
     if (!latestConversation) return;
 
-    // Count total conversations for numbering
     const allConversations: Array<{
       contributorName: string;
       summary: string;
       transcript: unknown;
       creationTime: number;
-    }> = await ctx.runQuery(
-      internal.postCall.getConversationSummaries,
-      { processId: args.processId },
-    );
+    }> = await ctx.runQuery(internal.postCall.getConversationSummaries, {
+      processId: args.processId,
+      clerkOrgId: args.clerkOrgId,
+    });
 
     const conversationCount = allConversations.length;
     if (conversationCount === 0) return;
@@ -713,10 +774,8 @@ export const regenerateProcessSummary = internalAction({
     let userContent: string;
 
     if (!existingSummary || conversationCount === 1) {
-      // First conversation: generate initial structured summary from transcript
       userContent = `This is the first conversation recorded for this process. Generate the initial structured summary from this transcript:\n\n${latestTranscript}`;
     } else {
-      // Subsequent conversation: integrate into existing summary
       userContent = `Here is the existing process summary:\n\n${existingSummary}\n\n---\n\nA new conversation has been recorded. Integrate the information from this transcript into the existing summary, updating all sections as needed:\n\n${latestTranscript}`;
     }
 
@@ -751,21 +810,22 @@ export const regenerateProcessSummary = internalAction({
     if (rollingSummary) {
       await ctx.runMutation(internal.postCall.updateRollingSummary, {
         processId: args.processId,
+        clerkOrgId: args.clerkOrgId,
         rollingSummary,
       });
-      // Mark process flow as stale
       await ctx.runMutation(internal.processFlows.markFlowStale, {
         processId: args.processId,
+        clerkOrgId: args.clerkOrgId,
       });
-      // Mark department (and cascading function) summary as stale
-      const departmentId: string | null = await ctx.runQuery(
+      const departmentId: Id<"departments"> | null = await ctx.runQuery(
         internal.postCall.getProcessDepartmentId,
-        { processId: args.processId },
+        { processId: args.processId, clerkOrgId: args.clerkOrgId },
       );
       if (departmentId) {
-        await ctx.runMutation(internal.summariesHelpers.markDepartmentSummaryStale, {
-          departmentId: departmentId as Id<"departments">,
-        });
+        await ctx.runMutation(
+          internal.summariesHelpers.markDepartmentSummaryStale,
+          { departmentId },
+        );
       }
     }
   },

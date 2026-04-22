@@ -1,15 +1,26 @@
 import { v } from "convex/values";
 import { query, mutation } from "./_generated/server";
 import { internal } from "./_generated/api";
-import { requireAuth, requireContributor } from "./lib/auth";
+import {
+  assertOrgOwns,
+  requireOrgContributor,
+  requireOrgMember,
+} from "./lib/orgAuth";
 
 export const listByFunction = query({
   args: { functionId: v.id("functions") },
   handler: async (ctx, args) => {
-    await requireAuth(ctx);
+    const caller = await requireOrgMember(ctx);
+    // Defense-in-depth: confirm the parent function belongs to this org before
+    // returning its children. If it doesn't, return [] rather than throwing —
+    // matches the "treat cross-org access as empty" UX.
+    const parent = await ctx.db.get(args.functionId);
+    if (!parent || parent.clerkOrgId !== caller.orgId) return [];
     return await ctx.db
       .query("departments")
-      .withIndex("by_functionId", (q) => q.eq("functionId", args.functionId))
+      .withIndex("by_clerkOrgId_and_functionId", (q) =>
+        q.eq("clerkOrgId", caller.orgId).eq("functionId", args.functionId),
+      )
       .order("asc")
       .collect();
   },
@@ -18,19 +29,32 @@ export const listByFunction = query({
 export const get = query({
   args: { departmentId: v.id("departments") },
   handler: async (ctx, args) => {
-    await requireAuth(ctx);
-    return await ctx.db.get(args.departmentId);
+    const caller = await requireOrgMember(ctx);
+    const doc = await ctx.db.get(args.departmentId);
+    if (!doc || doc.clerkOrgId !== caller.orgId) return null;
+    return doc;
   },
 });
 
 export const listAll = query({
   args: {},
   handler: async (ctx) => {
-    await requireAuth(ctx);
-    const allDepts = await ctx.db.query("departments").order("asc").collect();
-    const allFunctions = await ctx.db.query("functions").order("asc").collect();
-    const fnMap = new Map(allFunctions.map((f) => [f._id, f.name]));
-    return allDepts.map((d) => ({
+    const caller = await requireOrgMember(ctx);
+    // Uses `by_clerkOrgId_and_functionId` with only the first (clerkOrgId)
+    // prefix eq — valid because Convex indexes support prefix queries.
+    const depts = await ctx.db
+      .query("departments")
+      .withIndex("by_clerkOrgId_and_functionId", (q) =>
+        q.eq("clerkOrgId", caller.orgId),
+      )
+      .order("asc")
+      .collect();
+    const functions = await ctx.db
+      .query("functions")
+      .withIndex("by_clerkOrgId", (q) => q.eq("clerkOrgId", caller.orgId))
+      .collect();
+    const fnMap = new Map(functions.map((f) => [f._id, f.name]));
+    return depts.map((d) => ({
       ...d,
       functionName: fnMap.get(d.functionId) ?? "Unknown",
     }));
@@ -40,14 +64,15 @@ export const listAll = query({
 export const create = mutation({
   args: { functionId: v.id("functions"), name: v.string() },
   handler: async (ctx, args) => {
-    await requireContributor(ctx);
+    const caller = await requireOrgContributor(ctx);
     const parentFunction = await ctx.db.get(args.functionId);
-    if (!parentFunction) {
-      throw new Error("Function not found");
-    }
+    assertOrgOwns(caller, parentFunction);
+
     const existing = await ctx.db
       .query("departments")
-      .withIndex("by_functionId", (q) => q.eq("functionId", args.functionId))
+      .withIndex("by_clerkOrgId_and_functionId", (q) =>
+        q.eq("clerkOrgId", caller.orgId).eq("functionId", args.functionId),
+      )
       .order("desc")
       .take(1);
     const maxSortOrder = existing.length > 0 ? existing[0].sortOrder : 0;
@@ -55,6 +80,7 @@ export const create = mutation({
       functionId: args.functionId,
       name: args.name,
       sortOrder: maxSortOrder + 1,
+      clerkOrgId: caller.orgId,
     });
     // Mark function summary as stale
     await ctx.runMutation(internal.summariesHelpers.markFunctionSummaryStale, {
@@ -71,9 +97,9 @@ export const update = mutation({
     functionId: v.optional(v.id("functions")),
   },
   handler: async (ctx, args) => {
-    await requireContributor(ctx);
+    const caller = await requireOrgContributor(ctx);
     const dept = await ctx.db.get(args.departmentId);
-    if (!dept) throw new Error("Department not found");
+    assertOrgOwns(caller, dept);
 
     const oldName = dept.name;
     const patch: Record<string, unknown> = { name: args.name };
@@ -82,12 +108,14 @@ export const update = mutation({
 
     if (isMoving) {
       const targetFunction = await ctx.db.get(args.functionId!);
-      if (!targetFunction) {
-        throw new Error("Target function not found");
-      }
+      assertOrgOwns(caller, targetFunction);
       const existing = await ctx.db
         .query("departments")
-        .withIndex("by_functionId", (q) => q.eq("functionId", args.functionId!))
+        .withIndex("by_clerkOrgId_and_functionId", (q) =>
+          q
+            .eq("clerkOrgId", caller.orgId)
+            .eq("functionId", args.functionId!),
+        )
         .order("desc")
         .take(1);
       patch.functionId = args.functionId;
@@ -96,7 +124,8 @@ export const update = mutation({
 
     await ctx.db.patch(args.departmentId, patch);
 
-    // Cascade name change to all users referencing the old department name
+    // Cascade name change to users referencing the old department name.
+    // See note on the equivalent cascade in functions.ts::update.
     if (oldName !== args.name) {
       const usersWithOldName = await ctx.db
         .query("users")
@@ -108,12 +137,9 @@ export const update = mutation({
     }
 
     if (isMoving) {
-      const oldFunction = await ctx.db.get(dept.functionId);
-      if (oldFunction) {
-        await ctx.runMutation(internal.summariesHelpers.markFunctionSummaryStale, {
-          functionId: dept.functionId,
-        });
-      }
+      await ctx.runMutation(internal.summariesHelpers.markFunctionSummaryStale, {
+        functionId: dept.functionId,
+      });
       await ctx.runMutation(internal.summariesHelpers.markFunctionSummaryStale, {
         functionId: args.functionId!,
       });
@@ -124,10 +150,16 @@ export const update = mutation({
 export const childCount = query({
   args: { departmentId: v.id("departments") },
   handler: async (ctx, args) => {
-    await requireAuth(ctx);
+    const caller = await requireOrgMember(ctx);
+    const parent = await ctx.db.get(args.departmentId);
+    assertOrgOwns(caller, parent);
     const children = await ctx.db
       .query("processes")
-      .withIndex("by_departmentId", (q) => q.eq("departmentId", args.departmentId))
+      .withIndex("by_clerkOrgId_and_departmentId", (q) =>
+        q
+          .eq("clerkOrgId", caller.orgId)
+          .eq("departmentId", args.departmentId),
+      )
       .collect();
     return children.length;
   },
@@ -136,27 +168,27 @@ export const childCount = query({
 export const remove = mutation({
   args: { departmentId: v.id("departments") },
   handler: async (ctx, args) => {
-    await requireContributor(ctx);
+    const caller = await requireOrgContributor(ctx);
+    const dept = await ctx.db.get(args.departmentId);
+    assertOrgOwns(caller, dept);
     const children = await ctx.db
       .query("processes")
-      .withIndex("by_departmentId", (q) => q.eq("departmentId", args.departmentId))
+      .withIndex("by_clerkOrgId_and_departmentId", (q) =>
+        q
+          .eq("clerkOrgId", caller.orgId)
+          .eq("departmentId", args.departmentId),
+      )
       .take(1);
     if (children.length > 0) {
       throw new Error(
-        "Cannot delete this department because it still has processes. Remove all processes first."
+        "Cannot delete this department because it still has processes. Remove all processes first.",
       );
     }
-    const dept = await ctx.db.get(args.departmentId);
-    const functionId = dept?.functionId;
+    const functionId = dept.functionId;
     await ctx.db.delete(args.departmentId);
     // Mark function summary as stale
-    if (functionId) {
-      const parentFunction = await ctx.db.get(functionId);
-      if (parentFunction) {
-        await ctx.runMutation(internal.summariesHelpers.markFunctionSummaryStale, {
-          functionId,
-        });
-      }
-    }
+    await ctx.runMutation(internal.summariesHelpers.markFunctionSummaryStale, {
+      functionId,
+    });
   },
 });
