@@ -5,7 +5,7 @@ import { NextResponse } from "next/server";
 // marketing landing at apex and the Clerk sign-in/up pages.
 const isPublicPath = createRouteMatcher(["/", "/sign-in(.*)", "/sign-up(.*)"]);
 
-// Root domain, with port for local dev. Dev: "lvh.me:3000", prod: "fabric.com".
+// Root domain, with port for local dev. Dev: "lvh.me:3000", prod: "bizfabric.ai".
 // Unset = treat every request as apex (legacy single-tenant dev without subdomains).
 const ROOT_DOMAIN = process.env.NEXT_PUBLIC_ROOT_DOMAIN ?? "";
 

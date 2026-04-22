@@ -758,7 +758,7 @@ Derived from [PRD.md](PRD.md) v1.0 (Multi-Tenant — Subdomain-Native)
 
 ## Phase 13: Multi-Tenancy via Clerk Organizations (Subdomain-Native)
 
-> **Goal:** Convert Fabric into a multi-tenant SaaS where every organization is accessed via its own subdomain (`biz-group.fabric.com` in prod, `biz-group.lvh.me:3000` in dev). Row-level authorization on every Convex query/mutation/action. Clerk owns identity + org membership; Fabric owns roles via a new `memberships` table. All current data is attributed to a new "Biz Group" org. Migration follows the widen-migrate-narrow pattern with `@convex-dev/migrations`. See PRD section 3.7 for architecture.
+> **Goal:** Convert Fabric into a multi-tenant SaaS where every organization is accessed via its own subdomain (`biz-group.bizfabric.ai` in prod, `biz-group.lvh.me:3000` in dev). Row-level authorization on every Convex query/mutation/action. Clerk owns identity + org membership; Fabric owns roles via a new `memberships` table. All current data is attributed to a new "Biz Group" org. Migration follows the widen-migrate-narrow pattern with `@convex-dev/migrations`. See PRD section 3.7 for architecture.
 
 ### 13.0 Clerk Dashboard Setup (manual, must precede all code work)
 
@@ -967,7 +967,7 @@ Derived from [PRD.md](PRD.md) v1.0 (Multi-Tenant — Subdomain-Native)
 
 - [x] **Set root-domain env vars**
   - `.env.local`: `NEXT_PUBLIC_ROOT_DOMAIN=lvh.me:3000` (added)
-  - Prod: `NEXT_PUBLIC_ROOT_DOMAIN=fabric.com` (set at deploy time)
+  - Prod: `NEXT_PUBLIC_ROOT_DOMAIN=bizfabric.ai` (set at deploy time)
 
 - [x] **Move the protected app tree under `src/app/[org]/...`**
   - Former `src/app/page.tsx` signed-in content → `src/app/[org]/page.tsx`
@@ -1002,11 +1002,11 @@ Derived from [PRD.md](PRD.md) v1.0 (Multi-Tenant — Subdomain-Native)
 
 > **⚠ 13.6 end-to-end verification is blocked on purchasing a production domain.**
 > Clerk's development instance shows "Refreshing the session token resulted in an infinite redirect loop" when signing in across subdomains of `lvh.me`. Root cause: dev-browser handshake between `*.lvh.me` and Clerk's `accounts.dev` doesn't propagate the dev browser token across host changes. "Allowed Subdomains" in the Clerk dashboard is production-only; Satellite domains are Pro-tier. Resolution requires:
-> 1. Purchase a production domain (e.g. `fabric.com`).
+> 1. Purchase a production domain (e.g. `bizfabric.ai`).
 > 2. Create a Clerk **production instance** bound to that domain.
-> 3. Enable "Allowed Subdomains" for `*.fabric.com` in the production instance.
-> 4. Set up wildcard DNS (`*.fabric.com → Vercel`), wildcard TLS cert, and Clerk's allowed origins.
-> 5. Set `NEXT_PUBLIC_ROOT_DOMAIN=fabric.com` + production `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY` + `CLERK_SECRET_KEY` in prod env.
+> 3. Enable "Allowed Subdomains" for `*.bizfabric.ai` in the production instance.
+> 4. Set up wildcard DNS (`*.bizfabric.ai → Vercel`), wildcard TLS cert, and Clerk's allowed origins.
+> 5. Set `NEXT_PUBLIC_ROOT_DOMAIN=bizfabric.ai` + production `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY` + `CLERK_SECRET_KEY` in prod env.
 >
 > Until those are in place, **Phases 13.8 (narrow schema), 13.9 (tests), 13.10 (retire legacy), and 13.11 (E2E verification) stay paused.** The code for 13.0 through 13.7 is deployed and will begin working the moment the production instance is wired up.
 
@@ -1157,11 +1157,11 @@ npx convex env set --prod CLERK_FRONTEND_API_URL https://clerk.bizfabric.ai
   - Confirm `NEXT_PUBLIC_ROOT_DOMAIN` is set to the production domain in the prod deployment and to `lvh.me:3000` in dev
 
 - [ ] **Production subdomain readiness (when a real domain is purchased)**
-  - Configure wildcard DNS (`*.fabric.com → hosting platform`)
+  - Configure wildcard DNS (`*.bizfabric.ai → hosting platform`)
   - Provision a wildcard TLS certificate
   - Add the wildcard origin to Clerk's allowed origins
-  - Set `NEXT_PUBLIC_ROOT_DOMAIN=fabric.com` in prod env and redeploy
-  - Visit `https://biz-group.fabric.com/` and rerun the CRUD golden-path
+  - Set `NEXT_PUBLIC_ROOT_DOMAIN=bizfabric.ai` in prod env and redeploy
+  - Visit `https://biz-group.bizfabric.ai/` and rerun the CRUD golden-path
 
 ---
 

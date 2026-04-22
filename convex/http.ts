@@ -4,8 +4,44 @@ import { internal } from "./_generated/api";
 
 const http = httpRouter();
 
-function getAllowedOrigin(): string {
+// Multi-tenant CORS: the browser's Origin is always a specific subdomain
+// (e.g. `https://biz-group.bizfabric.ai`), not the apex. A single static
+// `CLIENT_ORIGIN` therefore can't cover every tenant. Reflect the request's
+// Origin iff its hostname matches `ROOT_DOMAIN` or `*.ROOT_DOMAIN`, otherwise
+// return null (browser blocks the cross-origin load).
+//
+// Env:
+//   ROOT_DOMAIN    — apex host without scheme/port, e.g. "bizfabric.ai" or
+//                    "lvh.me" (dev). Optional; if unset we fall back to
+//                    CLIENT_ORIGIN.
+//   CLIENT_ORIGIN  — legacy apex origin; used as a fallback when ROOT_DOMAIN
+//                    isn't set (e.g. early dev). Defaults to "*" only when
+//                    neither is set, which should never be true in prod.
+function allowedOriginFor(origin: string | null): string | null {
+  const root = process.env.ROOT_DOMAIN;
+  if (origin && root) {
+    try {
+      const host = new URL(origin).hostname;
+      if (host === root || host.endsWith(`.${root}`)) return origin;
+      return null;
+    } catch {
+      return null;
+    }
+  }
   return process.env.CLIENT_ORIGIN ?? "*";
+}
+
+/** Adds ACAO + Vary:Origin to a header bag iff the request Origin is allowed. */
+function withCors(
+  req: Request,
+  headers: Record<string, string>,
+): Record<string, string> {
+  const allow = allowedOriginFor(req.headers.get("Origin"));
+  if (allow) {
+    headers["Access-Control-Allow-Origin"] = allow;
+    headers["Vary"] = "Origin";
+  }
+  return headers;
 }
 
 // Audio proxy: streams MP3 audio from ElevenLabs without exposing the API key.
@@ -19,8 +55,6 @@ http.route({
   pathPrefix: "/audio/",
   method: "GET",
   handler: httpAction(async (ctx, req) => {
-    const origin = getAllowedOrigin();
-
     const url = new URL(req.url);
     // Path is /audio/{clerkOrgId}/{elevenlabsConversationId}
     const suffix = url.pathname.replace(/^\/audio\//, "");
@@ -84,27 +118,25 @@ http.route({
 
         return new Response(chunk, {
           status: 206,
-          headers: {
+          headers: withCors(req, {
             "Content-Type": "audio/mpeg",
             "Content-Length": chunk.byteLength.toString(),
             "Content-Range": `bytes ${start}-${end}/${totalSize}`,
             "Accept-Ranges": "bytes",
             "Cache-Control": "public, max-age=3600",
-            "Access-Control-Allow-Origin": origin,
-          },
+          }),
         });
       }
     }
 
     return new Response(audioBytes, {
       status: 200,
-      headers: {
+      headers: withCors(req, {
         "Content-Type": "audio/mpeg",
         "Content-Length": totalSize.toString(),
         "Accept-Ranges": "bytes",
         "Cache-Control": "public, max-age=3600",
-        "Access-Control-Allow-Origin": origin,
-      },
+      }),
     });
   }),
 });
@@ -113,16 +145,14 @@ http.route({
 http.route({
   pathPrefix: "/audio/",
   method: "OPTIONS",
-  handler: httpAction(async () => {
-    const origin = getAllowedOrigin();
+  handler: httpAction(async (_ctx, req) => {
     return new Response(null, {
       status: 204,
-      headers: {
-        "Access-Control-Allow-Origin": origin,
+      headers: withCors(req, {
         "Access-Control-Allow-Methods": "GET, OPTIONS",
         "Access-Control-Allow-Headers": "Content-Type, Range",
         "Access-Control-Max-Age": "86400",
-      },
+      }),
     });
   }),
 });

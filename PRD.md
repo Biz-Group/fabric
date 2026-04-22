@@ -557,7 +557,7 @@ const process = useQuery(api.processes.get, { processId: selectedProcessId });
 
 **Provider:** Clerk (hosted auth with prebuilt UI components)
 **Sign-in method:** Email + password (managed by Clerk)
-**Tenancy:** Multi-tenant via Clerk Organizations (see section 3.7). Every org is accessed through its own subdomain (`biz-group.fabric.com`). All data is row-level scoped by `clerkOrgId` and fully isolated across orgs.
+**Tenancy:** Multi-tenant via Clerk Organizations (see section 3.7). Every org is accessed through its own subdomain (`biz-group.bizfabric.ai`). All data is row-level scoped by `clerkOrgId` and fully isolated across orgs.
 **RBAC:** Three roles — **admin** (org management + CRUD + recording + viewing), **contributor** (CRUD + recording + viewing), **viewer** (browse hierarchy + view summaries only). Roles live in a Convex `memberships` table keyed by `(tokenIdentifier, clerkOrgId)` — **not** on the user record, because the same person can hold different roles in different orgs. Role checks enforced server-side via `requireOrgContributor`/`requireOrgAdmin` helpers in `convex/lib/orgAuth.ts`. Frontend conditionally renders CRUD controls, Record button, and admin features based on the caller's role for the active org.
 
 **Why Clerk:** First-class Convex integration via JWT validation. Prebuilt `<SignIn />`, `<SignUp />`, and `<UserButton />` React components — no custom auth UI to build or maintain. Clerk handles all auth infrastructure (account creation, password hashing, session management, JWT signing) externally, keeping the Convex backend focused on business logic. Can be extended with SSO/SAML and organization management for enterprise use.
@@ -622,9 +622,9 @@ Fabric distinguishes two authorization layers that are kept strictly separate in
 
 #### 3.7.3 Subdomain-native routing
 
-Production URLs take the form `{org-slug}.fabric.com/<path>` (e.g. `biz-group.fabric.com/admin/users`). Users never see an internal `/orgs/:slug/` path. The apex domain (`fabric.com`) hosts only the marketing landing, sign-in, and sign-up pages.
+Production URLs take the form `{org-slug}.bizfabric.ai/<path>` (e.g. `biz-group.bizfabric.ai/admin/users`). Users never see an internal `/orgs/:slug/` path. The apex domain (`bizfabric.ai`) hosts only the marketing landing, sign-in, and sign-up pages.
 
-Local development uses `lvh.me` — a public DNS name that resolves `*.lvh.me` to `127.0.0.1` — so developers visit `biz-group.lvh.me:3000` without editing their hosts file. The env var `NEXT_PUBLIC_ROOT_DOMAIN` controls the active root (`lvh.me:3000` in dev, `fabric.com` in prod).
+Local development uses `lvh.me` — a public DNS name that resolves `*.lvh.me` to `127.0.0.1` — so developers visit `biz-group.lvh.me:3000` without editing their hosts file. The env var `NEXT_PUBLIC_ROOT_DOMAIN` controls the active root (`lvh.me:3000` in dev, `bizfabric.ai` in prod).
 
 Middleware (`src/proxy.ts`) extracts the subdomain from the `Host` header and rewrites the request internally from `/<anything>` to `/<subdomain>/<anything>`, matching the Next.js `src/app/[org]/...` route tree. Users always see the subdomain-only URL in the browser; the `[org]` segment is an implementation detail that lets Clerk's `organizationSyncOptions` auto-activate the correct org on every request via a URL-based pattern match.
 
@@ -657,7 +657,7 @@ The full phased plan — Clerk dashboard setup, helper library design, per-funct
 #### 3.7.7 Packages, config, and new files
 
 - **Packages:** `@convex-dev/migrations` (schema migration helper), `@clerk/nextjs` (Clerk Organizations features enabled).
-- **Config:** `convex/convex.config.ts` registers the migrations component. `convex/auth.config.ts` unchanged. Clerk's `convex` JWT template gains `orgId` and `orgSlug` claims. `CLERK_SECRET_KEY` is present in Convex env (already set) so the fan-out action can call the Clerk Admin API. Env: `NEXT_PUBLIC_ROOT_DOMAIN` (dev: `lvh.me:3000`, prod: `fabric.com`); `BIZ_GROUP_CLERK_ORG_ID` (temporary, during backfill only — already unset).
+- **Config:** `convex/convex.config.ts` registers the migrations component. `convex/auth.config.ts` unchanged. Clerk's `convex` JWT template gains `orgId` and `orgSlug` claims. `CLERK_SECRET_KEY` is present in Convex env (already set) so the fan-out action can call the Clerk Admin API. Env: `NEXT_PUBLIC_ROOT_DOMAIN` (dev: `lvh.me:3000`, prod: `bizfabric.ai`); `BIZ_GROUP_CLERK_ORG_ID` (temporary, during backfill only — already unset).
 - **New files:** `convex/convex.config.ts`, `convex/migrations.ts`, `convex/lib/orgAuth.ts`, `convex/platform.ts` (superAdmin mutations + fan-out action), `src/app/[org]/layout.tsx`, `src/app/[org]/page.tsx` (and the rest of the protected tree moved under `[org]`).
 - **Schema additions:** `users.platformRole: v.optional(v.literal("superAdmin"))` plus `by_platformRole` index.
 - **Retired:** `convex/lib/auth.ts` and the legacy `users.role` field (after migration is stable).
@@ -954,7 +954,7 @@ Alternatively, the entire modal can use the **Conversation Bar** component, whic
 9. The app is usable on mobile viewports (stacked navigation) and desktop (Miller columns).
 10. Only authenticated users can access the app. Users can sign up, sign in, complete a profile with organizational attributes, and sign out. Conversations are linked to authenticated user identities.
 11. Viewers can browse the hierarchy and view summaries but cannot create/edit/delete items or record conversations. Contributors can do everything viewers can plus CRUD and recording. Admins can do everything contributors can plus manage user roles.
-12. Each Clerk organization is accessed via its own subdomain (`{slug}.fabric.com` in prod, `{slug}.lvh.me:3000` in dev). A user signed into Org A cannot read or write Org B's data — every Convex function enforces row-level `clerkOrgId` scoping, and a wrong-subdomain visit surfaces the `<OrganizationList />` picker instead of the app. The ElevenLabs audio proxy is org-scoped and returns 404 on any cross-org request.
+12. Each Clerk organization is accessed via its own subdomain (`{slug}.bizfabric.ai` in prod, `{slug}.lvh.me:3000` in dev). A user signed into Org A cannot read or write Org B's data — every Convex function enforces row-level `clerkOrgId` scoping, and a wrong-subdomain visit surfaces the `<OrganizationList />` picker instead of the app. The ElevenLabs audio proxy is org-scoped and returns 404 on any cross-org request.
 
 ---
 
