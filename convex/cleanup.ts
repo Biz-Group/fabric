@@ -1,47 +1,57 @@
+import { v } from "convex/values";
 import { internalMutation } from "./_generated/server";
+import { Id } from "./_generated/dataModel";
 
-// Remove all seed/test conversations (those with elevenlabsConversationId starting with "seed-")
-// and reset the rolling summary on any affected processes.
-// Run via: npx convex run --component _root cleanup:removeTestData
+/**
+ * Remove all seed/test conversations (those with elevenlabsConversationId
+ * starting with "seed-") within a single org, and reset the rolling summary
+ * on any affected processes if no real conversations remain.
+ *
+ * Run via:
+ *   npx convex run cleanup:removeTestData '{"clerkOrgId":"org_xxx"}'
+ */
 export const removeTestData = internalMutation({
-  args: {},
-  handler: async (ctx) => {
-    const allConversations = await ctx.db.query("conversations").collect();
+  args: { clerkOrgId: v.string() },
+  handler: async (ctx, args) => {
+    const allConversations = await ctx.db
+      .query("conversations")
+      .withIndex("by_clerkOrgId_and_processId", (q) =>
+        q.eq("clerkOrgId", args.clerkOrgId),
+      )
+      .collect();
     const testConversations = allConversations.filter((c) =>
       c.elevenlabsConversationId.startsWith("seed-"),
     );
 
     if (testConversations.length === 0) {
-      console.log("No test conversations found.");
+      console.log(`No test conversations found for org ${args.clerkOrgId}.`);
       return { deleted: 0 };
     }
 
-    // Track affected processes so we can update their rolling summaries
-    const affectedProcessIds = new Set<string>();
+    const affectedProcessIds = new Set<Id<"processes">>();
 
     for (const conv of testConversations) {
       affectedProcessIds.add(conv.processId);
       await ctx.db.delete(conv._id);
     }
 
-    // For each affected process, check if there are remaining real conversations.
-    // If not, clear the rolling summary. If yes, leave it (regenerateProcessSummary
-    // can be called separately to recompute).
+    // For each affected process, check if any real conversations remain in
+    // this org. If not, clear the rolling summary.
     for (const processId of affectedProcessIds) {
       const remaining = await ctx.db
         .query("conversations")
-        .withIndex("by_processId", (q) =>
-          q.eq("processId", processId as any),
+        .withIndex("by_clerkOrgId_and_processId", (q) =>
+          q.eq("clerkOrgId", args.clerkOrgId).eq("processId", processId),
         )
         .take(1);
 
       if (remaining.length === 0) {
-        await ctx.db.patch(processId as any, { rollingSummary: undefined });
+        await ctx.db.patch(processId, { rollingSummary: undefined });
       }
     }
 
     console.log(
-      `Removed ${testConversations.length} test conversation(s) across ${affectedProcessIds.size} process(es).`,
+      `Removed ${testConversations.length} test conversation(s) across ${affectedProcessIds.size} process(es) in org ${args.clerkOrgId}.`,
     );
     return { deleted: testConversations.length };
   },

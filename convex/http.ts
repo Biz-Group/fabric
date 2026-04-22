@@ -9,8 +9,12 @@ function getAllowedOrigin(): string {
 }
 
 // Audio proxy: streams MP3 audio from ElevenLabs without exposing the API key.
-// Frontend calls GET /audio/{elevenlabsConversationId} — we use pathPrefix
-// routing and extract the ID from the URL path.
+// Frontend calls GET /audio/{clerkOrgId}/{elevenlabsConversationId} — path is
+// org-scoped so one tenant can never serve another tenant's audio. The
+// `<audio>` element can't attach JWT headers, so authorization relies on the
+// DB-existence check scoped by clerkOrgId. An attacker would need both a
+// valid Clerk org id AND a valid ElevenLabs conversation id (both
+// non-enumerable).
 http.route({
   pathPrefix: "/audio/",
   method: "GET",
@@ -18,26 +22,33 @@ http.route({
     const origin = getAllowedOrigin();
 
     const url = new URL(req.url);
-    // Path is /audio/{id} — grab everything after "/audio/"
-    const elevenlabsConversationId = url.pathname.replace(/^\/audio\//, "");
-
-    if (!elevenlabsConversationId) {
-      return new Response("Missing conversation ID", { status: 400 });
+    // Path is /audio/{clerkOrgId}/{elevenlabsConversationId}
+    const suffix = url.pathname.replace(/^\/audio\//, "");
+    const slashIdx = suffix.indexOf("/");
+    if (slashIdx <= 0 || slashIdx === suffix.length - 1) {
+      return new Response("Missing org or conversation ID", { status: 400 });
     }
+    const clerkOrgId = suffix.substring(0, slashIdx);
+    const elevenlabsConversationId = suffix.substring(slashIdx + 1);
 
-    // Verify caller is authenticated
+    // If the caller has a session, require their active org to match the URL.
     const identity = await ctx.auth.getUserIdentity();
-    if (!identity) {
-      // Fall back to DB check — <audio> elements can't send auth headers,
-      // so we verify the conversation exists in our DB to prevent
-      // enumeration of arbitrary ElevenLabs conversation IDs.
-      const exists: boolean = await ctx.runQuery(
-        internal.postCall.conversationExistsByElevenLabsId,
-        { elevenlabsConversationId },
-      );
-      if (!exists) {
+    if (identity) {
+      const tokenOrgId = (identity as unknown as { orgId?: string }).orgId;
+      if (tokenOrgId && tokenOrgId !== clerkOrgId) {
+        // Don't distinguish wrong-org from not-found — same 404 response.
         return new Response("Not found", { status: 404 });
       }
+    }
+
+    // Always verify the conversation exists in the given org. This is the
+    // primary enforcement for unauthenticated <audio> element loads.
+    const exists: boolean = await ctx.runQuery(
+      internal.postCall.conversationExistsByElevenLabsId,
+      { elevenlabsConversationId, clerkOrgId },
+    );
+    if (!exists) {
+      return new Response("Not found", { status: 404 });
     }
 
     const apiKey = process.env.ELEVENLABS_API_KEY;

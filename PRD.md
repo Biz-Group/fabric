@@ -4,7 +4,7 @@
 
 ---
 
-**Version:** 0.9 (POC — Process Flow Diagrams)
+**Version:** 1.0 (Multi-Tenant — Subdomain-Native)
 **Author:** Saish / Biz Group
 **Date:** April 2026
 **Status:** Draft
@@ -557,8 +557,8 @@ const process = useQuery(api.processes.get, { processId: selectedProcessId });
 
 **Provider:** Clerk (hosted auth with prebuilt UI components)
 **Sign-in method:** Email + password (managed by Clerk)
-**Tenancy:** Single-tenant (one organization)
-**RBAC:** Three roles — **admin** (full access + user management + future admin dashboard), **contributor** (CRUD + recording + viewing), **viewer** (browse hierarchy + view summaries only). Roles stored in Convex `users` table. New users default to `viewer`; admins promote via `setUserRole` mutation. Role checks enforced server-side via `requireContributor`/`requireAdmin` helpers in `convex/lib/auth.ts`. Frontend conditionally renders CRUD controls, Record button, and admin features based on `user.role` from `getMe` query.
+**Tenancy:** Multi-tenant via Clerk Organizations (see section 3.7). Every org is accessed through its own subdomain (`biz-group.fabric.com`). All data is row-level scoped by `clerkOrgId` and fully isolated across orgs.
+**RBAC:** Three roles — **admin** (org management + CRUD + recording + viewing), **contributor** (CRUD + recording + viewing), **viewer** (browse hierarchy + view summaries only). Roles live in a Convex `memberships` table keyed by `(tokenIdentifier, clerkOrgId)` — **not** on the user record, because the same person can hold different roles in different orgs. Role checks enforced server-side via `requireOrgContributor`/`requireOrgAdmin` helpers in `convex/lib/orgAuth.ts`. Frontend conditionally renders CRUD controls, Record button, and admin features based on the caller's role for the active org.
 
 **Why Clerk:** First-class Convex integration via JWT validation. Prebuilt `<SignIn />`, `<SignUp />`, and `<UserButton />` React components — no custom auth UI to build or maintain. Clerk handles all auth infrastructure (account creation, password hashing, session management, JWT signing) externally, keeping the Convex backend focused on business logic. Can be extended with SSO/SAML and organization management for enterprise use.
 
@@ -594,6 +594,73 @@ const process = useQuery(api.processes.get, { processId: selectedProcessId });
 **Packages:** `@clerk/nextjs`
 **Config files:** `convex/auth.config.ts` (Clerk JWT issuer), `src/proxy.ts` (Clerk middleware)
 **New files:** `convex/users.ts` (user CRUD), `convex/lib/auth.ts` (shared `requireAuth` helper), `src/app/sign-in/page.tsx`, `src/app/sign-up/page.tsx`, `src/components/profile-onboarding.tsx`, `src/components/user-menu.tsx`
+
+### 3.7 Multi-Tenancy Architecture
+
+Fabric is a multi-tenant B2B SaaS. Every organization (Clerk "org") gets its own dedicated subdomain, sees only its own data, and manages its own members and roles. The "Biz Group" organization holds all pre-existing Fabric data and is the first tenant on the platform.
+
+#### 3.7.1 Tenancy model
+
+- **Clerk owns identity + org membership.** Users sign up / sign in via Clerk. Orgs are created by a super-admin in the Clerk Dashboard (no self-serve). Invitations and member management use Clerk's built-in UI (`<OrganizationProfile />`, invite emails).
+- **Fabric owns roles.** A Convex `memberships` table stores `(userId, clerkOrgId, role)`. Fabric's three-tier role hierarchy (admin/contributor/viewer) is defined here, not in Clerk — this keeps role evolution independent of Clerk's plan tier and lets the same user hold different roles in different orgs.
+- **Every tenant-scoped row carries `clerkOrgId`.** Functions, departments, processes, conversations, and processFlows each have an indexed `clerkOrgId` field. `users` stays org-agnostic (identity is global, membership is per-org).
+- **Row-level authorization is enforced in every Convex function.** Reads filter by `clerkOrgId` via compound index. Writes stamp `clerkOrgId` on inserts and verify that every parent document referenced in the mutation belongs to the caller's active org (defeats ID-substitution attacks across tenants).
+- **Two-layer authorization** (platform role + org role). Biz Group staff operate *above* all tenants. Regular members operate *within* a single tenant. See §3.7.2.
+
+#### 3.7.2 Two-layer roles — Platform role + Org role
+
+Fabric distinguishes two authorization layers that are kept strictly separate in the data model:
+
+| Layer | Stored on | Values | Who | What it grants |
+|---|---|---|---|---|
+| **Platform role** | `users.platformRole` | `"superAdmin"` or absent | Saish + designated Biz Group colleagues | Create/delete orgs, run the fan-out script, access a future cross-org support dashboard, bootstrap other superadmins. Does **not** by itself grant read/write access to any tenant's data. |
+| **Org role** | `memberships.role` | `admin` \| `contributor` \| `viewer` | Everyone — including superadmins | All data access within a single org. `admin` manages members + CRUD in *that org only*. |
+
+**Access mechanism for Biz Group staff (Model A — auto-membership):** A superadmin never "bypasses" org scoping in Convex. Instead, whenever a new org is created, an `internalAction` looks up every user with `platformRole === "superAdmin"` and fans out *real* Clerk org membership + a matching Fabric `memberships` row (role `admin`) into the new org. Superadmins become first-class members of every org, their JWT carries the correct `orgId` when they visit that org's subdomain, and Clerk's `<OrganizationSwitcher />` lists every org naturally. Every Convex query continues to require a real membership row — there is no `users.platformRole`-based bypass anywhere in the data path.
+
+**Implication:** `requireOrgMember` / `requireOrgAdmin` stay straightforward — they only consult `memberships`. A separate helper `requireSuperAdmin` exists for platform-level operations (creating orgs, managing superadmins, running fan-out). This keeps the per-request authorization code free of special cases.
+
+#### 3.7.3 Subdomain-native routing
+
+Production URLs take the form `{org-slug}.fabric.com/<path>` (e.g. `biz-group.fabric.com/admin/users`). Users never see an internal `/orgs/:slug/` path. The apex domain (`fabric.com`) hosts only the marketing landing, sign-in, and sign-up pages.
+
+Local development uses `lvh.me` — a public DNS name that resolves `*.lvh.me` to `127.0.0.1` — so developers visit `biz-group.lvh.me:3000` without editing their hosts file. The env var `NEXT_PUBLIC_ROOT_DOMAIN` controls the active root (`lvh.me:3000` in dev, `fabric.com` in prod).
+
+Middleware (`src/proxy.ts`) extracts the subdomain from the `Host` header and rewrites the request internally from `/<anything>` to `/<subdomain>/<anything>`, matching the Next.js `src/app/[org]/...` route tree. Users always see the subdomain-only URL in the browser; the `[org]` segment is an implementation detail that lets Clerk's `organizationSyncOptions` auto-activate the correct org on every request via a URL-based pattern match.
+
+#### 3.7.4 Cross-org access control
+
+- When a signed-in user visits a subdomain for an org they don't belong to, `src/app/[org]/layout.tsx` detects the mismatch between the URL slug and Clerk's active org and renders `<OrganizationList />` so the user can pick a valid org.
+- Every Convex function calls `requireOrgMember(ctx)` (or `requireOrgContributor` / `requireOrgAdmin`), which:
+  1. Reads `identity.orgId` from the JWT (requires the Clerk `convex` JWT template to include `{ orgId, orgSlug }`).
+  2. Looks up the caller's `memberships` row for that org.
+  3. Returns `{ orgId, orgSlug, role }`, or throws if the user is not a member.
+- The ElevenLabs audio proxy (`convex/http.ts`) is re-scoped to `/audio/:clerkOrgId/:elevenlabsConversationId`; it returns 404 on any mismatch so one org's audio can never be served from another org's URL.
+
+#### 3.7.5 Membership provisioning
+
+- **Org creation** — admin-provisioned only. A platform `superAdmin` creates the org in the Clerk Dashboard, then runs an internal fan-out action that (a) uses the Clerk Admin API to invite every `superAdmin` user into the new org as `org:admin`, and (b) writes a matching `memberships` row for each. The client-side admin is invited afterward via Clerk's normal invitation flow.
+- **Regular-member provisioning** — when an invited user accepts and signs in for the first time, `users.store` auto-creates a `memberships` row for the active org with role `contributor` (the safe default for new invitees). The org admin can promote them to `admin` or demote them to `viewer` afterward.
+- **Role changes** — admins promote / demote members in their own org via `setMembershipRole`, which only accepts memberships whose `clerkOrgId` matches the caller's active org. The legacy `users.role` field (pre-multi-tenant) is retired once the migration is complete.
+- **Superadmin bootstrap** — the first platform `superAdmin` is set by the internal mutation `users.bootstrapSuperAdmin` (by email). Subsequent superadmins are promoted / demoted by an existing superAdmin via `users.setPlatformRole`.
+
+#### 3.7.6 Data migration (Biz Group)
+
+The existing Fabric deployment already holds real data for Biz Group. Migration follows the widen-migrate-narrow pattern using the `@convex-dev/migrations` component:
+
+1. **Widen:** add `clerkOrgId: v.optional(v.string())` plus compound indexes on every tenant-scoped table. Old single-field indexes stay temporarily.
+2. **Migrate:** create the Biz Group org in Clerk, capture its `org_...` id, seed a `memberships` row for every existing Fabric user, and backfill `clerkOrgId` on every pre-existing row.
+3. **Narrow:** once all new writes stamp `clerkOrgId` and no rows are unset, tighten the validator to `v.string()` and delete the old non-tenant-scoped indexes.
+
+The full phased plan — Clerk dashboard setup, helper library design, per-function refactor pattern, HTTP proxy re-scoping, subdomain-ready middleware, verification, and rollback points — is tracked in [TASK_LIST.md](TASK_LIST.md) Phase 13.
+
+#### 3.7.7 Packages, config, and new files
+
+- **Packages:** `@convex-dev/migrations` (schema migration helper), `@clerk/nextjs` (Clerk Organizations features enabled).
+- **Config:** `convex/convex.config.ts` registers the migrations component. `convex/auth.config.ts` unchanged. Clerk's `convex` JWT template gains `orgId` and `orgSlug` claims. `CLERK_SECRET_KEY` is present in Convex env (already set) so the fan-out action can call the Clerk Admin API. Env: `NEXT_PUBLIC_ROOT_DOMAIN` (dev: `lvh.me:3000`, prod: `fabric.com`); `BIZ_GROUP_CLERK_ORG_ID` (temporary, during backfill only — already unset).
+- **New files:** `convex/convex.config.ts`, `convex/migrations.ts`, `convex/lib/orgAuth.ts`, `convex/platform.ts` (superAdmin mutations + fan-out action), `src/app/[org]/layout.tsx`, `src/app/[org]/page.tsx` (and the rest of the protected tree moved under `[org]`).
+- **Schema additions:** `users.platformRole: v.optional(v.literal("superAdmin"))` plus `by_platformRole` index.
+- **Retired:** `convex/lib/auth.ts` and the legacy `users.role` field (after migration is stable).
 
 ---
 
@@ -867,7 +934,7 @@ Alternatively, the entire modal can use the **Conversation Bar** component, whic
 - Semantic search and Q&A over captured knowledge ("Ask Fabric")
 - Onboarding flows for new joiners
 - Integrations (Slack, Teams, email digests)
-- Multi-tenant / multi-organization support
+- ~~Multi-tenant / multi-organization support~~ → **Moved to Phase 13 (see section 3.7)**
 - Multi-language support (Arabic, auto-detect, etc.)
 - Local audio archiving (backup of ElevenLabs audio for long-term retention)
 - Mobile-native app (iOS / Android)
@@ -887,6 +954,7 @@ Alternatively, the entire modal can use the **Conversation Bar** component, whic
 9. The app is usable on mobile viewports (stacked navigation) and desktop (Miller columns).
 10. Only authenticated users can access the app. Users can sign up, sign in, complete a profile with organizational attributes, and sign out. Conversations are linked to authenticated user identities.
 11. Viewers can browse the hierarchy and view summaries but cannot create/edit/delete items or record conversations. Contributors can do everything viewers can plus CRUD and recording. Admins can do everything contributors can plus manage user roles.
+12. Each Clerk organization is accessed via its own subdomain (`{slug}.fabric.com` in prod, `{slug}.lvh.me:3000` in dev). A user signed into Org A cannot read or write Org B's data — every Convex function enforces row-level `clerkOrgId` scoping, and a wrong-subdomain visit surfaces the `<OrganizationList />` picker instead of the app. The ElevenLabs audio proxy is org-scoped and returns 404 on any cross-org request.
 
 ---
 
@@ -966,62 +1034,62 @@ The ElevenLabs SDK requires microphone access. Browsers will prompt for permissi
 
 ### Backend (Convex)
 
-- [ ] **Task 1: Rewrite `regenerateProcessSummary` in `postCall.ts` to incremental model**
+- [x] **Task 1: Rewrite `regenerateProcessSummary` in `postCall.ts` to incremental model**
   - Fetch the process's existing `rollingSummary` (if any) and the new conversation's full transcript (not just summary)
   - First conversation: send full transcript → produce initial structured summary
   - Subsequent conversations: send existing `rollingSummary` + new conversation transcript → LLM integrates new info into existing structure
   - Update model to `anthropic/claude-haiku-4.5-latest`, `max_tokens: 8192`
   - New system prompt producing structured output (Overview, Key Stages, Consensus, Tensions & Gaps, Notable Details) with contributor citations
 
-- [ ] **Task 2: Update `getConversationSummaries` query in `postCall.ts`**
+- [x] **Task 2: Update `getConversationSummaries` query in `postCall.ts`**
   - Return full transcript alongside summary and contributor name (needed for incremental generation)
   - Add a query variant to fetch only the latest conversation (optimization for the incremental path)
 
-- [ ] **Task 3: Add `forceRefresh` support to `regenerateProcessSummary`**
+- [x] **Task 3: Add `forceRefresh` support to `regenerateProcessSummary`**
   - When `forceRefresh` is true, fetch ALL conversation transcripts and regenerate from scratch (full rebuild, higher token cost)
   - This is the fallback for when incremental drift becomes noticeable
 
-- [ ] **Task 4: Rewrite department summary prompt in `summaries.ts` and `summariesHelpers.ts`**
+- [x] **Task 4: Rewrite department summary prompt in `summaries.ts` and `summariesHelpers.ts`**
   - New system prompt producing structured output (Overview, Cross-Process Handoffs, Shared Themes, Tensions & Gaps, Notable Details)
   - Citations reference process names (e.g., "[Compensation process]")
   - Update model to `anthropic/claude-haiku-4.5-latest`, `max_tokens: 8192`
   - Update both the public action (`generateDepartmentSummary`) and the internal action (`generateDepartmentSummaryInternal`)
 
-- [ ] **Task 5: Rewrite function summary prompt in `summaries.ts`**
+- [x] **Task 5: Rewrite function summary prompt in `summaries.ts`**
   - New system prompt producing structured output (Overview, Cross-Department Patterns, Strategic Themes, Tensions & Gaps, Notable Details)
   - Citations reference department names (e.g., "[Payroll dept]")
   - Update model to `anthropic/claude-haiku-4.5-latest`, `max_tokens: 8192`
 
-- [ ] **Task 6: Store conversation transcript for summary generation**
+- [x] **Task 6: Store conversation transcript for summary generation**
   - Ensure `insertConversation` stores the full normalized transcript (already does — verify)
   - Add a helper query to fetch a single conversation's transcript by ID for the incremental path
 
 ### Frontend (Next.js)
 
-- [ ] **Task 7: Add markdown rendering to summary display components**
+- [x] **Task 7: Add markdown rendering to summary display components**
   - Install a lightweight markdown renderer (e.g., `react-markdown` or `marked`)
   - Update the Process Summary Box in the process detail panel to render markdown
   - Update department and function summary display to render markdown
   - Style markdown output to match existing design system (shadcn/ui typography)
 
-- [ ] **Task 8: Add "Force Refresh" button to process summary UI**
+- [x] **Task 8: Add "Force Refresh" button to process summary UI**
   - Allow users to trigger a full regeneration from all transcripts
   - Show loading state during regeneration
   - Only visible when a process has more than one conversation
 
 ### Testing & Validation
 
-- [ ] **Task 9: Test incremental summary generation**
+- [x] **Task 9: Test incremental summary generation**
   - Record 3+ conversations on a single process, verify summary builds incrementally with citations
   - Verify contradictions between contributors are surfaced in "Tensions & Gaps"
   - Verify force refresh produces equivalent quality to incremental
 
-- [ ] **Task 10: Test department and function summary generation**
+- [x] **Task 10: Test department and function summary generation**
   - Verify structured output with cross-process/cross-department citations
   - Verify staleness propagation still works correctly
   - Verify cascade generation (function → missing department summaries) works with new prompts
 
-- [ ] **Task 11: Verify markdown rendering across all summary levels**
+- [x] **Task 11: Verify markdown rendering across all summary levels**
   - Process, department, and function summaries render correctly
   - Mobile responsive — markdown doesn't break on narrow viewports
   - Edge case: summaries generated before upgrade (plain text) still render gracefully

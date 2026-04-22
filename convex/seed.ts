@@ -1,12 +1,29 @@
+import { v } from "convex/values";
 import { internalMutation } from "./_generated/server";
 
+/**
+ * Seed a development org with a realistic Function → Department → Process
+ * hierarchy and sample conversations. Every row is stamped with the given
+ * `clerkOrgId` so the seed is safe in a multi-tenant deployment.
+ *
+ * Run with:
+ *   npx convex run seed:seed '{"clerkOrgId":"org_xxx"}'
+ *
+ * Idempotent: skips if the target org already has any functions.
+ */
 export const seed = internalMutation({
-  args: {},
-  handler: async (ctx) => {
-    // Check if data already exists to avoid duplicates
-    const existing = await ctx.db.query("functions").take(1);
+  args: { clerkOrgId: v.string() },
+  handler: async (ctx, args) => {
+    const orgId = args.clerkOrgId;
+
+    const existing = await ctx.db
+      .query("functions")
+      .withIndex("by_clerkOrgId", (q) => q.eq("clerkOrgId", orgId))
+      .take(1);
     if (existing.length > 0) {
-      console.log("Seed data already exists, skipping.");
+      console.log(
+        `Seed data already exists for org ${orgId} — skipping.`,
+      );
       return;
     }
 
@@ -14,18 +31,22 @@ export const seed = internalMutation({
     const finance = await ctx.db.insert("functions", {
       name: "Finance",
       sortOrder: 1,
+      clerkOrgId: orgId,
     });
     const operations = await ctx.db.insert("functions", {
       name: "Operations",
       sortOrder: 2,
+      clerkOrgId: orgId,
     });
     const hr = await ctx.db.insert("functions", {
       name: "Human Resources",
       sortOrder: 3,
+      clerkOrgId: orgId,
     });
     const technology = await ctx.db.insert("functions", {
       name: "Technology",
       sortOrder: 4,
+      clerkOrgId: orgId,
     });
 
     // ── Finance Departments ───────────────────────────────────
@@ -33,16 +54,19 @@ export const seed = internalMutation({
       functionId: finance,
       name: "Payroll",
       sortOrder: 1,
+      clerkOrgId: orgId,
     });
     const accountsPayable = await ctx.db.insert("departments", {
       functionId: finance,
       name: "Accounts Payable",
       sortOrder: 2,
+      clerkOrgId: orgId,
     });
     const treasury = await ctx.db.insert("departments", {
       functionId: finance,
       name: "Treasury",
       sortOrder: 3,
+      clerkOrgId: orgId,
     });
 
     // ── Operations Departments ────────────────────────────────
@@ -50,11 +74,13 @@ export const seed = internalMutation({
       functionId: operations,
       name: "Supply Chain",
       sortOrder: 1,
+      clerkOrgId: orgId,
     });
     const facilities = await ctx.db.insert("departments", {
       functionId: operations,
       name: "Facilities",
       sortOrder: 2,
+      clerkOrgId: orgId,
     });
 
     // ── HR Departments ────────────────────────────────────────
@@ -62,16 +88,19 @@ export const seed = internalMutation({
       functionId: hr,
       name: "Recruitment",
       sortOrder: 1,
+      clerkOrgId: orgId,
     });
     const employeeRelations = await ctx.db.insert("departments", {
       functionId: hr,
       name: "Employee Relations",
       sortOrder: 2,
+      clerkOrgId: orgId,
     });
     const learningDev = await ctx.db.insert("departments", {
       functionId: hr,
       name: "Learning & Development",
       sortOrder: 3,
+      clerkOrgId: orgId,
     });
 
     // ── Technology Departments ─────────────────────────────────
@@ -79,11 +108,13 @@ export const seed = internalMutation({
       functionId: technology,
       name: "Engineering",
       sortOrder: 1,
+      clerkOrgId: orgId,
     });
     const itSupport = await ctx.db.insert("departments", {
       functionId: technology,
       name: "IT Support",
       sortOrder: 2,
+      clerkOrgId: orgId,
     });
 
     // ── Finance > Payroll Processes ───────────────────────────
@@ -91,6 +122,7 @@ export const seed = internalMutation({
       departmentId: payroll,
       name: "Compensation",
       sortOrder: 1,
+      clerkOrgId: orgId,
       rollingSummary:
         "Compensation is handled by three team members who collectively manage monthly salary calculations, variable pay adjustments, and statutory deductions. Sarah K. pulls headcount and salary data from the HRIS on the 15th of each month, runs validation checks against the approved compensation bands, and flags discrepancies to the Payroll Manager. Ahmed R. handles bank transfer setup and coordinates with Treasury to ensure funds are available two business days before pay date. Both contributors noted that the HRIS export occasionally includes terminated employees, requiring a manual cross-reference with the HR termination log — a gap that causes 2–3 hours of rework each cycle.",
     });
@@ -98,11 +130,13 @@ export const seed = internalMutation({
       departmentId: payroll,
       name: "Commissions",
       sortOrder: 2,
+      clerkOrgId: orgId,
     });
     await ctx.db.insert("processes", {
       departmentId: payroll,
       name: "Bank Transfers",
       sortOrder: 3,
+      clerkOrgId: orgId,
     });
 
     // ── Finance > Accounts Payable Processes ──────────────────
@@ -110,11 +144,13 @@ export const seed = internalMutation({
       departmentId: accountsPayable,
       name: "Invoice Processing",
       sortOrder: 1,
+      clerkOrgId: orgId,
     });
     await ctx.db.insert("processes", {
       departmentId: accountsPayable,
       name: "Vendor Onboarding",
       sortOrder: 2,
+      clerkOrgId: orgId,
     });
 
     // ── Finance > Treasury Processes ──────────────────────────
@@ -122,11 +158,13 @@ export const seed = internalMutation({
       departmentId: treasury,
       name: "Cash Flow Forecasting",
       sortOrder: 1,
+      clerkOrgId: orgId,
     });
     await ctx.db.insert("processes", {
       departmentId: treasury,
       name: "Bank Reconciliation",
       sortOrder: 2,
+      clerkOrgId: orgId,
     });
 
     // ── Operations > Supply Chain Processes ────────────────────
@@ -134,16 +172,19 @@ export const seed = internalMutation({
       departmentId: supplyChain,
       name: "Procurement",
       sortOrder: 1,
+      clerkOrgId: orgId,
     });
     await ctx.db.insert("processes", {
       departmentId: supplyChain,
       name: "Inventory Management",
       sortOrder: 2,
+      clerkOrgId: orgId,
     });
     await ctx.db.insert("processes", {
       departmentId: supplyChain,
       name: "Logistics & Shipping",
       sortOrder: 3,
+      clerkOrgId: orgId,
     });
 
     // ── Operations > Facilities Processes ──────────────────────
@@ -151,11 +192,13 @@ export const seed = internalMutation({
       departmentId: facilities,
       name: "Office Maintenance",
       sortOrder: 1,
+      clerkOrgId: orgId,
     });
     await ctx.db.insert("processes", {
       departmentId: facilities,
       name: "Access & Security",
       sortOrder: 2,
+      clerkOrgId: orgId,
     });
 
     // ── HR > Recruitment Processes ─────────────────────────────
@@ -163,16 +206,19 @@ export const seed = internalMutation({
       departmentId: recruitment,
       name: "Job Posting & Sourcing",
       sortOrder: 1,
+      clerkOrgId: orgId,
     });
     await ctx.db.insert("processes", {
       departmentId: recruitment,
       name: "Interview Scheduling",
       sortOrder: 2,
+      clerkOrgId: orgId,
     });
     await ctx.db.insert("processes", {
       departmentId: recruitment,
       name: "Offer Management",
       sortOrder: 3,
+      clerkOrgId: orgId,
     });
 
     // ── HR > Employee Relations Processes ──────────────────────
@@ -180,11 +226,13 @@ export const seed = internalMutation({
       departmentId: employeeRelations,
       name: "Onboarding",
       sortOrder: 1,
+      clerkOrgId: orgId,
     });
     await ctx.db.insert("processes", {
       departmentId: employeeRelations,
       name: "Performance Reviews",
       sortOrder: 2,
+      clerkOrgId: orgId,
     });
 
     // ── HR > Learning & Development Processes ─────────────────
@@ -192,11 +240,13 @@ export const seed = internalMutation({
       departmentId: learningDev,
       name: "Training Programs",
       sortOrder: 1,
+      clerkOrgId: orgId,
     });
     await ctx.db.insert("processes", {
       departmentId: learningDev,
       name: "Compliance Training",
       sortOrder: 2,
+      clerkOrgId: orgId,
     });
 
     // ── Technology > Engineering Processes ─────────────────────
@@ -204,16 +254,19 @@ export const seed = internalMutation({
       departmentId: engineering,
       name: "Sprint Planning",
       sortOrder: 1,
+      clerkOrgId: orgId,
     });
     await ctx.db.insert("processes", {
       departmentId: engineering,
       name: "Code Review",
       sortOrder: 2,
+      clerkOrgId: orgId,
     });
     await ctx.db.insert("processes", {
       departmentId: engineering,
       name: "Release Management",
       sortOrder: 3,
+      clerkOrgId: orgId,
     });
 
     // ── Technology > IT Support Processes ──────────────────────
@@ -221,16 +274,19 @@ export const seed = internalMutation({
       departmentId: itSupport,
       name: "Helpdesk Ticketing",
       sortOrder: 1,
+      clerkOrgId: orgId,
     });
     await ctx.db.insert("processes", {
       departmentId: itSupport,
       name: "Hardware Provisioning",
       sortOrder: 2,
+      clerkOrgId: orgId,
     });
 
     // ── Sample Conversations (for Finance > Payroll > Compensation) ──
     await ctx.db.insert("conversations", {
       processId: compensation,
+      clerkOrgId: orgId,
       elevenlabsConversationId: "seed-conv-001",
       contributorName: "Sarah K.",
       transcript: [
@@ -336,6 +392,7 @@ export const seed = internalMutation({
 
     await ctx.db.insert("conversations", {
       processId: compensation,
+      clerkOrgId: orgId,
       elevenlabsConversationId: "seed-conv-002",
       contributorName: "Ahmed R.",
       transcript: [
@@ -428,7 +485,7 @@ export const seed = internalMutation({
     });
 
     console.log(
-      "Seed data inserted: 4 functions, 10 departments, ~25 processes, 2 sample conversations."
+      `Seed data inserted for org ${orgId}: 4 functions, 10 departments, ~25 processes, 2 sample conversations.`,
     );
   },
 });

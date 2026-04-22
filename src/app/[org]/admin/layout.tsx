@@ -3,7 +3,7 @@
 import { useConvexAuth, useQuery } from "convex/react";
 import { useRouter } from "next/navigation";
 import { useEffect } from "react";
-import { api } from "../../../convex/_generated/api";
+import { api } from "../../../../convex/_generated/api";
 import { AdminSidebar } from "@/components/admin-sidebar";
 import {
   SidebarInset,
@@ -19,8 +19,8 @@ export default function AdminLayout({
   children: React.ReactNode;
 }) {
   const { isAuthenticated, isLoading: authLoading } = useConvexAuth();
-  const user = useQuery(
-    api.users.getMe,
+  const membership = useQuery(
+    api.users.getMyMembership,
     isAuthenticated ? undefined : "skip",
   );
   const router = useRouter();
@@ -31,18 +31,17 @@ export default function AdminLayout({
       router.replace("/");
       return;
     }
-    // user is undefined while loading, null if not found
-    if (user === null) {
+    // `membership` is undefined while loading, null if no active org.
+    if (membership === null) {
       router.replace("/");
       return;
     }
-    if (user && user.role !== "admin") {
+    if (membership && membership.role !== "admin") {
       router.replace("/");
     }
-  }, [authLoading, isAuthenticated, user, router]);
+  }, [authLoading, isAuthenticated, membership, router]);
 
-  // Show loading while auth or user data is resolving
-  if (authLoading || user === undefined) {
+  if (authLoading || membership === undefined) {
     return (
       <div className="flex h-screen flex-col items-center justify-center gap-3">
         <div className="h-5 w-5 animate-spin rounded-full border-2 border-primary/30 border-t-primary" />
@@ -51,8 +50,7 @@ export default function AdminLayout({
     );
   }
 
-  // Don't render admin UI for non-admins (redirect is in-flight)
-  if (!user || user.role !== "admin") {
+  if (!membership || membership.role !== "admin") {
     return null;
   }
 

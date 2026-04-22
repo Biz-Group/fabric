@@ -328,9 +328,9 @@ function formatTimeAgo(epochMs: number): string {
 // --- Main Component ---
 
 export function MillerColumns() {
-  // Current user role
-  const currentUser = useQuery(api.users.getMe);
-  const userRole = currentUser?.role ?? "viewer";
+  // Current user role is sourced from their membership in the active org.
+  const membership = useQuery(api.users.getMyMembership);
+  const userRole = membership?.role ?? "viewer";
   const canEdit = userRole === "admin" || userRole === "contributor";
 
   // Column collapse state

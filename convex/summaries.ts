@@ -2,7 +2,7 @@ import { v } from "convex/values";
 import { action } from "./_generated/server";
 import { internal } from "./_generated/api";
 import { Doc, Id } from "./_generated/dataModel";
-import { requireAuth, checkRoleFromUser } from "./lib/auth";
+import { resolveOrgForAction } from "./lib/orgAuth";
 
 // --- Shared Prompt Constants ---
 
@@ -54,66 +54,56 @@ Rules:
 
 // --- Summary Generation Actions ---
 
-// On-demand department summary with token guard and persistence
 export const generateDepartmentSummary = action({
   args: {
     departmentId: v.id("departments"),
     forceRefresh: v.optional(v.boolean()),
   },
-  handler: async (ctx, args): Promise<{ summary: string | null; message: string | null }> => {
-    const identity = await requireAuth(ctx);
-    const user = await ctx.runQuery(
-      internal.postCall.getUserByToken,
-      { tokenIdentifier: identity.tokenIdentifier },
-    );
-    checkRoleFromUser(user, "contributor");
+  handler: async (
+    ctx,
+    args,
+  ): Promise<{ summary: string | null; message: string | null }> => {
+    const { orgId } = await resolveOrgForAction(ctx);
+    await ctx.runQuery(internal.postCall.requireOrgContributorInternal, {});
 
-    // Token guard: skip LLM call if summary is fresh
     const dept: Doc<"departments"> | null = await ctx.runQuery(
       internal.summariesHelpers.getDepartment,
-      { departmentId: args.departmentId },
+      { departmentId: args.departmentId, clerkOrgId: orgId },
     );
     if (!dept) {
-      return {
-        summary: null as string | null,
-        message: "Department not found." as string | null,
-      };
+      return { summary: null, message: "Department not found." };
     }
 
-    if (
-      !args.forceRefresh &&
-      dept.summary &&
-      dept.summaryStale === false
-    ) {
-      return { summary: dept.summary as string | null, message: null as string | null };
+    if (!args.forceRefresh && dept.summary && dept.summaryStale === false) {
+      return { summary: dept.summary, message: null };
     }
 
-    const processSummaries: Array<{ processName: string; summary: string }> =
-      await ctx.runQuery(
-        internal.summariesHelpers.getProcessSummariesByDepartment,
-        { departmentId: args.departmentId },
-      );
+    const processSummaries: Array<{
+      processName: string;
+      summary: string;
+    }> = await ctx.runQuery(
+      internal.summariesHelpers.getProcessSummariesByDepartment,
+      { departmentId: args.departmentId, clerkOrgId: orgId },
+    );
 
     if (processSummaries.length === 0) {
       return {
-        summary: null as string | null,
-        message: "No process summaries available yet. Record conversations for the processes in this department first." as string | null,
+        summary: null,
+        message:
+          "No process summaries available yet. Record conversations for the processes in this department first.",
       };
     }
 
     const openrouterKey = process.env.OPENROUTER_API_KEY;
     if (!openrouterKey) {
       return {
-        summary: null as string | null,
-        message: "Summary generation is not configured (missing API key)." as string | null,
+        summary: null,
+        message: "Summary generation is not configured (missing API key).",
       };
     }
 
     const summaryBlock = processSummaries
-      .map(
-        (s: { processName: string; summary: string }) =>
-          `[Process: ${s.processName}]\n${s.summary}`,
-      )
+      .map((s) => `[Process: ${s.processName}]\n${s.summary}`)
       .join("\n\n");
 
     const response = await fetch(
@@ -142,79 +132,68 @@ export const generateDepartmentSummary = action({
       const errorText = await response.text();
       console.error("OpenRouter API error:", response.status, errorText);
       return {
-        summary: null as string | null,
-        message: "Failed to generate summary. Please try again." as string | null,
+        summary: null,
+        message: "Failed to generate summary. Please try again.",
       };
     }
 
     const result = await response.json();
-    const generated: string | null = result.choices?.[0]?.message?.content?.trim() ?? null;
+    const generated: string | null =
+      result.choices?.[0]?.message?.content?.trim() ?? null;
 
     if (!generated) {
       return {
-        summary: null as string | null,
-        message: "Failed to generate summary. Please try again." as string | null,
+        summary: null,
+        message: "Failed to generate summary. Please try again.",
       };
     }
 
-    // Persist the summary
     await ctx.runMutation(internal.summariesHelpers.saveDepartmentSummary, {
       departmentId: args.departmentId,
       summary: generated,
     });
 
-    return { summary: generated as string | null, message: null as string | null };
+    return { summary: generated, message: null };
   },
 });
 
-// On-demand function summary with token guard, cascade generation, and persistence
 export const generateFunctionSummary = action({
   args: {
     functionId: v.id("functions"),
     forceRefresh: v.optional(v.boolean()),
   },
-  handler: async (ctx, args): Promise<{ summary: string | null; message: string | null }> => {
-    const identity = await requireAuth(ctx);
-    const user = await ctx.runQuery(
-      internal.postCall.getUserByToken,
-      { tokenIdentifier: identity.tokenIdentifier },
-    );
-    checkRoleFromUser(user, "contributor");
+  handler: async (
+    ctx,
+    args,
+  ): Promise<{ summary: string | null; message: string | null }> => {
+    const { orgId } = await resolveOrgForAction(ctx);
+    await ctx.runQuery(internal.postCall.requireOrgContributorInternal, {});
 
-    // Token guard: skip LLM call if summary is fresh
     const func: Doc<"functions"> | null = await ctx.runQuery(
       internal.summariesHelpers.getFunction,
-      { functionId: args.functionId },
+      { functionId: args.functionId, clerkOrgId: orgId },
     );
     if (!func) {
-      return {
-        summary: null as string | null,
-        message: "Function not found." as string | null,
-      };
+      return { summary: null, message: "Function not found." };
     }
 
-    if (
-      !args.forceRefresh &&
-      func.summary &&
-      func.summaryStale === false
-    ) {
-      return { summary: func.summary as string | null, message: null as string | null };
+    if (!args.forceRefresh && func.summary && func.summaryStale === false) {
+      return { summary: func.summary, message: null };
     }
 
-    // Fetch department-level summaries
     const deptSummaries: Array<{
       departmentId: Id<"departments">;
       departmentName: string;
       summary: string | null;
     }> = await ctx.runQuery(
       internal.summariesHelpers.getDepartmentSummariesByFunction,
-      { functionId: args.functionId },
+      { functionId: args.functionId, clerkOrgId: orgId },
     );
 
     if (deptSummaries.length === 0) {
       return {
-        summary: null as string | null,
-        message: "No departments exist under this function yet." as string | null,
+        summary: null,
+        message: "No departments exist under this function yet.",
       };
     }
 
@@ -227,11 +206,13 @@ export const generateFunctionSummary = action({
           summary: dept.summary,
         });
       } else {
-        // Auto-generate this department's summary
-        const genResult: { summary: string | null; message: string | null } =
-          await ctx.runAction(internal.summariesHelpers.generateDepartmentSummaryInternal, {
-            departmentId: dept.departmentId,
-          });
+        const genResult: {
+          summary: string | null;
+          message: string | null;
+        } = await ctx.runAction(
+          internal.summariesHelpers.generateDepartmentSummaryInternal,
+          { departmentId: dept.departmentId, clerkOrgId: orgId },
+        );
         if (genResult.summary) {
           deptResults.push({
             departmentName: dept.departmentName,
@@ -243,24 +224,22 @@ export const generateFunctionSummary = action({
 
     if (deptResults.length === 0) {
       return {
-        summary: null as string | null,
-        message: "No department summaries available yet. Record conversations for the processes first." as string | null,
+        summary: null,
+        message:
+          "No department summaries available yet. Record conversations for the processes first.",
       };
     }
 
     const openrouterKey = process.env.OPENROUTER_API_KEY;
     if (!openrouterKey) {
       return {
-        summary: null as string | null,
-        message: "Summary generation is not configured (missing API key)." as string | null,
+        summary: null,
+        message: "Summary generation is not configured (missing API key).",
       };
     }
 
     const summaryBlock = deptResults
-      .map(
-        (s: { departmentName: string; summary: string }) =>
-          `[Department: ${s.departmentName}]\n${s.summary}`,
-      )
+      .map((s) => `[Department: ${s.departmentName}]\n${s.summary}`)
       .join("\n\n");
 
     const response = await fetch(
@@ -289,47 +268,47 @@ export const generateFunctionSummary = action({
       const errorText = await response.text();
       console.error("OpenRouter API error:", response.status, errorText);
       return {
-        summary: null as string | null,
-        message: "Failed to generate summary. Please try again." as string | null,
+        summary: null,
+        message: "Failed to generate summary. Please try again.",
       };
     }
 
     const result = await response.json();
-    const summary: string | null = result.choices?.[0]?.message?.content?.trim() ?? null;
+    const summary: string | null =
+      result.choices?.[0]?.message?.content?.trim() ?? null;
 
     if (!summary) {
       return {
-        summary: null as string | null,
-        message: "Failed to generate summary. Please try again." as string | null,
+        summary: null,
+        message: "Failed to generate summary. Please try again.",
       };
     }
 
-    // Persist the summary
     await ctx.runMutation(internal.summariesHelpers.saveFunctionSummary, {
       functionId: args.functionId,
       summary,
     });
 
-    return { summary, message: null as string | null };
+    return { summary, message: null };
   },
 });
 
-// Public action: force-refresh a process rolling summary (rebuilds from all transcripts)
 export const forceRefreshProcessSummary = action({
   args: {
     processId: v.id("processes"),
   },
   handler: async (ctx, args): Promise<{ message: string | null }> => {
-    const identity = await requireAuth(ctx);
-    const user = await ctx.runQuery(
-      internal.postCall.getUserByToken,
-      { tokenIdentifier: identity.tokenIdentifier },
+    const { orgId } = await resolveOrgForAction(ctx);
+    await ctx.runQuery(internal.postCall.requireOrgContributorInternal, {});
+    await ctx.scheduler.runAfter(
+      0,
+      internal.postCall.regenerateProcessSummary,
+      {
+        processId: args.processId,
+        clerkOrgId: orgId,
+        forceRefresh: true,
+      },
     );
-    checkRoleFromUser(user, "contributor");
-    await ctx.scheduler.runAfter(0, internal.postCall.regenerateProcessSummary, {
-      processId: args.processId,
-      forceRefresh: true,
-    });
-    return { message: null as string | null };
+    return { message: null };
   },
 });
