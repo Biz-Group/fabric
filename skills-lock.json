@@ -1,6 +1,11 @@
 {
   "version": 1,
   "skills": {
+    "convex": {
+      "source": "get-convex/agent-skills",
+      "sourceType": "github",
+      "computedHash": "4056d09c039b6bedf3cfd5ebf09443577b0d5951c68557a234a66d9f6c81c79e"
+    },
     "convex-create-component": {
       "source": "get-convex/agent-skills",
       "sourceType": "github",

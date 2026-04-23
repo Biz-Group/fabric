@@ -1,7 +1,12 @@
 import { v } from "convex/values";
 import { query, mutation } from "./_generated/server";
 import { Id } from "./_generated/dataModel";
-import { requireAuth, requireOrgAdmin, requireOrgMember } from "./lib/orgAuth";
+import {
+  getActiveOrgClaims,
+  requireAuth,
+  requireOrgAdmin,
+  requireOrgMember,
+} from "./lib/orgAuth";
 
 export const store = mutation({
   args: {},
@@ -49,7 +54,7 @@ export const store = mutation({
     // Default role:
     //   - platform super-admin → "admin"  (they operate across every org)
     //   - everyone else         → "contributor" (safe default for invitees)
-    const orgId = (identity as unknown as { orgId?: string }).orgId;
+    const { orgId } = getActiveOrgClaims(identity);
     if (orgId) {
       const existingMembership = await ctx.db
         .query("memberships")
@@ -102,8 +107,7 @@ export const getActiveOrg = query({
       return null;
     }
 
-    const orgId = (identity as unknown as { orgId?: string }).orgId;
-    const orgSlug = (identity as unknown as { orgSlug?: string }).orgSlug;
+    const { orgId, orgSlug } = getActiveOrgClaims(identity);
     if (!orgId) {
       return null;
     }

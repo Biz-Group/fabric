@@ -5,6 +5,15 @@ import { Doc, Id } from "../_generated/dataModel";
 export type Role = "admin" | "contributor" | "viewer";
 const RANK: Record<Role, number> = { viewer: 0, contributor: 1, admin: 2 };
 
+type IdentityWithOrgClaims = {
+  orgId?: string;
+  orgSlug?: string;
+  o?: {
+    id?: string;
+    slg?: string;
+  };
+};
+
 /**
  * Identity-only gate for user-scoped operations that must work even when
  * there's no active Clerk org — profile onboarding, the apex landing page, etc.
@@ -16,6 +25,20 @@ export async function requireAuth(
   const identity = await ctx.auth.getUserIdentity();
   if (!identity) throw new Error("Not authenticated");
   return identity;
+}
+
+/** Clerk's Convex token can expose org claims either as top-level custom
+ * claims (`orgId`, `orgSlug`) or in the compact built-in `o` object
+ * (`o.id`, `o.slg`). Support both so auth keeps working across template
+ * variations and SDK changes. */
+export function getActiveOrgClaims(identity: unknown): {
+  orgId: string | null;
+  orgSlug: string | null;
+} {
+  const claims = identity as IdentityWithOrgClaims;
+  const orgId = claims.orgId ?? claims.o?.id ?? null;
+  const orgSlug = claims.orgSlug ?? claims.o?.slg ?? null;
+  return { orgId, orgSlug };
 }
 
 export type OrgContext = {
@@ -40,8 +63,7 @@ export async function requireOrgMember(
   const identity = await ctx.auth.getUserIdentity();
   if (!identity) throw new Error("Not authenticated");
 
-  const orgId = (identity as unknown as { orgId?: string }).orgId;
-  const orgSlug = (identity as unknown as { orgSlug?: string }).orgSlug ?? "";
+  const { orgId, orgSlug } = getActiveOrgClaims(identity);
   if (!orgId) throw new Error("No active organization");
 
   const user = await ctx.db
@@ -63,7 +85,7 @@ export async function requireOrgMember(
   return {
     tokenIdentifier: identity.tokenIdentifier,
     orgId,
-    orgSlug,
+    orgSlug: orgSlug ?? "",
     userId: user._id,
     role: membership.role,
     email: identity.email ?? undefined,
@@ -109,7 +131,7 @@ export async function resolveOrgForAction(
 ): Promise<{ orgId: string; tokenIdentifier: string }> {
   const identity = await ctx.auth.getUserIdentity();
   if (!identity) throw new Error("Not authenticated");
-  const orgId = (identity as unknown as { orgId?: string }).orgId;
+  const { orgId } = getActiveOrgClaims(identity);
   if (!orgId) throw new Error("No active organization");
   return { orgId, tokenIdentifier: identity.tokenIdentifier };
 }

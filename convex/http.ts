@@ -1,6 +1,7 @@
 import { httpRouter } from "convex/server";
 import { httpAction } from "./_generated/server";
 import { internal } from "./_generated/api";
+import { getActiveOrgClaims } from "./lib/orgAuth";
 
 const http = httpRouter();
 
@@ -68,7 +69,7 @@ http.route({
     // If the caller has a session, require their active org to match the URL.
     const identity = await ctx.auth.getUserIdentity();
     if (identity) {
-      const tokenOrgId = (identity as unknown as { orgId?: string }).orgId;
+      const { orgId: tokenOrgId } = getActiveOrgClaims(identity);
       if (tokenOrgId && tokenOrgId !== clerkOrgId) {
         // Don't distinguish wrong-org from not-found — same 404 response.
         return new Response("Not found", { status: 404 });

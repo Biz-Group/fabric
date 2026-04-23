@@ -962,7 +962,8 @@ Derived from [PRD.md](PRD.md) v1.0 (Multi-Tenant — Subdomain-Native)
   - Reads `Host` header, extracts subdomain via `NEXT_PUBLIC_ROOT_DOMAIN`
   - Apex requests fall through to marketing + auth routes
   - Subdomain requests internally rewrite `/<anything>` → `/<subdomain>/<anything>` so the `src/app/[org]/...` tree resolves
-  - `organizationSyncOptions.organizationPatterns: ["/:slug", "/:slug/(.*)"]` configured — Clerk auto-activates the matching org on every authenticated request
+  - `organizationSyncOptions.organizationPatterns: ["/:slug", "/:slug/(.*)"]` configured as a best-effort activation hint; because the org lives in the subdomain rather than the pathname, `src/app/[org]/layout.tsx` still performs a client-side `setActive` fallback on initial tenant hits
+  - On tenant subdomains, only `/sign-in` and `/sign-up` stay public; signed-out visits to `/` are redirected by Clerk to `/sign-in`
   - `auth.protect()` runs on all non-public routes after rewrite; apex skips protection for marketing/landing
 
 - [x] **Set root-domain env vars**
@@ -972,24 +973,29 @@ Derived from [PRD.md](PRD.md) v1.0 (Multi-Tenant — Subdomain-Native)
 - [x] **Move the protected app tree under `src/app/[org]/...`**
   - Former `src/app/page.tsx` signed-in content → `src/app/[org]/page.tsx`
   - `src/app/admin/layout.tsx` + `page.tsx` + `users/page.tsx` → `src/app/[org]/admin/...`
-  - `src/app/sign-in/` and `src/app/sign-up/` kept at apex (public auth routes)
+  - `src/app/sign-in/` and `src/app/sign-up/` kept as top-level routes outside `[org]`; they render branded hybrid auth pages on tenant subdomains, while apex requests to `/sign-in` or `/sign-up` are redirected back to the marketing landing
 
 - [x] **Create `src/app/[org]/layout.tsx` — the slug ↔ active-org guard**
   - Client component using `useOrganization` / `useOrganizationList` (Clerk hooks)
   - If middleware didn't auto-activate, tries client-side `setActive({ organization })` using the slug-to-membership map
-  - Wrong subdomain for the user's memberships → renders `<OrganizationList hidePersonal />` with a contextual message
-  - No active org at all → same picker
+  - Wrong subdomain for the user's memberships → renders a flat "No access to this workspace" screen with links to valid workspace subdomains plus sign-out; this surface never shows a general org picker
+  - Matching membership but Clerk/Convex org state not ready yet → shows an "Activating your workspace..." spinner rather than mounting org-scoped children early
   - All success paths render `children`
 
-- [x] **Rewrite `src/app/page.tsx` as an apex landing / redirector**
-  - Signed-out → existing marketing landing with Clerk `<SignIn />`
-  - Signed-in with active org → `window.location.replace` to `${protocol}//${slug}.${rootHostname}:${port}/`
-  - Signed-in without any membership → static message telling the user to ask their admin
+- [x] **Rewrite `src/app/page.tsx` as a pure apex landing**
+  - Signed-in or signed-out → same marketing landing
+  - No auth UI on the apex; tenant auth happens at `{org-slug}.<root-domain>/sign-in`, and signed-out tenant visits to `{org-slug}.<root-domain>/` are redirected there
 
 - [x] **Add an `<OrganizationSwitcher />` to the authenticated app shell**
   - Placed in `src/components/user-menu.tsx` next to the role badge + `<UserButton />`
   - `afterSelectOrganizationUrl` composed at runtime as `${protocol}//:slug.${rootHost}:${port}/` so dev (`lvh.me:3000`) and prod both work
   - `hidePersonal` enabled — Fabric is B2B-only
+  - Rendered only for users with more than one org membership; single-org users never see it. In practice this is mainly platform super-admins fanned out across tenants
+
+- [x] **Brand the tenant auth pages**
+  - Shared the existing Fabric hero into reusable auth-shell components so apex marketing and tenant auth keep the same design language
+  - `src/app/sign-in/[[...sign-in]]/page.tsx` and `src/app/sign-up/[[...sign-up]]/page.tsx` now render split-screen branded pages instead of bare Clerk defaults
+  - Clerk auth cards are restyled via shared `appearance` config and still redirect back to tenant `/` after successful auth
 
 - [x] **Update legacy role checks to use `getMyMembership`**
   - `src/components/miller-columns.tsx`, `src/components/recording-modal.tsx`, `src/components/user-menu.tsx`, `src/app/[org]/admin/layout.tsx` — all now read `api.users.getMyMembership.role` instead of `api.users.getMe.role`
@@ -999,6 +1005,11 @@ Derived from [PRD.md](PRD.md) v1.0 (Multi-Tenant — Subdomain-Native)
   - `rm -rf .next` to clear stale route validators from the admin tree
   - `npx tsc --noEmit` exits 0
   - `npx convex dev --once` pushes cleanly
+
+> **Auth bootstrap note (2026-04-23):**
+> 1. Subdomain routing means Clerk cannot rely on pathname matching alone to activate the org. `src/app/[org]/layout.tsx` must keep the client-side `setActive` fallback.
+> 2. Frontend and Convex deploys must stay in sync for auth bootstrap changes. A frontend that referenced `users:getActiveOrg` before the Convex prod deploy exposed that function produced a workspace boot failure.
+> 3. Clerk org claims may arrive either as top-level `orgId` / `orgSlug` custom claims or as the compact built-in `o.id` / `o.slg` shape. Convex auth helpers must support both.
 
 > **⚠ 13.6 end-to-end verification is blocked on purchasing a production domain.**
 > Clerk's development instance shows "Refreshing the session token resulted in an infinite redirect loop" when signing in across subdomains of `lvh.me`. Root cause: dev-browser handshake between `*.lvh.me` and Clerk's `accounts.dev` doesn't propagate the dev browser token across host changes. "Allowed Subdomains" in the Clerk dashboard is production-only; Satellite domains are Pro-tier. Resolution requires:
@@ -1140,7 +1151,7 @@ npx convex env set --prod CLERK_FRONTEND_API_URL https://clerk.bizfabric.ai
 
 - [ ] **Cross-tenant isolation (manual)**
   - Create a second Clerk org (e.g. `test-org`); invite a second test user
-  - Sign in as the test user; visit `http://biz-group.lvh.me:3000/` → expect the `[org]` layout to flip to `<OrganizationList />`
+  - Sign in as the test user; visit `http://biz-group.lvh.me:3000/` → expect the `[org]` layout to render the "No access to this workspace" screen with links only to valid workspace subdomains
   - From the Convex dashboard "run function" panel, invoke a query scoped to Biz Group IDs while authenticated as the test user → expect "Not found" or auth errors
 
 - [ ] **Wrong-org ID-substitution defense**

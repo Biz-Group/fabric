@@ -622,20 +622,24 @@ Fabric distinguishes two authorization layers that are kept strictly separate in
 
 #### 3.7.3 Subdomain-native routing
 
-Production URLs take the form `{org-slug}.bizfabric.ai/<path>` (e.g. `biz-group.bizfabric.ai/admin/users`). Users never see an internal `/orgs/:slug/` path. The apex domain (`bizfabric.ai`) hosts only the marketing landing, sign-in, and sign-up pages.
+Production URLs take the form `{org-slug}.bizfabric.ai/<path>` (e.g. `biz-group.bizfabric.ai/admin/users`). Users never see an internal `/orgs/:slug/` path. The apex domain (`bizfabric.ai`) hosts only the marketing landing. Sign-in and sign-up are implemented as top-level routes, but they are intended to be used from tenant subdomains; apex requests to `/sign-in` or `/sign-up` are redirected back to the landing page, while signed-out visits to tenant `/` are redirected to tenant `/sign-in`.
 
 Local development uses `lvh.me` — a public DNS name that resolves `*.lvh.me` to `127.0.0.1` — so developers visit `biz-group.lvh.me:3000` without editing their hosts file. The env var `NEXT_PUBLIC_ROOT_DOMAIN` controls the active root (`lvh.me:3000` in dev, `bizfabric.ai` in prod).
 
-Middleware (`src/proxy.ts`) extracts the subdomain from the `Host` header and rewrites the request internally from `/<anything>` to `/<subdomain>/<anything>`, matching the Next.js `src/app/[org]/...` route tree. Users always see the subdomain-only URL in the browser; the `[org]` segment is an implementation detail that lets Clerk's `organizationSyncOptions` auto-activate the correct org on every request via a URL-based pattern match.
+Middleware (`src/proxy.ts`) extracts the subdomain from the `Host` header and rewrites the request internally from `/<anything>` to `/<subdomain>/<anything>`, matching the Next.js `src/app/[org]/...` route tree. Users always see the subdomain-only URL in the browser; the `[org]` segment is an implementation detail. Because the org lives in the subdomain rather than the request pathname, Clerk's `organizationSyncOptions` is only a best-effort hint here, and `src/app/[org]/layout.tsx` still performs a client-side `setActive` fallback on initial tenant hits after authentication. The tenant auth pages themselves stay outside `[org]` so they can render branded public marketing + Clerk surfaces at `/sign-in` and `/sign-up` on each subdomain.
 
 #### 3.7.4 Cross-org access control
 
-- When a signed-in user visits a subdomain for an org they don't belong to, `src/app/[org]/layout.tsx` detects the mismatch between the URL slug and Clerk's active org and renders `<OrganizationList />` so the user can pick a valid org.
+- When a signed-in user visits a subdomain for an org they don't belong to, `src/app/[org]/layout.tsx` detects the missing slug ↔ membership match and renders a flat "No access to this workspace" screen with links to valid workspace subdomains plus sign-out. This surface intentionally does not show a general org picker.
+- The only org-switch UI inside the app is the nav-bar `<OrganizationSwitcher />`, and it is rendered only for users with more than one org membership. Single-org users never see it.
+- Wrong-subdomain login is not hard-blocked before authentication. A user may complete sign-in on the wrong tenant subdomain, but app access is denied immediately afterwards unless the URL slug matches one of their org memberships.
 - Every Convex function calls `requireOrgMember(ctx)` (or `requireOrgContributor` / `requireOrgAdmin`), which:
-  1. Reads `identity.orgId` from the JWT (requires the Clerk `convex` JWT template to include `{ orgId, orgSlug }`).
+  1. Reads org context from the authenticated JWT, supporting both top-level `orgId` / `orgSlug` claims and Clerk's compact built-in `o.id` / `o.slg` claim shape.
   2. Looks up the caller's `memberships` row for that org.
   3. Returns `{ orgId, orgSlug, role }`, or throws if the user is not a member.
 - The ElevenLabs audio proxy (`convex/http.ts`) is re-scoped to `/audio/:clerkOrgId/:elevenlabsConversationId`; it returns 404 on any mismatch so one org's audio can never be served from another org's URL.
+
+**Implementation note:** Auth bootstrap changes span both the Next.js frontend and the Convex deployment. If the frontend starts querying a new bootstrap helper before Convex prod has that function, or if Convex only reads one JWT org-claim shape, tenant activation can stall on the workspace spinner even though Clerk authentication itself succeeds.
 
 #### 3.7.5 Membership provisioning
 
@@ -954,7 +958,7 @@ Alternatively, the entire modal can use the **Conversation Bar** component, whic
 9. The app is usable on mobile viewports (stacked navigation) and desktop (Miller columns).
 10. Only authenticated users can access the app. Users can sign up, sign in, complete a profile with organizational attributes, and sign out. Conversations are linked to authenticated user identities.
 11. Viewers can browse the hierarchy and view summaries but cannot create/edit/delete items or record conversations. Contributors can do everything viewers can plus CRUD and recording. Admins can do everything contributors can plus manage user roles.
-12. Each Clerk organization is accessed via its own subdomain (`{slug}.bizfabric.ai` in prod, `{slug}.lvh.me:3000` in dev). A user signed into Org A cannot read or write Org B's data — every Convex function enforces row-level `clerkOrgId` scoping, and a wrong-subdomain visit surfaces the `<OrganizationList />` picker instead of the app. The ElevenLabs audio proxy is org-scoped and returns 404 on any cross-org request.
+12. Each Clerk organization is accessed via its own subdomain (`{slug}.bizfabric.ai` in prod, `{slug}.lvh.me:3000` in dev). A user signed into Org A cannot read or write Org B's data — every Convex function enforces row-level `clerkOrgId` scoping, and a wrong-subdomain visit surfaces the no-access workspace screen instead of the app. The only in-app org switch UI is the nav-bar `<OrganizationSwitcher />`, shown only to users with more than one org membership. The ElevenLabs audio proxy is org-scoped and returns 404 on any cross-org request.
 
 ---
 

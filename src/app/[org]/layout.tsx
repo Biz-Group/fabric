@@ -141,7 +141,7 @@ function SignOutLink() {
   return (
     <button
       type="button"
-      onClick={() => signOut({ redirectUrl: "/" })}
+      onClick={() => signOut({ redirectUrl: "/sign-in" })}
       className="text-xs text-muted-foreground underline underline-offset-4 hover:text-foreground"
     >
       Sign out

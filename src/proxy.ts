@@ -5,14 +5,11 @@ import { NextResponse } from "next/server";
 // marketing.
 const isAuthPath = createRouteMatcher(["/sign-in(.*)", "/sign-up(.*)"]);
 // `isPublicPath` is what middleware lets through without an auth.protect.
-// On the apex, only the marketing landing. On a subdomain, also the auth
-// pages — they are how a tenant's user signs into that tenant.
+// On the apex, only the marketing landing. On a subdomain, only the auth
+// pages are public — tenant `/` stays the workspace entrypoint and redirects
+// signed-out users to `/sign-in`.
 const isApexPublicPath = createRouteMatcher(["/"]);
-const isSubdomainPublicPath = createRouteMatcher([
-  "/",
-  "/sign-in(.*)",
-  "/sign-up(.*)",
-]);
+const isSubdomainPublicPath = createRouteMatcher(["/sign-in(.*)", "/sign-up(.*)"]);
 
 // Root domain, with port for local dev. Dev: "lvh.me:3000", prod: "bizfabric.ai".
 // Unset = treat every request as apex (legacy single-tenant dev without subdomains).
@@ -51,7 +48,7 @@ export default clerkMiddleware(
     // Subdomain request → rewrite internally to /<subdomain>/<path> so the
     // Next.js `src/app/[org]/...` tree resolves. Auth pages are NOT rewritten
     // — they live at the top-level `src/app/sign-in` route and render the
-    // same Clerk component on every subdomain.
+    // branded tenant auth screens directly on each subdomain.
     if (isAuthPath(req)) return;
 
     const url = req.nextUrl.clone();
