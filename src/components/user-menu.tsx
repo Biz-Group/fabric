@@ -1,7 +1,11 @@
 "use client";
 
 import Link from "next/link";
-import { OrganizationSwitcher, UserButton } from "@clerk/nextjs";
+import {
+  OrganizationSwitcher,
+  UserButton,
+  useOrganizationList,
+} from "@clerk/nextjs";
 import { useQuery } from "convex/react";
 import { api } from "../../convex/_generated/api";
 import { Settings } from "lucide-react";
@@ -15,6 +19,11 @@ function rootHostname(): string {
 export function UserMenu() {
   const membership = useQuery(api.users.getMyMembership);
   const role = membership?.role ?? "viewer";
+  const { userMemberships } = useOrganizationList({ userMemberships: true });
+  // Show the switcher only to users who actually have somewhere to switch to —
+  // i.e. super-admins fanned out across multiple tenants. Single-org users
+  // never need it.
+  const isMultiOrgUser = (userMemberships.data?.length ?? 0) > 1;
 
   // When the user picks a different org in the switcher, Clerk redirects to
   // this URL. We use the current port so local dev on lvh.me works.
@@ -29,17 +38,19 @@ export function UserMenu() {
 
   return (
     <div className="flex items-center gap-2">
-      <OrganizationSwitcher
-        hidePersonal
-        afterSelectOrganizationUrl={afterSelectUrl}
-        appearance={{
-          elements: {
-            rootBox: "flex items-center",
-            organizationSwitcherTrigger:
-              "h-7 rounded-md px-2 text-xs font-medium hover:bg-muted",
-          },
-        }}
-      />
+      {isMultiOrgUser && (
+        <OrganizationSwitcher
+          hidePersonal
+          afterSelectOrganizationUrl={afterSelectUrl}
+          appearance={{
+            elements: {
+              rootBox: "flex items-center",
+              organizationSwitcherTrigger:
+                "h-7 rounded-md px-2 text-xs font-medium hover:bg-muted",
+            },
+          }}
+        />
+      )}
       {role === "admin" && (
         <Link
           href="/admin"

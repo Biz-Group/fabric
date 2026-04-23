@@ -1,9 +1,18 @@
 import { clerkMiddleware, createRouteMatcher } from "@clerk/nextjs/server";
 import { NextResponse } from "next/server";
 
-// `isPublicPath` matches routes that do not require an active org:
-// marketing landing at apex and the Clerk sign-in/up pages.
-const isPublicPath = createRouteMatcher(["/", "/sign-in(.*)", "/sign-up(.*)"]);
+// Auth pages live only on tenant subdomains, never on apex. Apex is pure
+// marketing.
+const isAuthPath = createRouteMatcher(["/sign-in(.*)", "/sign-up(.*)"]);
+// `isPublicPath` is what middleware lets through without an auth.protect.
+// On the apex, only the marketing landing. On a subdomain, also the auth
+// pages — they are how a tenant's user signs into that tenant.
+const isApexPublicPath = createRouteMatcher(["/"]);
+const isSubdomainPublicPath = createRouteMatcher([
+  "/",
+  "/sign-in(.*)",
+  "/sign-up(.*)",
+]);
 
 // Root domain, with port for local dev. Dev: "lvh.me:3000", prod: "bizfabric.ai".
 // Unset = treat every request as apex (legacy single-tenant dev without subdomains).
@@ -26,28 +35,37 @@ export default clerkMiddleware(
     const host = req.headers.get("host");
     const subdomain = getSubdomain(host);
 
-    // Apex request → marketing landing + auth pages.
+    // Apex request — marketing landing only. Anyone hitting /sign-in or
+    // /sign-up on the apex gets redirected to the marketing page (sign-in is
+    // a per-tenant flow, not a global one).
     if (!subdomain) {
-      if (!isPublicPath(req)) await auth.protect();
+      if (isAuthPath(req)) {
+        const url = req.nextUrl.clone();
+        url.pathname = "/";
+        return NextResponse.redirect(url);
+      }
+      if (!isApexPublicPath(req)) await auth.protect();
       return;
     }
 
     // Subdomain request → rewrite internally to /<subdomain>/<path> so the
-    // Next.js `src/app/[org]/...` tree resolves. Clerk's organizationSyncOptions
-    // (below) then matches against the rewritten path and auto-activates the
-    // matching org on the session.
+    // Next.js `src/app/[org]/...` tree resolves. Auth pages are NOT rewritten
+    // — they live at the top-level `src/app/sign-in` route and render the
+    // same Clerk component on every subdomain.
+    if (isAuthPath(req)) return;
+
     const url = req.nextUrl.clone();
     if (
       url.pathname === `/${subdomain}` ||
       url.pathname.startsWith(`/${subdomain}/`)
     ) {
       // Defensive — path already rewritten; don't double-prefix.
-      if (!isPublicPath(req)) await auth.protect();
+      if (!isSubdomainPublicPath(req)) await auth.protect();
       return;
     }
     url.pathname = `/${subdomain}${url.pathname}`;
 
-    await auth.protect();
+    if (!isSubdomainPublicPath(req)) await auth.protect();
     return NextResponse.rewrite(url);
   },
   {
