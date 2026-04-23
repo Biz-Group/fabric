@@ -69,9 +69,10 @@ export default clerkMiddleware(
     return NextResponse.rewrite(url);
   },
   {
-    // After rewrite, the URL path starts with `/<slug>`. Clerk matches this
-    // against the patterns below and sets the slug as the active org on the
-    // session, so `identity.orgId` flows through to Convex.
+    // Clerk matches organization patterns against the incoming request path.
+    // Since this app carries the org in the subdomain and only rewrites the
+    // pathname later, the client-side `setActive` fallback in `[org]/layout`
+    // is still needed for initial hits to `/` on a tenant subdomain.
     organizationSyncOptions: {
       organizationPatterns: ["/:slug", "/:slug/(.*)"],
     },

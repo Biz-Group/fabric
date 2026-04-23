@@ -91,6 +91,30 @@ export const getMe = query({
   },
 });
 
+/** Safe org-context probe for the client bootstrap path.
+ * Returns the active Clerk org carried by the Convex JWT, or null if the
+ * session is authenticated without an active org yet. */
+export const getActiveOrg = query({
+  args: {},
+  handler: async (ctx) => {
+    const identity = await ctx.auth.getUserIdentity();
+    if (!identity) {
+      return null;
+    }
+
+    const orgId = (identity as unknown as { orgId?: string }).orgId;
+    const orgSlug = (identity as unknown as { orgSlug?: string }).orgSlug;
+    if (!orgId) {
+      return null;
+    }
+
+    return {
+      orgId,
+      orgSlug: orgSlug ?? "",
+    };
+  },
+});
+
 export const completeProfile = mutation({
   args: {
     name: v.string(),

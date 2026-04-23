@@ -11,7 +11,7 @@ export default function OrgHomePage() {
   const storeUser = useMutation(api.users.store);
 
   useEffect(() => {
-    storeUser();
+    void storeUser();
   }, [storeUser]);
 
   if (user === undefined) {
@@ -23,7 +23,18 @@ export default function OrgHomePage() {
     );
   }
 
-  if (user === null || !user.profileComplete) {
+  if (user === null) {
+    return (
+      <div className="flex h-screen flex-col items-center justify-center gap-3">
+        <div className="h-5 w-5 animate-spin rounded-full border-2 border-primary/30 border-t-primary" />
+        <p className="text-sm text-muted-foreground">
+          Setting up your workspace...
+        </p>
+      </div>
+    );
+  }
+
+  if (!user.profileComplete) {
     return <ProfileOnboarding />;
   }
 

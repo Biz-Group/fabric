@@ -1,15 +1,15 @@
 "use client";
 
 import {
-  useAuth,
   useClerk,
   useOrganization,
   useOrganizationList,
   useUser,
 } from "@clerk/nextjs";
-import { useConvexAuth } from "convex/react";
+import { useConvexAuth, useQuery } from "convex/react";
 import { useParams } from "next/navigation";
 import { useEffect } from "react";
+import { api } from "../../../convex/_generated/api";
 
 const ROOT_DOMAIN = process.env.NEXT_PUBLIC_ROOT_DOMAIN ?? "";
 
@@ -29,41 +29,38 @@ export default function OrgLayout({ children }: { children: React.ReactNode }) {
   const { organization, isLoaded: orgLoaded } = useOrganization();
   const { setActive, isLoaded: orgListLoaded, userMemberships } =
     useOrganizationList({ userMemberships: true });
-  // `useAuth().orgId` is the active org as recorded in the Clerk session —
-  // i.e. what `{{org.id}}` will resolve to in the `convex` JWT template right
-  // now. `useOrganization().organization` can lead this during the setActive
-  // round-trip, which would let children mount and fire Convex queries with a
-  // JWT that has an empty `orgId`, throwing "No active organization".
-  const { orgId: sessionOrgId } = useAuth();
+  const activeOrg = useQuery(api.users.getActiveOrg);
+  const matchingMembership = userMemberships.data?.find(
+    (m) => m.organization.slug === slugFromUrl,
+  );
+  const targetOrgId = matchingMembership?.organization.id;
 
-  // Clerk normally activates the correct org via middleware's
-  // organizationSyncOptions once the URL path matches. In case the session
-  // already held a stale active-org (e.g. the user was mid-session when the
-  // slug appeared for the first time), fall back to matching the URL slug
-  // against the user's memberships and activating it client-side.
+  // Clerk's organization sync patterns only match pathnames. Since this app
+  // encodes the org in the subdomain and rewrites `/` to `/<slug>` later in
+  // proxy, we still need a client-side `setActive` fallback for initial hits.
   useEffect(() => {
     if (!orgListLoaded || !orgLoaded || !userLoaded || !setActive) return;
     if (!isSignedIn || !slugFromUrl) return;
-    if (organization?.slug === slugFromUrl) return;
+    if (!targetOrgId) return;
 
-    const match = userMemberships.data?.find(
-      (m) => m.organization.slug === slugFromUrl,
-    );
-    if (match) {
-      setActive({ organization: match.organization.id });
-    }
+    const clerkOrgReady = organization?.id === targetOrgId;
+    const convexOrgReady = activeOrg?.orgId === targetOrgId;
+    if (clerkOrgReady && convexOrgReady) return;
+
+    void setActive({ organization: targetOrgId });
   }, [
     orgListLoaded,
     orgLoaded,
     userLoaded,
     isSignedIn,
     slugFromUrl,
-    organization?.slug,
-    userMemberships.data,
+    targetOrgId,
+    organization?.id,
+    activeOrg?.orgId,
     setActive,
   ]);
 
-  if (authLoading || !userLoaded || !orgLoaded) {
+  if (authLoading || !userLoaded || !orgLoaded || !orgListLoaded) {
     return (
       <div className="flex h-screen flex-col items-center justify-center gap-3">
         <div className="h-5 w-5 animate-spin rounded-full border-2 border-primary/30 border-t-primary" />
@@ -81,10 +78,6 @@ export default function OrgLayout({ children }: { children: React.ReactNode }) {
       </div>
     );
   }
-
-  const matchingMembership = userMemberships.data?.find(
-    (m) => m.organization.slug === slugFromUrl,
-  );
 
   // User is signed in but isn't a member of this subdomain's org. Render a
   // flat "no access" screen — never an org picker on this surface (the
@@ -126,25 +119,10 @@ export default function OrgLayout({ children }: { children: React.ReactNode }) {
     );
   }
 
-  // Signed in, has a matching membership, but Clerk hasn't activated the org
-  // yet (the useEffect above is mid-flight calling setActive). Render a
-  // spinner rather than mounting children with a stale JWT.
-  if (!organization) {
-    return (
-      <div className="flex h-screen flex-col items-center justify-center gap-3">
-        <div className="h-5 w-5 animate-spin rounded-full border-2 border-primary/30 border-t-primary" />
-        <p className="text-sm text-muted-foreground">
-          Activating your workspace...
-        </p>
-      </div>
-    );
-  }
-
-  // Clerk's local org state matches the URL, but the session cookie hasn't
-  // committed the active org yet — so the JWT Convex will receive doesn't
-  // carry `orgId` and any org-scoped query would throw. Wait it out instead
-  // of mounting children.
-  if (sessionOrgId !== organization.id) {
+  // Don't mount org-scoped children until Convex confirms the JWT actually
+  // carries the target org. This prevents first-render queries from throwing
+  // "No active organization" while Clerk finishes activating the session.
+  if (organization?.id !== targetOrgId || activeOrg?.orgId !== targetOrgId) {
     return (
       <div className="flex h-screen flex-col items-center justify-center gap-3">
         <div className="h-5 w-5 animate-spin rounded-full border-2 border-primary/30 border-t-primary" />
