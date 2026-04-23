@@ -12,6 +12,19 @@ const inter = Inter({
 export const metadata: Metadata = {
   title: "Fabric.",
   description: "Capture how your organization works through conversations",
+  icons: {
+    shortcut: "/favicon.ico",
+    icon: [
+      {
+        url: "/fabric-icon-black.ico",
+        media: "(prefers-color-scheme: light)",
+      },
+      {
+        url: "/fabric-icon.ico",
+        media: "(prefers-color-scheme: dark)",
+      },
+    ],
+  },
 };
 
 export default function RootLayout({

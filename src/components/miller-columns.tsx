@@ -48,6 +48,7 @@ import {
 import { useColumnCollapse } from "@/hooks/use-column-collapse";
 import { ConversationLog } from "@/components/conversation-log";
 import { UserMenu } from "@/components/user-menu";
+import { WorkspaceBrand } from "@/components/workspace-brand";
 import { RecordingModal } from "@/components/recording-modal";
 import { CrudDialog } from "@/components/crud-dialog";
 import { MarkdownSummary } from "@/components/markdown-summary";
@@ -588,7 +589,7 @@ export function MillerColumns() {
     <div className="flex h-full flex-col">
       {mobile && (
         <div className="flex shrink-0 items-center justify-between border-b bg-background px-4 py-3">
-          <h1 className="text-lg font-semibold tracking-tight">Fabric.</h1>
+          <WorkspaceBrand />
           <UserMenu />
         </div>
       )}
@@ -1213,7 +1214,7 @@ export function MillerColumns() {
     <div className="flex h-full flex-col bg-background">
       {/* App header — desktop only (mobile shows header inside functions column) */}
       <header className="hidden shrink-0 items-center justify-between border-b bg-background px-6 py-3 md:flex">
-        <h1 className="text-lg font-semibold tracking-tight">Fabric.</h1>
+        <WorkspaceBrand />
         <UserMenu />
       </header>
 
