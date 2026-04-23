@@ -29,7 +29,7 @@ export function WorkspaceBrand({ className }: { className?: string }) {
         <>
           <span aria-hidden="true" className="h-5 w-px bg-border" />
           <div
-            className="flex h-8 max-w-24 shrink-0 items-center justify-center overflow-hidden px-2"
+            className="flex h-8 max-w-32 shrink-0 items-center justify-center overflow-hidden px-2"
             title={orgName}
             aria-label={orgName ? `${orgName} workspace` : "Workspace"}
           >
