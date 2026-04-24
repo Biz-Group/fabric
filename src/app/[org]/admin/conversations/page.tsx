@@ -11,7 +11,9 @@ import {
 } from "convex/react";
 import { toast } from "sonner";
 import {
+  Bot,
   Download,
+  Mic,
   MoreHorizontal,
   RotateCcw,
   Search,
@@ -81,6 +83,29 @@ function StatusBadge({ status }: { status: Status }) {
   return <Badge variant="outline">Processing</Badge>;
 }
 
+function getConversationTypeLabel(inputMode: ConversationRow["inputMode"]) {
+  return inputMode === "voiceRecord" ? "Voice Recording" : "AI Interview";
+}
+
+function ConversationTypeBadge({
+  inputMode,
+}: {
+  inputMode: ConversationRow["inputMode"];
+}) {
+  const isVoiceRecording = inputMode === "voiceRecord";
+  const Icon = isVoiceRecording ? Mic : Bot;
+
+  return (
+    <Badge
+      variant={isVoiceRecording ? "outline" : "secondary"}
+      className="gap-1.5"
+    >
+      <Icon />
+      {getConversationTypeLabel(inputMode)}
+    </Badge>
+  );
+}
+
 export default function AdminConversationsPage() {
   const searchParams = useSearchParams();
   const initialStatus = useMemo<StatusFilter>(() => {
@@ -126,7 +151,8 @@ export default function AdminConversationsPage() {
       (r) =>
         r.contributorName.toLowerCase().includes(q) ||
         (r.processName ?? "").toLowerCase().includes(q) ||
-        (r.summary ?? "").toLowerCase().includes(q),
+        (r.summary ?? "").toLowerCase().includes(q) ||
+        getConversationTypeLabel(r.inputMode).toLowerCase().includes(q),
     );
   }, [results, search]);
 
@@ -215,7 +241,7 @@ export default function AdminConversationsPage() {
         <div className="relative max-w-sm flex-1">
           <Search className="absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
           <Input
-            placeholder="Search contributor, process, or summary..."
+            placeholder="Search contributor, type, process, or summary..."
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             className="pl-9"
@@ -248,6 +274,7 @@ export default function AdminConversationsPage() {
               <TableRow>
                 <TableHead>Created</TableHead>
                 <TableHead>Contributor</TableHead>
+                <TableHead>Type</TableHead>
                 <TableHead>Process</TableHead>
                 <TableHead>Duration</TableHead>
                 <TableHead>Status</TableHead>
@@ -258,7 +285,7 @@ export default function AdminConversationsPage() {
               {filtered.length === 0 ? (
                 <TableRow>
                   <TableCell
-                    colSpan={6}
+                    colSpan={7}
                     className="h-24 text-center text-muted-foreground"
                   >
                     {search
@@ -274,6 +301,9 @@ export default function AdminConversationsPage() {
                     </TableCell>
                     <TableCell className="font-medium">
                       {r.contributorName}
+                    </TableCell>
+                    <TableCell>
+                      <ConversationTypeBadge inputMode={r.inputMode} />
                     </TableCell>
                     <TableCell>
                       <div className="flex flex-col">
