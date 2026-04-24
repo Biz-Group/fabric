@@ -1,5 +1,6 @@
 import { clerkMiddleware, createRouteMatcher } from "@clerk/nextjs/server";
 import { NextResponse } from "next/server";
+import { getTenantSubdomain } from "@/lib/subdomain";
 
 // Auth pages live only on tenant subdomains, never on apex. Apex is pure
 // marketing.
@@ -15,22 +16,10 @@ const isSubdomainPublicPath = createRouteMatcher(["/sign-in(.*)", "/sign-up(.*)"
 // Unset = treat every request as apex (legacy single-tenant dev without subdomains).
 const ROOT_DOMAIN = process.env.NEXT_PUBLIC_ROOT_DOMAIN ?? "";
 
-/** Returns the subdomain (e.g. "biz-group") or null if on apex / www / app. */
-function getSubdomain(host: string | null): string | null {
-  if (!host || !ROOT_DOMAIN) return null;
-  const hostname = host.split(":")[0];
-  const rootHostname = ROOT_DOMAIN.split(":")[0];
-  if (hostname === rootHostname || hostname === `www.${rootHostname}`) return null;
-  if (!hostname.endsWith(`.${rootHostname}`)) return null;
-  const sub = hostname.slice(0, -rootHostname.length - 1);
-  if (!sub || sub === "www" || sub === "app") return null;
-  return sub;
-}
-
 export default clerkMiddleware(
   async (auth, req) => {
     const host = req.headers.get("host");
-    const subdomain = getSubdomain(host);
+    const subdomain = getTenantSubdomain(host, ROOT_DOMAIN);
 
     // Apex request — marketing landing only. Anyone hitting /sign-in or
     // /sign-up on the apex gets redirected to the marketing page (sign-in is

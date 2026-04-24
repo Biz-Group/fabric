@@ -1,11 +1,43 @@
 import type { ReactNode } from "react";
+import { clerkClient } from "@clerk/nextjs/server";
+import { headers } from "next/headers";
+import { getTenantSubdomain } from "@/lib/subdomain";
 import { cn } from "@/lib/utils";
+import {
+  WorkspaceBrandLockup,
+  type WorkspaceBrandOrganization,
+} from "@/components/workspace-brand-lockup";
 
 type FabricHeroProps = {
   className?: string;
+  organization?: WorkspaceBrandOrganization | null;
 };
 
-export function FabricHero({ className }: FabricHeroProps) {
+const ROOT_DOMAIN = process.env.NEXT_PUBLIC_ROOT_DOMAIN ?? "";
+
+async function getSubdomainOrganization(): Promise<
+  WorkspaceBrandOrganization | null
+> {
+  const host = (await headers()).get("host");
+  const slug = getTenantSubdomain(host, ROOT_DOMAIN);
+
+  if (!slug) return null;
+
+  try {
+    const client = await clerkClient();
+    const organization = await client.organizations.getOrganization({ slug });
+
+    return {
+      name: organization.name,
+      hasImage: organization.hasImage,
+      imageUrl: organization.imageUrl,
+    };
+  } catch {
+    return null;
+  }
+}
+
+export function FabricHero({ className, organization }: FabricHeroProps) {
   return (
     <div
       className={cn(
@@ -27,9 +59,15 @@ export function FabricHero({ className }: FabricHeroProps) {
 
       <div className="relative z-10 flex h-full flex-col justify-between gap-12">
         <div className="mt-16 max-w-2xl">
-          <h1 className="text-6xl font-bold leading-tight tracking-tight">
-            Fabric.
-          </h1>
+          <WorkspaceBrandLockup
+            as="h1"
+            organization={organization}
+            className="gap-4"
+            fabricClassName="text-6xl font-bold leading-tight tracking-tight"
+            dividerClassName="h-12 bg-black/15"
+            logoContainerClassName="h-14 max-w-56 px-0"
+            initialsClassName="text-xl text-neutral-500"
+          />
           <p className="mt-6 max-w-xl text-lg leading-relaxed text-neutral-600">
             Capture how your organization works through conversations. Build a
             living knowledge base, effortlessly.
@@ -50,21 +88,32 @@ type AuthShellProps = {
   children: ReactNode;
 };
 
-export function AuthShell({
+export async function AuthShell({
   title,
   description,
   children,
 }: AuthShellProps) {
+  const organization = await getSubdomainOrganization();
+
   return (
     <div className="min-h-screen bg-background lg:grid lg:grid-cols-[minmax(0,1.05fr)_minmax(420px,0.95fr)]">
-      <FabricHero className="hidden min-h-screen p-12 lg:flex" />
+      <FabricHero
+        className="hidden min-h-screen p-12 lg:flex"
+        organization={organization}
+      />
 
       <div className="flex min-h-screen items-center justify-center px-6 py-12">
         <div className="w-full max-w-md space-y-8">
           <div className="space-y-3 text-center lg:text-left">
-            <p className="text-xs font-semibold uppercase tracking-[0.28em] text-neutral-500 lg:hidden">
-              Fabric.
-            </p>
+            <WorkspaceBrandLockup
+              as="p"
+              organization={organization}
+              className="justify-center gap-2 lg:hidden"
+              fabricClassName="text-xs font-semibold uppercase tracking-[0.28em] text-neutral-500"
+              dividerClassName="h-4 bg-border"
+              logoContainerClassName="h-5 max-w-24 px-0"
+              initialsClassName="text-[9px]"
+            />
             <h2 className="text-3xl font-semibold tracking-tight text-foreground">
               {title}
             </h2>
