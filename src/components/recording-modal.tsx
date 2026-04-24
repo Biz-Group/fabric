@@ -56,7 +56,14 @@ import {
 
 type ModalStep = "name" | "consent" | "recording" | "processing" | "review";
 export type RecordingMode = "agent" | "voiceRecord";
-type VoiceRecordState = "idle" | "recording" | "stopped" | "uploading" | "success" | "error";
+type VoiceRecordState =
+  | "idle"
+  | "recording"
+  | "stopped"
+  | "uploading"
+  | "processing"
+  | "success"
+  | "error";
 
 interface LiveMessage {
   id: number;
@@ -164,6 +171,8 @@ export function RecordingModal({
   const [voiceRecordSeconds, setVoiceRecordSeconds] = useState(0);
   const [recordedBlob, setRecordedBlob] = useState<Blob | null>(null);
   const [voiceRecordError, setVoiceRecordError] = useState<string | null>(null);
+  const [submittedVoiceConversationId, setSubmittedVoiceConversationId] =
+    useState<Id<"conversations"> | null>(null);
 
   // Post-call state
   const [postCallResult, setPostCallResult] = useState<{
@@ -215,6 +224,7 @@ export function RecordingModal({
       setVoiceRecordSeconds(0);
       setRecordedBlob(null);
       setVoiceRecordError(null);
+      setSubmittedVoiceConversationId(null);
       audioChunksRef.current = [];
     } else {
       if (timerRef.current) {
@@ -497,6 +507,7 @@ export function RecordingModal({
     setRecordedBlob(null);
     setVoiceRecordSeconds(0);
     setVoiceRecordError(null);
+    setSubmittedVoiceConversationId(null);
     setVoiceRecordState("idle");
   }, [stopVoiceRecording]);
 
@@ -529,8 +540,8 @@ export function RecordingModal({
         mimeType,
       });
       setPostCallResult({ status: result.status });
-      setVoiceRecordState("success");
-      setStep("review");
+      setSubmittedVoiceConversationId(result.conversationId);
+      setVoiceRecordState("processing");
     } catch (err) {
       console.error("Voice recording upload/processing failed:", err);
       setVoiceRecordError(
@@ -546,6 +557,37 @@ export function RecordingModal({
     processId,
     processVoiceRecording,
     voiceRecordSeconds,
+  ]);
+
+  useEffect(() => {
+    if (
+      mode !== "voiceRecord" ||
+      step !== "processing" ||
+      !submittedVoiceConversationId ||
+      !existingConversations
+    ) {
+      return;
+    }
+
+    const submittedConversation = existingConversations.find(
+      (conversation) => conversation._id === submittedVoiceConversationId
+    );
+    if (!submittedConversation) return;
+
+    if (submittedConversation.status === "done") {
+      setPostCallResult({ status: "done" });
+      setVoiceRecordState("success");
+      setStep("review");
+    } else if (submittedConversation.status === "failed") {
+      setPostCallResult({ status: "failed" });
+      setVoiceRecordState("error");
+      setStep("review");
+    }
+  }, [
+    existingConversations,
+    mode,
+    step,
+    submittedVoiceConversationId,
   ]);
 
   // Handle name submission → acquire mic → show consent
@@ -1097,7 +1139,7 @@ export function RecordingModal({
             <ShimmeringText
               text={
                 mode === "voiceRecord"
-                  ? "Transcribing your recording..."
+                  ? "Processing your recording..."
                   : "Processing your conversation..."
               }
               className="text-sm text-muted-foreground"
@@ -1137,7 +1179,7 @@ export function RecordingModal({
               <DialogDescription>
                 {postCallResult?.status === "done"
                   ? mode === "voiceRecord"
-                    ? "Your recording has been saved and will appear in the process detail panel after transcription finishes."
+                    ? "Your recording has been transcribed, analyzed, and saved to the process detail panel."
                     : "Your conversation has been saved and will appear in the process detail panel."
                   : postCallResult?.status === "timeout" ||
                       postCallResult?.status === "processing"
