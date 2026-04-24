@@ -4,6 +4,10 @@ import { ClerkProvider } from "@clerk/nextjs";
 import { ConvexClientProvider } from "@/components/convex-client-provider";
 import "./globals.css";
 
+const clerkTaskUrls = {
+  "choose-organization": "/join-organization",
+};
+
 const inter = Inter({
   variable: "--font-inter",
   subsets: ["latin"],
@@ -39,7 +43,7 @@ export default function RootLayout({
       className={`${inter.variable} h-full antialiased`}
     >
       <body suppressHydrationWarning className="min-h-full flex flex-col">
-        <ClerkProvider>
+        <ClerkProvider taskUrls={clerkTaskUrls}>
           <ConvexClientProvider>{children}</ConvexClientProvider>
         </ClerkProvider>
       </body>

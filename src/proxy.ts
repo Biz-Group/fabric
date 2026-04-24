@@ -5,12 +5,19 @@ import { getTenantSubdomain } from "@/lib/subdomain";
 // Auth pages live only on tenant subdomains, never on apex. Apex is pure
 // marketing.
 const isAuthPath = createRouteMatcher(["/sign-in(.*)", "/sign-up(.*)"]);
+const isJoinOrganizationPath = createRouteMatcher([
+  "/join-organization(.*)",
+  "/api/join-subdomain-organization",
+]);
 // `isPublicPath` is what middleware lets through without an auth.protect.
-// On the apex, only the marketing landing. On a subdomain, only the auth
-// pages are public — tenant `/` stays the workspace entrypoint and redirects
-// signed-out users to `/sign-in`.
+// On the apex, only the marketing landing. On a subdomain, only auth pages and
+// the signup org-join handoff are public — tenant `/` stays the workspace
+// entrypoint and redirects signed-out users to `/sign-in`.
 const isApexPublicPath = createRouteMatcher(["/"]);
-const isSubdomainPublicPath = createRouteMatcher(["/sign-in(.*)", "/sign-up(.*)"]);
+const isSubdomainPublicPath = createRouteMatcher([
+  "/sign-in(.*)",
+  "/sign-up(.*)",
+]);
 
 // Root domain, with port for local dev. Dev: "lvh.me:3000", prod: "bizfabric.ai".
 // Unset = treat every request as apex (legacy single-tenant dev without subdomains).
@@ -25,7 +32,7 @@ export default clerkMiddleware(
     // /sign-up on the apex gets redirected to the marketing page (sign-in is
     // a per-tenant flow, not a global one).
     if (!subdomain) {
-      if (isAuthPath(req)) {
+      if (isAuthPath(req) || isJoinOrganizationPath(req)) {
         const url = req.nextUrl.clone();
         url.pathname = "/";
         return NextResponse.redirect(url);
@@ -35,10 +42,10 @@ export default clerkMiddleware(
     }
 
     // Subdomain request → rewrite internally to /<subdomain>/<path> so the
-    // Next.js `src/app/[org]/...` tree resolves. Auth pages are NOT rewritten
-    // — they live at the top-level `src/app/sign-in` route and render the
-    // branded tenant auth screens directly on each subdomain.
-    if (isAuthPath(req)) return;
+    // Next.js `src/app/[org]/...` tree resolves. Auth pages and the signup
+    // org-join handoff are NOT rewritten — they live at top-level routes and
+    // render directly on each subdomain.
+    if (isAuthPath(req) || isJoinOrganizationPath(req)) return;
 
     const url = req.nextUrl.clone();
     if (
