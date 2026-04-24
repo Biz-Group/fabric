@@ -20,7 +20,7 @@ export const removeTestData = internalMutation({
       )
       .collect();
     const testConversations = allConversations.filter((c) =>
-      c.elevenlabsConversationId.startsWith("seed-"),
+      c.elevenlabsConversationId?.startsWith("seed-"),
     );
 
     if (testConversations.length === 0) {

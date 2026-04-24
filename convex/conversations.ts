@@ -224,6 +224,9 @@ export const deleteForAdmin = mutation({
     assertOrgOwns(caller, conv);
 
     const processId = conv.processId;
+    if (conv.audioStorageId) {
+      await ctx.storage.delete(conv.audioStorageId);
+    }
     await ctx.db.delete(args.conversationId);
 
     // Rebuild the parent process summary from scratch — the deleted
@@ -272,6 +275,9 @@ export const getFailedForRetry = internalQuery({
     }
     if (conv.status !== "failed") {
       throw new Error("Only failed conversations can be retried");
+    }
+    if ((conv.inputMode ?? "agent") !== "agent" || !conv.elevenlabsConversationId) {
+      throw new Error("Only failed AI interview conversations can be retried");
     }
 
     return {

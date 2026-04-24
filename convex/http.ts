@@ -2,6 +2,7 @@ import { httpRouter } from "convex/server";
 import { httpAction } from "./_generated/server";
 import { internal } from "./_generated/api";
 import { getActiveOrgClaims } from "./lib/orgAuth";
+import type { Id } from "./_generated/dataModel";
 
 const http = httpRouter();
 
@@ -45,26 +46,63 @@ function withCors(
   return headers;
 }
 
-// Audio proxy: streams MP3 audio from ElevenLabs without exposing the API key.
-// Frontend calls GET /audio/{clerkOrgId}/{elevenlabsConversationId} — path is
-// org-scoped so one tenant can never serve another tenant's audio. The
-// `<audio>` element can't attach JWT headers, so authorization relies on the
-// DB-existence check scoped by clerkOrgId. An attacker would need both a
-// valid Clerk org id AND a valid ElevenLabs conversation id (both
-// non-enumerable).
+function audioResponse(
+  req: Request,
+  audioBytes: ArrayBuffer,
+  contentType: string,
+) {
+  const totalSize = audioBytes.byteLength;
+  const rangeHeader = req.headers.get("Range");
+
+  if (rangeHeader) {
+    const match = rangeHeader.match(/bytes=(\d+)-(\d*)/);
+    if (match) {
+      const start = parseInt(match[1], 10);
+      const end = match[2] ? parseInt(match[2], 10) : totalSize - 1;
+      const boundedEnd = Math.min(end, totalSize - 1);
+      const chunk = audioBytes.slice(start, boundedEnd + 1);
+
+      return new Response(chunk, {
+        status: 206,
+        headers: withCors(req, {
+          "Content-Type": contentType,
+          "Content-Length": chunk.byteLength.toString(),
+          "Content-Range": `bytes ${start}-${boundedEnd}/${totalSize}`,
+          "Accept-Ranges": "bytes",
+          "Cache-Control": "public, max-age=3600",
+        }),
+      });
+    }
+  }
+
+  return new Response(audioBytes, {
+    status: 200,
+    headers: withCors(req, {
+      "Content-Type": contentType,
+      "Content-Length": totalSize.toString(),
+      "Accept-Ranges": "bytes",
+      "Cache-Control": "public, max-age=3600",
+    }),
+  });
+}
+
+// Audio endpoint: serves a Fabric conversation's replay audio. Agent
+// conversations proxy ElevenLabs audio; direct voice recordings stream the
+// file retained in Convex storage. Frontend calls:
+// GET /audio/{clerkOrgId}/{conversationId}
 http.route({
   pathPrefix: "/audio/",
   method: "GET",
   handler: httpAction(async (ctx, req) => {
     const url = new URL(req.url);
-    // Path is /audio/{clerkOrgId}/{elevenlabsConversationId}
+    // Path is /audio/{clerkOrgId}/{conversationId}
     const suffix = url.pathname.replace(/^\/audio\//, "");
     const slashIdx = suffix.indexOf("/");
     if (slashIdx <= 0 || slashIdx === suffix.length - 1) {
       return new Response("Missing org or conversation ID", { status: 400 });
     }
     const clerkOrgId = suffix.substring(0, slashIdx);
-    const elevenlabsConversationId = suffix.substring(slashIdx + 1);
+    const conversationId = suffix.substring(slashIdx + 1) as Id<"conversations">;
 
     // If the caller has a session, require their active org to match the URL.
     const identity = await ctx.auth.getUserIdentity();
@@ -76,14 +114,39 @@ http.route({
       }
     }
 
-    // Always verify the conversation exists in the given org. This is the
-    // primary enforcement for unauthenticated <audio> element loads.
-    const exists: boolean = await ctx.runQuery(
-      internal.postCall.conversationExistsByElevenLabsId,
-      { elevenlabsConversationId, clerkOrgId },
-    );
-    if (!exists) {
+    let source:
+      | null
+      | {
+          inputMode: "agent";
+          elevenlabsConversationId: string;
+        }
+      | {
+          inputMode: "voiceRecord";
+          audioStorageId: Id<"_storage">;
+          audioMimeType: string;
+        };
+    try {
+      source = await ctx.runQuery(internal.postCall.getConversationAudioSource, {
+        conversationId,
+        clerkOrgId,
+      });
+    } catch {
       return new Response("Not found", { status: 404 });
+    }
+
+    if (!source) {
+      return new Response("Not found", { status: 404 });
+    }
+
+    if (source.inputMode === "voiceRecord") {
+      const blob = await ctx.storage.get(source.audioStorageId);
+      if (!blob) return new Response("Audio not available", { status: 404 });
+      const audioBytes = await blob.arrayBuffer();
+      return audioResponse(
+        req,
+        audioBytes,
+        source.audioMimeType || blob.type || "audio/webm",
+      );
     }
 
     const apiKey = process.env.ELEVENLABS_API_KEY;
@@ -91,54 +154,17 @@ http.route({
       return new Response("Server configuration error", { status: 500 });
     }
 
-    const elevenLabsUrl = `https://api.elevenlabs.io/v1/convai/conversations/${elevenlabsConversationId}/audio`;
-
+    const elevenLabsUrl =
+      `https://api.elevenlabs.io/v1/convai/conversations/${source.elevenlabsConversationId}/audio`;
     const upstream = await fetch(elevenLabsUrl, {
       headers: { "xi-api-key": apiKey },
     });
-
     if (!upstream.ok) {
-      return new Response("Audio not available", {
-        status: upstream.status,
-      });
+      return new Response("Audio not available", { status: upstream.status });
     }
 
-    // Buffer the full response — Convex HTTP actions don't support
-    // streaming a ReadableStream body directly.
     const audioBytes = await upstream.arrayBuffer();
-    const totalSize = audioBytes.byteLength;
-
-    // Support Range requests so the browser can seek within the audio.
-    const rangeHeader = req.headers.get("Range");
-    if (rangeHeader) {
-      const match = rangeHeader.match(/bytes=(\d+)-(\d*)/);
-      if (match) {
-        const start = parseInt(match[1], 10);
-        const end = match[2] ? parseInt(match[2], 10) : totalSize - 1;
-        const chunk = audioBytes.slice(start, end + 1);
-
-        return new Response(chunk, {
-          status: 206,
-          headers: withCors(req, {
-            "Content-Type": "audio/mpeg",
-            "Content-Length": chunk.byteLength.toString(),
-            "Content-Range": `bytes ${start}-${end}/${totalSize}`,
-            "Accept-Ranges": "bytes",
-            "Cache-Control": "public, max-age=3600",
-          }),
-        });
-      }
-    }
-
-    return new Response(audioBytes, {
-      status: 200,
-      headers: withCors(req, {
-        "Content-Type": "audio/mpeg",
-        "Content-Length": totalSize.toString(),
-        "Accept-Ranges": "bytes",
-        "Cache-Control": "public, max-age=3600",
-      }),
-    });
+    return audioResponse(req, audioBytes, "audio/mpeg");
   }),
 });
 

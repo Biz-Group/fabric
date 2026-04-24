@@ -62,12 +62,12 @@ function formatDate(timestamp: number): string {
 
 function getAudioUrl(
   clerkOrgId: string | null | undefined,
-  elevenlabsConversationId: string,
+  conversationId: Id<"conversations">,
 ): string | null {
   if (!clerkOrgId) return null;
   const convexUrl = process.env.NEXT_PUBLIC_CONVEX_URL ?? "";
   const siteUrl = convexUrl.replace(".cloud", ".site");
-  return `${siteUrl}/audio/${clerkOrgId}/${elevenlabsConversationId}`;
+  return `${siteUrl}/audio/${clerkOrgId}/${conversationId}`;
 }
 
 // --- localStorage Hooks ---
@@ -600,7 +600,7 @@ function ConversationEntry({
   const isFailed = conversation.status === "failed";
   const audioUrl = getAudioUrl(
     conversation.clerkOrgId,
-    conversation.elevenlabsConversationId,
+    conversation._id,
   );
   const transcript = conversation.transcript as
     | TranscriptMessage[]

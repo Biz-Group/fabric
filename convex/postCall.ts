@@ -48,9 +48,26 @@ export const insertConversation = internalMutation({
   args: {
     processId: v.id("processes"),
     clerkOrgId: v.string(),
-    elevenlabsConversationId: v.string(),
+    elevenlabsConversationId: v.optional(v.string()),
     contributorName: v.string(),
     userId: v.optional(v.id("users")),
+    inputMode: v.optional(
+      v.union(v.literal("agent"), v.literal("voiceRecord")),
+    ),
+    audioStorageId: v.optional(v.id("_storage")),
+    audioMimeType: v.optional(v.string()),
+    transcriptionProvider: v.optional(
+      v.union(
+        v.literal("elevenlabs-convai"),
+        v.literal("elevenlabs-scribe"),
+      ),
+    ),
+    analysisProvider: v.optional(
+      v.union(
+        v.literal("elevenlabs-convai"),
+        v.literal("fabric-openrouter"),
+      ),
+    ),
     transcript: v.optional(
       v.array(
         v.object({
@@ -81,6 +98,12 @@ export const insertConversation = internalMutation({
       elevenlabsConversationId: args.elevenlabsConversationId,
       contributorName: args.contributorName,
       userId: args.userId,
+      inputMode: args.inputMode ?? "agent",
+      audioStorageId: args.audioStorageId,
+      audioMimeType: args.audioMimeType,
+      transcriptionProvider:
+        args.transcriptionProvider ?? "elevenlabs-convai",
+      analysisProvider: args.analysisProvider ?? "elevenlabs-convai",
       transcript: args.transcript,
       summary: args.summary,
       analysis: args.analysis,
@@ -231,6 +254,9 @@ export const fetchConversation = action({
             elevenlabsConversationId: args.elevenlabsConversationId,
             contributorName,
             userId,
+            inputMode: "agent",
+            transcriptionProvider: "elevenlabs-convai",
+            analysisProvider: "elevenlabs-convai",
             status: "failed",
           });
           return { status: "failed" as const };
@@ -256,6 +282,9 @@ export const fetchConversation = action({
           elevenlabsConversationId: args.elevenlabsConversationId,
           contributorName,
           userId,
+          inputMode: "agent",
+          transcriptionProvider: "elevenlabs-convai",
+          analysisProvider: "elevenlabs-convai",
           status: "failed",
         });
         return { status: "failed" as const };
@@ -279,6 +308,9 @@ export const fetchConversation = action({
           summary,
           analysis,
           durationSeconds,
+          inputMode: "agent",
+          transcriptionProvider: "elevenlabs-convai",
+          analysisProvider: "elevenlabs-convai",
           status: "done",
         });
 
@@ -298,6 +330,9 @@ export const fetchConversation = action({
           elevenlabsConversationId: args.elevenlabsConversationId,
           contributorName,
           userId,
+          inputMode: "agent",
+          transcriptionProvider: "elevenlabs-convai",
+          analysisProvider: "elevenlabs-convai",
           status: "failed",
         });
         return { status: "failed" as const };
@@ -313,6 +348,9 @@ export const fetchConversation = action({
       elevenlabsConversationId: args.elevenlabsConversationId,
       contributorName,
       userId,
+      inputMode: "agent",
+      transcriptionProvider: "elevenlabs-convai",
+      analysisProvider: "elevenlabs-convai",
       status: "processing",
     });
 
@@ -353,6 +391,33 @@ export const conversationExistsByElevenLabsId = internalQuery({
   },
 });
 
+export const getConversationAudioSource = internalQuery({
+  args: {
+    conversationId: v.id("conversations"),
+    clerkOrgId: v.string(),
+  },
+  handler: async (ctx, args) => {
+    const conv = await ctx.db.get(args.conversationId);
+    if (!conv || conv.clerkOrgId !== args.clerkOrgId) return null;
+
+    const inputMode = conv.inputMode ?? "agent";
+    if (inputMode === "voiceRecord") {
+      if (!conv.audioStorageId) return null;
+      return {
+        inputMode,
+        audioStorageId: conv.audioStorageId,
+        audioMimeType: conv.audioMimeType ?? "audio/webm",
+      };
+    }
+
+    if (!conv.elevenlabsConversationId) return null;
+    return {
+      inputMode: "agent" as const,
+      elevenlabsConversationId: conv.elevenlabsConversationId,
+    };
+  },
+});
+
 // ---------------------------------------------------------------------------
 // Internal backfill helpers — always scoped by explicit clerkOrgId arg
 // ---------------------------------------------------------------------------
@@ -366,7 +431,9 @@ export const getImportedConversationIds = internalQuery({
         q.eq("clerkOrgId", args.clerkOrgId),
       )
       .take(10000);
-    return conversations.map((c) => c.elevenlabsConversationId);
+    return conversations.flatMap((c) =>
+      c.elevenlabsConversationId ? [c.elevenlabsConversationId] : [],
+    );
   },
 });
 
@@ -464,6 +531,9 @@ export const importConversation = internalAction({
       summary,
       analysis,
       durationSeconds,
+      inputMode: "agent",
+      transcriptionProvider: "elevenlabs-convai",
+      analysisProvider: "elevenlabs-convai",
       status: "done",
     });
 

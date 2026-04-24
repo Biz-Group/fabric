@@ -38,6 +38,7 @@ import {
   Pencil,
   Trash2,
   Clock,
+  Bot,
 } from "lucide-react";
 import {
   Tooltip,
@@ -49,7 +50,10 @@ import { useColumnCollapse } from "@/hooks/use-column-collapse";
 import { ConversationLog } from "@/components/conversation-log";
 import { UserMenu } from "@/components/user-menu";
 import { WorkspaceBrand } from "@/components/workspace-brand";
-import { RecordingModal } from "@/components/recording-modal";
+import {
+  RecordingModal,
+  type RecordingMode,
+} from "@/components/recording-modal";
 import { CrudDialog } from "@/components/crud-dialog";
 import { MarkdownSummary } from "@/components/markdown-summary";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
@@ -347,6 +351,8 @@ export function MillerColumns() {
 
   // Recording modal state
   const [recordingOpen, setRecordingOpen] = useState(false);
+  const [recordingMode, setRecordingMode] =
+    useState<RecordingMode>("agent");
 
   // Mobile navigation level
   const [mobileLevel, setMobileLevel] = useState<MobileLevel>(1);
@@ -1096,16 +1102,36 @@ export function MillerColumns() {
             {/* Conversations tab */}
             <TabsContent value={0} className="flex-1 overflow-y-auto scrollbar-hide">
               <div className="space-y-6 p-4 md:p-6">
-                {/* Record a Conversation — contributors and admins only */}
+                {/* Capture inputs — contributors and admins only */}
                 {canEdit && (
-                  <Button
-                    size="lg"
-                    className="w-full gap-2"
-                    onClick={() => setRecordingOpen(true)}
-                  >
-                    <Mic className="h-4 w-4" />
-                    Record a Conversation
-                  </Button>
+                  <div className="flex flex-col gap-2 sm:flex-row">
+                    <Button
+                      variant="default"
+                      size="lg"
+                      aria-label="Start AI interview"
+                      className="min-h-12 flex-1 justify-start gap-2 rounded-xl"
+                      onClick={() => {
+                        setRecordingMode("agent");
+                        setRecordingOpen(true);
+                      }}
+                    >
+                      <Bot className="h-4 w-4" />
+                      AI Interview
+                    </Button>
+                    <Button
+                      variant="outline"
+                      size="lg"
+                      aria-label="Start voice record"
+                      className="min-h-12 flex-1 justify-start gap-2 rounded-xl"
+                      onClick={() => {
+                        setRecordingMode("voiceRecord");
+                        setRecordingOpen(true);
+                      }}
+                    >
+                      <Mic className="h-4 w-4" />
+                      Voice Record
+                    </Button>
+                  </div>
                 )}
 
                 {canEdit && selectedProcessId && (
@@ -1116,6 +1142,7 @@ export function MillerColumns() {
                     processName={selectedProcessName}
                     functionName={selectedFunctionName}
                     departmentName={selectedDepartmentName}
+                    mode={recordingMode}
                   />
                 )}
 

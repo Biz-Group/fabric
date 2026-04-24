@@ -217,6 +217,10 @@ export const exportForOrg = internalQuery({
         analysis: c.analysis,
         durationSeconds: c.durationSeconds,
         status: c.status,
+        inputMode: c.inputMode,
+        audioMimeType: c.audioMimeType,
+        transcriptionProvider: c.transcriptionProvider,
+        analysisProvider: c.analysisProvider,
       })),
       processFlows: processFlows.map((f) => ({
         oldProcessId: f.processId,
@@ -372,8 +376,20 @@ export const prodImport_insertAll = internalMutation({
       }
       await ctx.db.insert("conversations", {
         processId: newProcessId,
-        elevenlabsConversationId: c.elevenlabsConversationId as string,
+        elevenlabsConversationId: c.elevenlabsConversationId as
+          | string
+          | undefined,
         contributorName: c.contributorName as string,
+        inputMode: c.inputMode as "agent" | "voiceRecord" | undefined,
+        audioMimeType: c.audioMimeType as string | undefined,
+        transcriptionProvider: c.transcriptionProvider as
+          | "elevenlabs-convai"
+          | "elevenlabs-scribe"
+          | undefined,
+        analysisProvider: c.analysisProvider as
+          | "elevenlabs-convai"
+          | "fabric-openrouter"
+          | undefined,
         transcript: c.transcript as
           | Array<{ role: string; content: string; time_in_call_secs: number }>
           | undefined,

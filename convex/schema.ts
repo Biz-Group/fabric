@@ -75,9 +75,26 @@ export default defineSchema({
   // Conversation records
   conversations: defineTable({
     processId: v.id("processes"),
-    elevenlabsConversationId: v.string(),
+    elevenlabsConversationId: v.optional(v.string()),
     contributorName: v.string(),
     userId: v.optional(v.id("users")),
+    inputMode: v.optional(
+      v.union(v.literal("agent"), v.literal("voiceRecord")),
+    ),
+    audioStorageId: v.optional(v.id("_storage")),
+    audioMimeType: v.optional(v.string()),
+    transcriptionProvider: v.optional(
+      v.union(
+        v.literal("elevenlabs-convai"),
+        v.literal("elevenlabs-scribe"),
+      ),
+    ),
+    analysisProvider: v.optional(
+      v.union(
+        v.literal("elevenlabs-convai"),
+        v.literal("fabric-openrouter"),
+      ),
+    ),
     transcript: v.optional(
       v.array(
         v.object({

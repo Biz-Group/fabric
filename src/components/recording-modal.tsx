@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useCallback, useEffect, useRef } from "react";
-import { useQuery, useAction } from "convex/react";
+import { useQuery, useAction, useMutation } from "convex/react";
 import { useConversation } from "@elevenlabs/react";
 import type { Status } from "@elevenlabs/react";
 import { api } from "../../convex/_generated/api";
@@ -48,11 +48,15 @@ import {
   Keyboard,
   CheckCircle2,
   ChevronRight,
+  RotateCcw,
+  Upload,
 } from "lucide-react";
 
 // --- Types ---
 
 type ModalStep = "name" | "consent" | "recording" | "processing" | "review";
+export type RecordingMode = "agent" | "voiceRecord";
+type VoiceRecordState = "idle" | "recording" | "stopped" | "uploading" | "success" | "error";
 
 interface LiveMessage {
   id: number;
@@ -67,6 +71,7 @@ interface RecordingModalProps {
   processName: string;
   functionName: string;
   departmentName: string;
+  mode?: RecordingMode;
 }
 
 // --- Mic Permission Check ---
@@ -96,6 +101,23 @@ async function acquireMicStream(): Promise<
   }
 }
 
+function getSupportedRecordingMimeType(): string {
+  if (typeof MediaRecorder === "undefined") return "";
+  const candidates = [
+    "audio/webm;codecs=opus",
+    "audio/webm",
+    "audio/mp4",
+    "audio/mpeg",
+  ];
+  return candidates.find((type) => MediaRecorder.isTypeSupported(type)) ?? "";
+}
+
+function formatRecordingDuration(seconds: number): string {
+  const mins = Math.floor(seconds / 60);
+  const secs = Math.floor(seconds % 60);
+  return `${mins}:${secs.toString().padStart(2, "0")}`;
+}
+
 // --- Main Component ---
 
 export function RecordingModal({
@@ -105,6 +127,7 @@ export function RecordingModal({
   processName,
   functionName,
   departmentName,
+  mode = "agent",
 }: RecordingModalProps) {
   // Step state
   const [step, setStep] = useState<ModalStep>("name");
@@ -131,14 +154,30 @@ export function RecordingModal({
   const [disconnectError, setDisconnectError] = useState<string | null>(null);
   const messageIdRef = useRef(0);
   const mediaStreamRef = useRef<MediaStream | null>(null);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const audioChunksRef = useRef<Blob[]>([]);
+  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const recordingStartedAtRef = useRef(0);
+  const recordingMimeTypeRef = useRef("audio/webm");
+  const [voiceRecordState, setVoiceRecordState] =
+    useState<VoiceRecordState>("idle");
+  const [voiceRecordSeconds, setVoiceRecordSeconds] = useState(0);
+  const [recordedBlob, setRecordedBlob] = useState<Blob | null>(null);
+  const [voiceRecordError, setVoiceRecordError] = useState<string | null>(null);
 
   // Post-call state
   const [postCallResult, setPostCallResult] = useState<{
-    status: "done" | "failed" | "timeout";
+    status: "done" | "failed" | "timeout" | "processing";
     summary?: string;
     transcript?: { role: string; content: string; time_in_call_secs: number }[];
   } | null>(null);
   const fetchConversation = useAction(api.postCall.fetchConversation);
+  const generateVoiceRecordingUploadUrl = useMutation(
+    api.voiceRecordings.generateUploadUrl
+  );
+  const processVoiceRecording = useAction(
+    api.voiceRecordings.processVoiceRecording
+  );
   const conversationIdRef = useRef<string | null>(null);
 
   // Fetch process data for dynamic prompt context
@@ -172,7 +211,23 @@ export function RecordingModal({
       setNameInitialized(false);
       setMicPermission("prompt");
       setPostCallResult(null);
+      setVoiceRecordState("idle");
+      setVoiceRecordSeconds(0);
+      setRecordedBlob(null);
+      setVoiceRecordError(null);
+      audioChunksRef.current = [];
     } else {
+      if (timerRef.current) {
+        clearInterval(timerRef.current);
+        timerRef.current = null;
+      }
+      if (
+        mediaRecorderRef.current &&
+        mediaRecorderRef.current.state !== "inactive"
+      ) {
+        mediaRecorderRef.current.stop();
+      }
+      mediaRecorderRef.current = null;
       // Release mic stream when modal closes
       if (mediaStreamRef.current) {
         mediaStreamRef.current.getTracks().forEach((t) => t.stop());
@@ -184,6 +239,16 @@ export function RecordingModal({
   // Cleanup mic stream on unmount
   useEffect(() => {
     return () => {
+      if (timerRef.current) {
+        clearInterval(timerRef.current);
+        timerRef.current = null;
+      }
+      if (
+        mediaRecorderRef.current &&
+        mediaRecorderRef.current.state !== "inactive"
+      ) {
+        mediaRecorderRef.current.stop();
+      }
       if (mediaStreamRef.current) {
         mediaStreamRef.current.getTracks().forEach((t) => t.stop());
         mediaStreamRef.current = null;
@@ -348,6 +413,141 @@ export function RecordingModal({
     setTextInput("");
   }, [conversation, textInput, isConnected]);
 
+  const clearVoiceTimer = useCallback(() => {
+    if (timerRef.current) {
+      clearInterval(timerRef.current);
+      timerRef.current = null;
+    }
+  }, []);
+
+  const startVoiceRecording = useCallback(() => {
+    const stream = mediaStreamRef.current;
+    if (!stream) {
+      setVoiceRecordError("Microphone stream is not available.");
+      setVoiceRecordState("error");
+      return;
+    }
+    if (typeof MediaRecorder === "undefined") {
+      setVoiceRecordError("Your browser does not support voice recording.");
+      setVoiceRecordState("error");
+      return;
+    }
+
+    try {
+      const mimeType = getSupportedRecordingMimeType();
+      recordingMimeTypeRef.current = mimeType || "audio/webm";
+      const recorder = mimeType
+        ? new MediaRecorder(stream, { mimeType })
+        : new MediaRecorder(stream);
+      audioChunksRef.current = [];
+      setRecordedBlob(null);
+      setVoiceRecordError(null);
+      setVoiceRecordSeconds(0);
+
+      recorder.ondataavailable = (event) => {
+        if (event.data.size > 0) audioChunksRef.current.push(event.data);
+      };
+      recorder.onstop = () => {
+        clearVoiceTimer();
+        const blob = new Blob(audioChunksRef.current, {
+          type: recordingMimeTypeRef.current,
+        });
+        setRecordedBlob(blob);
+        setVoiceRecordState(blob.size > 0 ? "stopped" : "error");
+        if (blob.size === 0) {
+          setVoiceRecordError("No audio was captured. Please try again.");
+        }
+      };
+      recorder.onerror = () => {
+        clearVoiceTimer();
+        setVoiceRecordState("error");
+        setVoiceRecordError("Recording failed. Please try again.");
+      };
+
+      mediaRecorderRef.current = recorder;
+      recordingStartedAtRef.current = Date.now();
+      timerRef.current = setInterval(() => {
+        setVoiceRecordSeconds(
+          Math.floor((Date.now() - recordingStartedAtRef.current) / 1000)
+        );
+      }, 500);
+      recorder.start(1000);
+      setVoiceRecordState("recording");
+    } catch (err) {
+      console.error("Failed to start voice recording:", err);
+      setVoiceRecordState("error");
+      setVoiceRecordError("Failed to start recording. Please try again.");
+    }
+  }, [clearVoiceTimer]);
+
+  const stopVoiceRecording = useCallback(() => {
+    const recorder = mediaRecorderRef.current;
+    if (recorder && recorder.state !== "inactive") {
+      setVoiceRecordSeconds(
+        Math.floor((Date.now() - recordingStartedAtRef.current) / 1000)
+      );
+      recorder.stop();
+    }
+    clearVoiceTimer();
+  }, [clearVoiceTimer]);
+
+  const discardVoiceRecording = useCallback(() => {
+    stopVoiceRecording();
+    audioChunksRef.current = [];
+    setRecordedBlob(null);
+    setVoiceRecordSeconds(0);
+    setVoiceRecordError(null);
+    setVoiceRecordState("idle");
+  }, [stopVoiceRecording]);
+
+  const submitVoiceRecording = useCallback(async () => {
+    if (!recordedBlob) return;
+    const mimeType =
+      recordedBlob.type || recordingMimeTypeRef.current || "audio/webm";
+
+    try {
+      setVoiceRecordState("uploading");
+      setStep("processing");
+
+      const uploadUrl = await generateVoiceRecordingUploadUrl({ processId });
+      const upload = await fetch(uploadUrl, {
+        method: "POST",
+        headers: { "Content-Type": mimeType },
+        body: recordedBlob,
+      });
+      if (!upload.ok) {
+        throw new Error(`Upload failed with status ${upload.status}`);
+      }
+      const { storageId } = (await upload.json()) as {
+        storageId: Id<"_storage">;
+      };
+
+      const result = await processVoiceRecording({
+        processId,
+        storageId,
+        durationSeconds: voiceRecordSeconds || undefined,
+        mimeType,
+      });
+      setPostCallResult({ status: result.status });
+      setVoiceRecordState("success");
+      setStep("review");
+    } catch (err) {
+      console.error("Voice recording upload/processing failed:", err);
+      setVoiceRecordError(
+        "Something went wrong while uploading or processing the recording."
+      );
+      setPostCallResult({ status: "failed" });
+      setVoiceRecordState("error");
+      setStep("review");
+    }
+  }, [
+    recordedBlob,
+    generateVoiceRecordingUploadUrl,
+    processId,
+    processVoiceRecording,
+    voiceRecordSeconds,
+  ]);
+
   // Handle name submission → acquire mic → show consent
   const handleNameSubmit = useCallback(async () => {
     if (!contributorName.trim()) return;
@@ -367,20 +567,31 @@ export function RecordingModal({
   // Handle consent acceptance → start recording
   const handleConsentAccept = useCallback(() => {
     setStep("recording");
+    if (mode === "voiceRecord") {
+      startVoiceRecording();
+      return;
+    }
     startSession();
-  }, [startSession]);
+  }, [mode, startSession, startVoiceRecording]);
 
   // Close handler — end session if active and release mic
   const handleClose = useCallback(() => {
     if (isConnected || isConnecting) {
       conversation.endSession();
     }
+    stopVoiceRecording();
     if (mediaStreamRef.current) {
       mediaStreamRef.current.getTracks().forEach((t) => t.stop());
       mediaStreamRef.current = null;
     }
     onOpenChange(false);
-  }, [isConnected, isConnecting, conversation, onOpenChange]);
+  }, [
+    isConnected,
+    isConnecting,
+    conversation,
+    stopVoiceRecording,
+    onOpenChange,
+  ]);
 
   // --- Render ---
 
@@ -401,9 +612,15 @@ export function RecordingModal({
         {step === "name" && (
           <div className="p-6">
             <DialogHeader>
-              <DialogTitle>Record a Conversation</DialogTitle>
+              <DialogTitle>
+                {mode === "voiceRecord"
+                  ? "Record Your Voice"
+                  : "Record a Conversation"}
+              </DialogTitle>
               <DialogDescription>
-                You&apos;re about to record a conversation about{" "}
+                {mode === "voiceRecord"
+                  ? "You're about to record yourself describing "
+                  : "You're about to record a conversation about "}
                 <span className="font-medium text-foreground">
                   {processName}
                 </span>
@@ -486,8 +703,9 @@ export function RecordingModal({
               <div className="rounded-lg border bg-muted/30 p-4 text-sm leading-relaxed">
                 <p className="font-medium">Recording notice</p>
                 <p className="mt-1 text-muted-foreground">
-                  This conversation will be recorded, transcribed, and stored to
-                  help document our processes.
+                  {mode === "voiceRecord"
+                    ? "Your recording will be transcribed and stored to help document our processes."
+                    : "This conversation will be recorded, transcribed, and stored to help document our processes."}
                 </p>
               </div>
               <div className="rounded-lg border bg-muted/30 p-4 text-sm leading-relaxed">
@@ -506,14 +724,142 @@ export function RecordingModal({
               </Button>
               <Button onClick={handleConsentAccept} className="gap-2">
                 <Mic className="h-4 w-4" />
-                Start Recording
+                {mode === "voiceRecord" ? "Start Voice Record" : "Start Recording"}
               </Button>
             </DialogFooter>
           </div>
         )}
 
-        {/* Step 3: Recording */}
-        {step === "recording" && (
+        {/* Step 3A: Direct voice recording */}
+        {step === "recording" && mode === "voiceRecord" && (
+          <div className="flex h-full flex-col overflow-hidden">
+            <div className="shrink-0 border-b px-4 py-3">
+              <Breadcrumb>
+                <BreadcrumbList>
+                  <BreadcrumbItem>
+                    <BreadcrumbPage className="text-xs text-muted-foreground">
+                      {functionName}
+                    </BreadcrumbPage>
+                  </BreadcrumbItem>
+                  <BreadcrumbSeparator />
+                  <BreadcrumbItem>
+                    <BreadcrumbPage className="text-xs text-muted-foreground">
+                      {departmentName}
+                    </BreadcrumbPage>
+                  </BreadcrumbItem>
+                  <BreadcrumbSeparator />
+                  <BreadcrumbItem>
+                    <BreadcrumbPage className="text-xs font-medium">
+                      {processName}
+                    </BreadcrumbPage>
+                  </BreadcrumbItem>
+                </BreadcrumbList>
+              </Breadcrumb>
+            </div>
+
+            <div className="flex flex-1 flex-col items-center justify-center gap-6 p-8 text-center">
+              <div className="space-y-2">
+                <p className="text-sm font-medium">
+                  {voiceRecordState === "recording"
+                    ? "Recording your process notes"
+                    : recordedBlob
+                      ? "Recording ready"
+                      : "Voice record mode"}
+                </p>
+                <p className="text-3xl font-semibold tabular-nums">
+                  {formatRecordingDuration(voiceRecordSeconds)}
+                </p>
+                <p className="max-w-sm text-xs leading-relaxed text-muted-foreground">
+                  Speak naturally through the process steps, tools, handoffs,
+                  exceptions, and anything that would help someone understand
+                  how this work gets done.
+                </p>
+              </div>
+
+              <Button
+                variant={
+                  voiceRecordState === "recording" ? "destructive" : "default"
+                }
+                size="lg"
+                className="min-h-12 w-full max-w-sm gap-2 rounded-xl"
+                onClick={() => {
+                  if (voiceRecordState === "recording") {
+                    stopVoiceRecording();
+                  } else if (
+                    voiceRecordState === "idle" ||
+                    voiceRecordState === "error"
+                  ) {
+                    startVoiceRecording();
+                  }
+                }}
+                disabled={
+                  voiceRecordState === "uploading" ||
+                  voiceRecordState === "stopped" ||
+                  voiceRecordState === "success"
+                }
+              >
+                {voiceRecordState === "recording" ? (
+                  <>
+                    <PhoneOff className="h-4 w-4" />
+                    Stop Recording
+                  </>
+                ) : recordedBlob ? (
+                  <>
+                    <CheckCircle2 className="h-4 w-4" />
+                    Recording Captured
+                  </>
+                ) : (
+                  <>
+                    <Mic className="h-4 w-4" />
+                    {voiceRecordState === "error"
+                      ? "Try Again"
+                      : "Start Recording"}
+                  </>
+                )}
+              </Button>
+
+              {voiceRecordError && (
+                <div className="flex max-w-sm items-start gap-2 rounded-lg border border-destructive/30 bg-destructive/5 p-3 text-left text-sm text-destructive">
+                  <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+                  <p>{voiceRecordError}</p>
+                </div>
+              )}
+            </div>
+
+            <div className="shrink-0 border-t bg-background p-3">
+              {recordedBlob ? (
+                <div className="flex items-center justify-center gap-2">
+                  <Button
+                    variant="outline"
+                    onClick={discardVoiceRecording}
+                    className="gap-2 rounded-xl"
+                    disabled={voiceRecordState === "uploading"}
+                  >
+                    <RotateCcw className="h-4 w-4" />
+                    Discard
+                  </Button>
+                  <Button
+                    onClick={submitVoiceRecording}
+                    className="gap-2 rounded-xl"
+                    disabled={voiceRecordState === "uploading"}
+                  >
+                    <Upload className="h-4 w-4" />
+                    Submit Recording
+                  </Button>
+                </div>
+              ) : (
+                <div className="flex items-center justify-center gap-2">
+                  <Button variant="outline" onClick={handleClose}>
+                    Cancel
+                  </Button>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* Step 3B: AI interview recording */}
+        {step === "recording" && mode === "agent" && (
           <div className="flex h-full flex-col overflow-hidden">
             {/* Breadcrumb header */}
             <div className="shrink-0 border-b px-4 py-3">
@@ -749,7 +1095,11 @@ export function RecordingModal({
               />
             </div>
             <ShimmeringText
-              text="Processing your conversation..."
+              text={
+                mode === "voiceRecord"
+                  ? "Transcribing your recording..."
+                  : "Processing your conversation..."
+              }
               className="text-sm text-muted-foreground"
             />
             <p className="max-w-xs text-center text-xs text-muted-foreground/70">
@@ -767,9 +1117,12 @@ export function RecordingModal({
                 {postCallResult?.status === "done" ? (
                   <>
                     <CheckCircle2 className="h-5 w-5 text-green-600" />
-                    Conversation Recorded
+                    {mode === "voiceRecord"
+                      ? "Recording Submitted"
+                      : "Conversation Recorded"}
                   </>
-                ) : postCallResult?.status === "timeout" ? (
+                ) : postCallResult?.status === "timeout" ||
+                  postCallResult?.status === "processing" ? (
                   <>
                     <AlertTriangle className="h-5 w-5 text-amber-500" />
                     Still Processing
@@ -783,10 +1136,15 @@ export function RecordingModal({
               </DialogTitle>
               <DialogDescription>
                 {postCallResult?.status === "done"
-                  ? "Your conversation has been saved and will appear in the process detail panel."
-                  : postCallResult?.status === "timeout"
-                    ? "The conversation is still being processed. It will appear automatically once ready."
-                    : "Something went wrong while processing the conversation. Please try recording again."}
+                  ? mode === "voiceRecord"
+                    ? "Your recording has been saved and will appear in the process detail panel after transcription finishes."
+                    : "Your conversation has been saved and will appear in the process detail panel."
+                  : postCallResult?.status === "timeout" ||
+                      postCallResult?.status === "processing"
+                    ? mode === "voiceRecord"
+                      ? "The recording is being transcribed and analyzed. It will appear automatically once ready."
+                      : "The conversation is still being processed. It will appear automatically once ready."
+                    : "Something went wrong while processing the recording. Please try again."}
               </DialogDescription>
             </DialogHeader>
 
