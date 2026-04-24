@@ -2,7 +2,13 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { Users, ArrowLeft, Settings, LayoutDashboard } from "lucide-react";
+import {
+  ArrowLeft,
+  Home,
+  LayoutDashboard,
+  MessageSquare,
+  Users,
+} from "lucide-react";
 import {
   Sidebar,
   SidebarContent,
@@ -20,12 +26,20 @@ import { UserMenu } from "@/components/user-menu";
 
 const navItems = [
   {
+    title: "Overview",
+    href: "/admin",
+    icon: Home,
+  },
+  {
     title: "Users",
     href: "/admin/users",
     icon: Users,
   },
-  // Future pages can be added here:
-  // { title: "Settings", href: "/admin/settings", icon: Settings },
+  {
+    title: "Conversations",
+    href: "/admin/conversations",
+    icon: MessageSquare,
+  },
 ];
 
 export function AdminSidebar() {
@@ -36,7 +50,7 @@ export function AdminSidebar() {
       <SidebarHeader>
         <SidebarMenu>
           <SidebarMenuItem>
-            <SidebarMenuButton size="lg" tooltip="Admin" render={<Link href="/admin/users" />}>
+            <SidebarMenuButton size="lg" tooltip="Admin" render={<Link href="/admin" />}>
               <div className="flex aspect-square size-8 items-center justify-center rounded-lg bg-foreground text-background">
                 <LayoutDashboard className="size-4" />
               </div>

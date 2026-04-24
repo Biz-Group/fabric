@@ -13,6 +13,8 @@ import type * as conversations from "../conversations.js";
 import type * as departments from "../departments.js";
 import type * as functions from "../functions.js";
 import type * as http from "../http.js";
+import type * as invitations from "../invitations.js";
+import type * as lib_clerkApi from "../lib/clerkApi.js";
 import type * as lib_orgAuth from "../lib/orgAuth.js";
 import type * as migrations from "../migrations.js";
 import type * as orgIntegrity from "../orgIntegrity.js";
@@ -37,6 +39,8 @@ declare const fullApi: ApiFromModules<{
   departments: typeof departments;
   functions: typeof functions;
   http: typeof http;
+  invitations: typeof invitations;
+  "lib/clerkApi": typeof lib_clerkApi;
   "lib/orgAuth": typeof lib_orgAuth;
   migrations: typeof migrations;
   orgIntegrity: typeof orgIntegrity;

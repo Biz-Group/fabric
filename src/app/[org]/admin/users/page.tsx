@@ -1,9 +1,10 @@
 "use client";
 
-import { useQuery, useMutation } from "convex/react";
+import { useQuery, useMutation, useAction } from "convex/react";
 import { api } from "../../../../../convex/_generated/api";
 import { Id } from "../../../../../convex/_generated/dataModel";
 import { useState, useMemo } from "react";
+import { toast } from "sonner";
 import {
   Table,
   TableBody,
@@ -21,7 +22,17 @@ import {
 } from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
-import { Search } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import { ConfirmDialog } from "@/components/ui/confirm-dialog";
+import { InviteMemberDialog } from "@/components/admin/invite-member-dialog";
+import { PendingInvitesList } from "@/components/admin/pending-invites-list";
+import { MoreHorizontal, Search, UserPlus } from "lucide-react";
 
 const ROLE_OPTIONS = ["admin", "contributor", "viewer"] as const;
 type Role = (typeof ROLE_OPTIONS)[number];
@@ -32,20 +43,46 @@ const roleBadgeVariant: Record<Role, "default" | "secondary" | "outline"> = {
   viewer: "outline",
 };
 
+function requiresConfirm(current: Role, next: Role): boolean {
+  return next === "admin" || current === "admin";
+}
+
 function RoleSelect({
   membershipId,
   currentRole,
   isSelf,
+  memberName,
 }: {
   membershipId: Id<"memberships">;
   currentRole: Role;
   isSelf: boolean;
+  memberName: string;
 }) {
   const setMembershipRole = useMutation(api.users.setMembershipRole);
+  const [pendingRole, setPendingRole] = useState<Role | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  const applyChange = async (nextRole: Role) => {
+    setBusy(true);
+    try {
+      await setMembershipRole({ membershipId, role: nextRole });
+      toast.success(`Role updated to ${nextRole}.`);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "Failed to change role.";
+      toast.error(msg);
+    } finally {
+      setBusy(false);
+      setPendingRole(null);
+    }
+  };
 
   const handleChange = async (value: Role) => {
     if (value === currentRole) return;
-    await setMembershipRole({ membershipId, role: value });
+    if (requiresConfirm(currentRole, value)) {
+      setPendingRole(value);
+      return;
+    }
+    await applyChange(value);
   };
 
   if (isSelf) {
@@ -57,18 +94,107 @@ function RoleSelect({
   }
 
   return (
-    <Select value={currentRole} onValueChange={(val) => handleChange(val as Role)}>
-      <SelectTrigger size="sm" className="w-[130px]">
-        <SelectValue />
-      </SelectTrigger>
-      <SelectContent>
-        {ROLE_OPTIONS.map((role) => (
-          <SelectItem key={role} value={role} className="capitalize">
-            {role}
-          </SelectItem>
-        ))}
-      </SelectContent>
-    </Select>
+    <>
+      <Select
+        value={currentRole}
+        onValueChange={(val) => handleChange(val as Role)}
+        disabled={busy}
+      >
+        <SelectTrigger size="sm" className="w-[130px]">
+          <SelectValue />
+        </SelectTrigger>
+        <SelectContent>
+          {ROLE_OPTIONS.map((role) => (
+            <SelectItem key={role} value={role} className="capitalize">
+              {role}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+      <ConfirmDialog
+        open={pendingRole !== null}
+        onOpenChange={(open) => {
+          if (!open) setPendingRole(null);
+        }}
+        title={
+          pendingRole === "admin"
+            ? `Promote ${memberName} to admin?`
+            : `Change ${memberName}'s role to ${pendingRole}?`
+        }
+        description={
+          pendingRole === "admin"
+            ? "Admins can manage members, invitations, and conversations across the workspace."
+            : "This member will lose admin privileges."
+        }
+        confirmLabel="Change role"
+        destructive={currentRole === "admin" && pendingRole !== "admin"}
+        onConfirm={async () => {
+          if (pendingRole) await applyChange(pendingRole);
+        }}
+      />
+    </>
+  );
+}
+
+function RowActions({
+  membershipId,
+  memberName,
+  isSelf,
+}: {
+  membershipId: Id<"memberships">;
+  memberName: string;
+  isSelf: boolean;
+}) {
+  const removeMember = useAction(api.users.removeMemberFromOrg);
+  const [confirmOpen, setConfirmOpen] = useState(false);
+
+  const handleRemove = async () => {
+    try {
+      await removeMember({ membershipId });
+      toast.success(`Removed ${memberName} from the workspace.`);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "Failed to remove member.";
+      toast.error(msg);
+      throw err;
+    }
+  };
+
+  if (isSelf) {
+    return (
+      <Button variant="ghost" size="icon-sm" disabled>
+        <MoreHorizontal />
+      </Button>
+    );
+  }
+
+  return (
+    <>
+      <DropdownMenu>
+        <DropdownMenuTrigger
+          render={<Button variant="ghost" size="icon-sm" />}
+        >
+          <MoreHorizontal />
+          <span className="sr-only">Open actions</span>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="end">
+          <DropdownMenuItem
+            variant="destructive"
+            onClick={() => setConfirmOpen(true)}
+          >
+            Remove from workspace
+          </DropdownMenuItem>
+        </DropdownMenuContent>
+      </DropdownMenu>
+      <ConfirmDialog
+        open={confirmOpen}
+        onOpenChange={setConfirmOpen}
+        title={`Remove ${memberName}?`}
+        description="They will immediately lose access to this workspace and will be removed from the Clerk organization. They can be re-invited later."
+        confirmLabel="Remove member"
+        destructive
+        onConfirm={handleRemove}
+      />
+    </>
   );
 }
 
@@ -84,6 +210,8 @@ export default function AdminUsersPage() {
   const members = useQuery(api.users.listOrgMembers);
   const me = useQuery(api.users.getMe);
   const [search, setSearch] = useState("");
+  const [inviteOpen, setInviteOpen] = useState(false);
+  const [invitesRefreshKey, setInvitesRefreshKey] = useState(0);
 
   const filtered = useMemo(() => {
     if (!members) return [];
@@ -107,11 +235,17 @@ export default function AdminUsersPage() {
 
   return (
     <div className="space-y-6">
-      <div>
-        <h2 className="text-lg font-semibold">Members</h2>
-        <p className="text-sm text-muted-foreground">
-          Manage members and roles for this organization.
-        </p>
+      <div className="flex items-start justify-between gap-4">
+        <div>
+          <h2 className="text-lg font-semibold">Members</h2>
+          <p className="text-sm text-muted-foreground">
+            Manage members and roles for this organization.
+          </p>
+        </div>
+        <Button onClick={() => setInviteOpen(true)}>
+          <UserPlus />
+          Invite member
+        </Button>
       </div>
 
       {/* Search */}
@@ -137,13 +271,14 @@ export default function AdminUsersPage() {
               <TableHead>Platform</TableHead>
               <TableHead>Profile</TableHead>
               <TableHead>Joined Org</TableHead>
+              <TableHead className="w-10"></TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
             {filtered.length === 0 ? (
               <TableRow>
                 <TableCell
-                  colSpan={7}
+                  colSpan={8}
                   className="h-24 text-center text-muted-foreground"
                 >
                   {search ? "No members match your search." : "No members yet."}
@@ -171,6 +306,7 @@ export default function AdminUsersPage() {
                         membershipId={m.membershipId}
                         currentRole={role}
                         isSelf={isSelf}
+                        memberName={m.name}
                       />
                     </TableCell>
                     <TableCell>
@@ -195,6 +331,13 @@ export default function AdminUsersPage() {
                     <TableCell className="text-muted-foreground">
                       {formatDate(m.createdAt)}
                     </TableCell>
+                    <TableCell>
+                      <RowActions
+                        membershipId={m.membershipId}
+                        memberName={m.name}
+                        isSelf={isSelf}
+                      />
+                    </TableCell>
                   </TableRow>
                 );
               })
@@ -206,6 +349,22 @@ export default function AdminUsersPage() {
       <p className="text-xs text-muted-foreground">
         {filtered.length} of {members.length} members shown
       </p>
+
+      <div className="space-y-3 pt-4">
+        <div>
+          <h3 className="text-sm font-semibold">Pending invitations</h3>
+          <p className="text-xs text-muted-foreground">
+            People who&apos;ve been invited but haven&apos;t joined yet.
+          </p>
+        </div>
+        <PendingInvitesList refreshKey={invitesRefreshKey} />
+      </div>
+
+      <InviteMemberDialog
+        open={inviteOpen}
+        onOpenChange={setInviteOpen}
+        onInvited={() => setInvitesRefreshKey((k) => k + 1)}
+      />
     </div>
   );
 }

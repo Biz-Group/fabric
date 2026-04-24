@@ -9,6 +9,7 @@ import {
 import { useConvexAuth, useQuery } from "convex/react";
 import { useParams } from "next/navigation";
 import { useEffect } from "react";
+import { Toaster } from "sonner";
 import { api } from "../../../convex/_generated/api";
 
 const ROOT_DOMAIN = process.env.NEXT_PUBLIC_ROOT_DOMAIN ?? "";
@@ -133,7 +134,12 @@ export default function OrgLayout({ children }: { children: React.ReactNode }) {
     );
   }
 
-  return <>{children}</>;
+  return (
+    <>
+      {children}
+      <Toaster richColors closeButton position="bottom-right" />
+    </>
+  );
 }
 
 function SignOutLink() {
