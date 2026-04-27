@@ -396,19 +396,19 @@ export function MillerColumns() {
   // Child-count queries for delete pre-check
   const deleteFnChildCount = useQuery(
     api.functions.childCount,
-    crudMode === "delete" && crudEntity === "Function" && crudTargetId
+    crudOpen && crudMode === "delete" && crudEntity === "Function" && crudTargetId
       ? { functionId: crudTargetId as Id<"functions"> }
       : "skip"
   );
   const deleteDeptChildCount = useQuery(
     api.departments.childCount,
-    crudMode === "delete" && crudEntity === "Department" && crudTargetId
+    crudOpen && crudMode === "delete" && crudEntity === "Department" && crudTargetId
       ? { departmentId: crudTargetId as Id<"departments"> }
       : "skip"
   );
   const deleteProcChildCount = useQuery(
     api.processes.childCount,
-    crudMode === "delete" && crudEntity === "Process" && crudTargetId
+    crudOpen && crudMode === "delete" && crudEntity === "Process" && crudTargetId
       ? { processId: crudTargetId as Id<"processes"> }
       : "skip"
   );
