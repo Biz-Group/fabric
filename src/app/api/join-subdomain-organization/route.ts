@@ -1,18 +1,11 @@
 import { auth, clerkClient } from "@clerk/nextjs/server";
-import { fetchAction } from "convex/nextjs";
 import { NextResponse, type NextRequest } from "next/server";
-import { api } from "../../../../convex/_generated/api";
 import { getTenantSubdomain } from "@/lib/subdomain";
 
 const ROOT_DOMAIN = process.env.NEXT_PUBLIC_ROOT_DOMAIN ?? "";
 
 type ClerkApiError = {
   errors?: Array<{ code?: string }>;
-};
-
-type ClerkUserForSelfJoin = {
-  banned: boolean;
-  locked: boolean;
 };
 
 function isAlreadyMemberError(error: unknown): boolean {
@@ -43,26 +36,6 @@ function isSameOriginPost(req: NextRequest): boolean {
   );
 }
 
-async function syncFabricMembership(
-  getToken: (options?: {
-    organizationId?: string;
-    skipCache?: boolean;
-    template?: string;
-  }) => Promise<string | null>,
-  organizationId: string,
-) {
-  const token = await getToken({
-    template: "convex",
-    organizationId,
-    skipCache: true,
-  });
-  if (!token) {
-    throw new Error("Could not mint a Convex token for this organization.");
-  }
-
-  await fetchAction(api.users.syncCurrentUserFromClerk, {}, { token });
-}
-
 export async function POST(req: NextRequest) {
   if (!isSameOriginPost(req)) {
     return NextResponse.json({ error: "Forbidden" }, { status: 403 });
@@ -76,7 +49,7 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  const { userId, getToken } = await auth({
+  const { userId } = await auth({
     treatPendingAsSignedOut: false,
   });
   if (!userId) {
@@ -132,19 +105,6 @@ export async function POST(req: NextRequest) {
     } catch (error) {
       if (!isAlreadyMemberError(error)) throw error;
     }
-  }
-
-  try {
-    await syncFabricMembership(getToken, organization.id);
-  } catch (error) {
-    console.error("Failed to sync Fabric membership after Clerk join", error);
-    return NextResponse.json(
-      {
-        error:
-          "We joined you to the workspace, but could not finish setting up your Fabric profile. Please try again.",
-      },
-      { status: 502 },
-    );
   }
 
   return NextResponse.json({
