@@ -57,6 +57,14 @@ import {
 import { CrudDialog } from "@/components/crud-dialog";
 import { MarkdownSummary } from "@/components/markdown-summary";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
+import {
+  Sheet,
+  SheetContent,
+  SheetDescription,
+  SheetFooter,
+  SheetHeader,
+  SheetTitle,
+} from "@/components/ui/sheet";
 import { GitBranch } from "lucide-react";
 
 const ProcessFlow = lazy(() =>
@@ -66,6 +74,11 @@ const ProcessFlow = lazy(() =>
 // --- Types ---
 
 type MobileLevel = 1 | 2 | 3 | 4;
+type MobilePreview =
+  | { type: "function"; id: Id<"functions">; name: string }
+  | { type: "department"; id: Id<"departments">; name: string }
+  | { type: "process"; id: Id<"processes">; name: string }
+  | null;
 
 // --- Column Item ---
 
@@ -74,76 +87,108 @@ function ColumnItem({
   selected,
   indicator,
   onClick,
+  onNavigate,
+  navigateLabel,
   onEdit,
   onDelete,
+  mobile,
 }: {
   label: string;
   selected: boolean;
   indicator: "arrow" | "dot";
   onClick: () => void;
+  onNavigate?: () => void;
+  navigateLabel?: string;
   onEdit?: () => void;
   onDelete?: () => void;
+  mobile?: boolean;
 }) {
+  const actionButtonClass = cn(
+    "inline-flex items-center justify-center rounded-md transition-colors",
+    mobile ? "size-10" : "size-6",
+    selected ? "hover:bg-primary-foreground/20" : "hover:bg-foreground/10"
+  );
+
   return (
-    <button
-      onClick={onClick}
+    <div
       className={cn(
-        "group flex w-full items-center justify-between gap-2 rounded-lg px-3 py-2.5 text-left text-sm font-medium transition-all",
+        "group flex w-full items-center overflow-hidden rounded-lg transition-all",
+        mobile && "min-h-14",
         selected
           ? "bg-primary text-primary-foreground shadow-sm ring-1 ring-primary/20"
           : "text-foreground hover:bg-accent hover:text-accent-foreground"
       )}
     >
-      <span className="truncate">{label}</span>
-      <span
+      <button
+        type="button"
+        onClick={onClick}
         className={cn(
-          "flex shrink-0 items-center gap-0.5 transition-opacity",
-          selected ? "opacity-100" : "opacity-0 group-hover:opacity-100"
+          "flex min-w-0 flex-1 items-center text-left font-medium outline-none",
+          mobile ? "min-h-14 px-4 py-3 text-base" : "px-3 py-2.5 text-sm"
+        )}
+      >
+        <span className="truncate">{label}</span>
+      </button>
+      <div
+        className={cn(
+          "flex shrink-0 items-center",
+          mobile
+            ? "gap-1.5 px-1.5"
+            : "gap-0.5 pr-2 transition-opacity",
+          !mobile && (selected ? "opacity-100" : "opacity-0 group-hover:opacity-100")
         )}
       >
         {onEdit && (
-          <span
-            role="button"
+          <button
+            type="button"
             onClick={(e) => {
               e.stopPropagation();
               onEdit();
             }}
-            className={cn(
-              "rounded p-0.5 transition-colors",
-              selected
-                ? "hover:bg-primary-foreground/20"
-                : "hover:bg-foreground/10"
-            )}
+            className={actionButtonClass}
             title="Rename"
+            aria-label={`Rename ${label}`}
           >
-            <Pencil className="h-3 w-3" />
-          </span>
+            <Pencil className={mobile ? "h-4 w-4" : "h-3 w-3"} />
+          </button>
         )}
         {onDelete && (
-          <span
-            role="button"
+          <button
+            type="button"
             onClick={(e) => {
               e.stopPropagation();
               onDelete();
             }}
-            className={cn(
-              "rounded p-0.5 transition-colors",
-              selected
-                ? "hover:bg-primary-foreground/20"
-                : "hover:bg-foreground/10"
-            )}
+            className={actionButtonClass}
             title="Delete"
+            aria-label={`Delete ${label}`}
           >
-            <Trash2 className="h-3 w-3" />
-          </span>
+            <Trash2 className={mobile ? "h-4 w-4" : "h-3 w-3"} />
+          </button>
         )}
-        {indicator === "arrow" ? (
+        {onNavigate ? (
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              onNavigate();
+            }}
+            className={cn(
+              actionButtonClass,
+              mobile && "ml-1 border-l border-current/10 pl-1"
+            )}
+            aria-label={navigateLabel ?? `Open ${label}`}
+            title={navigateLabel ?? `Open ${label}`}
+          >
+            <ChevronRight className={mobile ? "h-5 w-5" : "h-4 w-4"} />
+          </button>
+        ) : indicator === "arrow" ? (
           <ChevronRight className="h-4 w-4" />
         ) : (
           <span className="inline-block h-2 w-2 rounded-full bg-current" />
         )}
-      </span>
-    </button>
+      </div>
+    </div>
   );
 }
 
@@ -182,6 +227,7 @@ function ColumnHeader({
   icon: Icon,
   collapsed,
   onToggle,
+  mobile,
 }: {
   title: string;
   count?: number;
@@ -189,6 +235,7 @@ function ColumnHeader({
   icon?: React.ComponentType<{ className?: string }>;
   collapsed?: boolean;
   onToggle?: () => void;
+  mobile?: boolean;
 }) {
   if (collapsed && Icon) {
     return (
@@ -219,28 +266,30 @@ function ColumnHeader({
   }
 
   return (
-    <div className="shrink-0 border-b bg-muted/30 px-4 py-3">
+    <div className={cn("shrink-0 border-b bg-muted/30 px-4 py-3", mobile && "bg-background py-3.5")}>
       <div className="flex items-center justify-between">
-        <h2 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+        <h2 className={cn("text-xs font-semibold uppercase tracking-wider text-muted-foreground", mobile && "text-[0.8rem] tracking-[0.16em]")}>
           {title}
         </h2>
-        <div className="flex items-center gap-1 min-h-[1.625rem]">
+        <div className={cn("flex items-center gap-1 min-h-[1.625rem]", mobile && "min-h-9 gap-2")}>
           {count !== undefined && (
-            <span className="rounded-full bg-muted px-2 py-0.5 text-[10px] font-medium text-muted-foreground">
+            <span className={cn("rounded-full bg-muted px-2 py-0.5 text-[10px] font-medium text-muted-foreground", mobile && "flex h-8 min-w-8 items-center justify-center px-2 text-xs")}>
               {count}
             </span>
           )}
           {onAdd && (
             <button
+              type="button"
               onClick={onAdd}
-              className="rounded-md p-1 text-muted-foreground hover:bg-accent hover:text-accent-foreground transition-colors"
+              className={cn("rounded-md p-1 text-muted-foreground hover:bg-accent hover:text-accent-foreground transition-colors", mobile && "flex size-9 items-center justify-center rounded-lg p-0")}
               title={`Add ${title.slice(0, -1)}`}
             >
-              <Plus className="h-3.5 w-3.5" />
+              <Plus className={mobile ? "h-4 w-4" : "h-3.5 w-3.5"} />
             </button>
           )}
           {onToggle && (
             <button
+              type="button"
               onClick={onToggle}
               className="rounded-md p-1 text-muted-foreground hover:bg-accent hover:text-accent-foreground transition-colors"
               title={`Collapse ${title}`}
@@ -251,6 +300,21 @@ function ColumnHeader({
         </div>
       </div>
     </div>
+  );
+}
+
+function MobileAppHeader() {
+  return (
+    <header className="flex h-14 shrink-0 items-center justify-between gap-3 border-b bg-background px-4 md:hidden">
+      <WorkspaceBrand
+        className="min-w-0 flex-1"
+        fabricClassName="truncate text-xl font-semibold tracking-tight"
+        dividerClassName="h-6 bg-border"
+        logoContainerClassName="h-8 max-w-14 px-0"
+        initialsClassName="text-[10px]"
+      />
+      <UserMenu compact />
+    </header>
   );
 }
 
@@ -356,6 +420,7 @@ export function MillerColumns() {
 
   // Mobile navigation level
   const [mobileLevel, setMobileLevel] = useState<MobileLevel>(1);
+  const [mobilePreview, setMobilePreview] = useState<MobilePreview>(null);
 
   // Selected names for breadcrumbs / back buttons
   const [selectedFunctionName, setSelectedFunctionName] = useState("");
@@ -563,7 +628,23 @@ export function MillerColumns() {
       setSelectedProcessName("");
       setDeptSummaryError(null);
       setFuncSummaryError(null);
+      setMobilePreview(null);
       setMobileLevel(2);
+    },
+    []
+  );
+
+  const handlePreviewFunction = useCallback(
+    (id: Id<"functions">, name: string) => {
+      setSelectedFunctionId(id);
+      setSelectedFunctionName(name);
+      setSelectedDepartmentId(null);
+      setSelectedDepartmentName("");
+      setSelectedProcessId(null);
+      setSelectedProcessName("");
+      setDeptSummaryError(null);
+      setFuncSummaryError(null);
+      setMobilePreview({ type: "function", id, name });
     },
     []
   );
@@ -575,7 +656,20 @@ export function MillerColumns() {
       setSelectedProcessId(null);
       setSelectedProcessName("");
       setDeptSummaryError(null);
+      setMobilePreview(null);
       setMobileLevel(3);
+    },
+    []
+  );
+
+  const handlePreviewDepartment = useCallback(
+    (id: Id<"departments">, name: string) => {
+      setSelectedDepartmentId(id);
+      setSelectedDepartmentName(name);
+      setSelectedProcessId(null);
+      setSelectedProcessName("");
+      setDeptSummaryError(null);
+      setMobilePreview({ type: "department", id, name });
     },
     []
   );
@@ -584,7 +678,17 @@ export function MillerColumns() {
     (id: Id<"processes">, name: string) => {
       setSelectedProcessId(id);
       setSelectedProcessName(name);
+      setMobilePreview(null);
       setMobileLevel(4);
+    },
+    []
+  );
+
+  const handlePreviewProcess = useCallback(
+    (id: Id<"processes">, name: string) => {
+      setSelectedProcessId(id);
+      setSelectedProcessName(name);
+      setMobilePreview({ type: "process", id, name });
     },
     []
   );
@@ -593,12 +697,6 @@ export function MillerColumns() {
 
   const functionsColumn = (mobile?: boolean, collapsed?: boolean) => (
     <div className="flex h-full flex-col">
-      {mobile && (
-        <div className="flex shrink-0 items-center justify-between border-b bg-background px-4 py-3">
-          <WorkspaceBrand />
-          <UserMenu />
-        </div>
-      )}
       <ColumnHeader
         title="Functions"
         count={functions?.length}
@@ -606,6 +704,7 @@ export function MillerColumns() {
         icon={Building2}
         collapsed={collapsed}
         onToggle={!mobile ? () => toggle("functions") : undefined}
+        mobile={mobile}
       />
       {collapsed ? (
         <CollapsedColumnRail
@@ -623,7 +722,7 @@ export function MillerColumns() {
         />
       ) : (
         <div className="flex-1 overflow-y-auto scrollbar-hide">
-          <div className="space-y-0.5 p-2">
+          <div className={cn("space-y-0.5 p-2", mobile && "space-y-2 p-3")}>
             {functions === undefined ? (
               <LoadingSpinner />
             ) : functions.length === 0 ? (
@@ -639,9 +738,16 @@ export function MillerColumns() {
                   label={fn.name}
                   selected={selectedFunctionId === fn._id}
                   indicator="arrow"
-                  onClick={() => handleSelectFunction(fn._id, fn.name)}
+                  onClick={() =>
+                    mobile
+                      ? handlePreviewFunction(fn._id, fn.name)
+                      : handleSelectFunction(fn._id, fn.name)
+                  }
+                  onNavigate={mobile ? () => handleSelectFunction(fn._id, fn.name) : undefined}
+                  navigateLabel={`View departments in ${fn.name}`}
                   onEdit={canEdit ? () => openCrud("edit", "Function", fn.name, fn._id) : undefined}
                   onDelete={canEdit ? () => openCrud("delete", "Function", fn.name, fn._id) : undefined}
+                  mobile={mobile}
                 />
               ))
             )}
@@ -654,12 +760,12 @@ export function MillerColumns() {
   const departmentsColumn = (mobile?: boolean, collapsed?: boolean) => (
     <div className="flex h-full flex-col">
       {mobile && selectedFunctionId && (
-        <div className="shrink-0 border-b bg-background">
+        <div className="shrink-0 border-b bg-background px-2 py-2">
           <Button
             variant="ghost"
             size="sm"
             onClick={() => setMobileLevel(1)}
-            className="m-1"
+            className="min-h-10 gap-2 px-3 text-sm"
           >
             <ChevronLeft className="h-4 w-4" />
             Functions
@@ -673,6 +779,7 @@ export function MillerColumns() {
         icon={Layers}
         collapsed={collapsed}
         onToggle={!mobile ? () => toggle("departments") : undefined}
+        mobile={mobile}
       />
       {collapsed ? (
         <CollapsedColumnRail
@@ -694,7 +801,7 @@ export function MillerColumns() {
         />
       ) : (
         <div className="flex-1 overflow-y-auto scrollbar-hide">
-          <div className="space-y-0.5 p-2">
+          <div className={cn("space-y-0.5 p-2", mobile && "space-y-2 p-3")}>
             {!selectedFunctionId ? (
               <EmptyState
                 icon={Layers}
@@ -716,9 +823,16 @@ export function MillerColumns() {
                   label={dept.name}
                   selected={selectedDepartmentId === dept._id}
                   indicator="arrow"
-                  onClick={() => handleSelectDepartment(dept._id, dept.name)}
+                  onClick={() =>
+                    mobile
+                      ? handlePreviewDepartment(dept._id, dept.name)
+                      : handleSelectDepartment(dept._id, dept.name)
+                  }
+                  onNavigate={mobile ? () => handleSelectDepartment(dept._id, dept.name) : undefined}
+                  navigateLabel={`View processes in ${dept.name}`}
                   onEdit={canEdit ? () => openCrud("edit", "Department", dept.name, dept._id, dept.functionId) : undefined}
                   onDelete={canEdit ? () => openCrud("delete", "Department", dept.name, dept._id) : undefined}
+                  mobile={mobile}
                 />
               ))
             )}
@@ -731,15 +845,15 @@ export function MillerColumns() {
   const processesColumn = (mobile?: boolean, collapsed?: boolean) => (
     <div className="flex h-full flex-col">
       {mobile && selectedDepartmentId && (
-        <div className="shrink-0 border-b bg-background">
+        <div className="shrink-0 border-b bg-background px-2 py-2">
           <Button
             variant="ghost"
             size="sm"
             onClick={() => setMobileLevel(2)}
-            className="m-1"
+            className="min-h-10 max-w-full gap-2 px-3 text-sm"
           >
             <ChevronLeft className="h-4 w-4" />
-            {selectedFunctionName || "Departments"}
+            <span className="truncate">{selectedFunctionName || "Departments"}</span>
           </Button>
         </div>
       )}
@@ -750,6 +864,7 @@ export function MillerColumns() {
         icon={Cog}
         collapsed={collapsed}
         onToggle={!mobile ? () => toggle("processes") : undefined}
+        mobile={mobile}
       />
       {collapsed ? (
         <CollapsedColumnRail
@@ -771,7 +886,7 @@ export function MillerColumns() {
         />
       ) : (
         <div className="flex-1 overflow-y-auto scrollbar-hide">
-          <div className="space-y-0.5 p-2">
+          <div className={cn("space-y-0.5 p-2", mobile && "space-y-2 p-3")}>
             {!selectedDepartmentId ? (
               <EmptyState
                 icon={Cog}
@@ -793,9 +908,16 @@ export function MillerColumns() {
                   label={proc.name}
                   selected={selectedProcessId === proc._id}
                   indicator="dot"
-                  onClick={() => handleSelectProcess(proc._id, proc.name)}
+                  onClick={() =>
+                    mobile
+                      ? handlePreviewProcess(proc._id, proc.name)
+                      : handleSelectProcess(proc._id, proc.name)
+                  }
+                  onNavigate={mobile ? () => handleSelectProcess(proc._id, proc.name) : undefined}
+                  navigateLabel={`Open ${proc.name}`}
                   onEdit={canEdit ? () => openCrud("edit", "Process", proc.name, proc._id, proc.departmentId) : undefined}
                   onDelete={canEdit ? () => openCrud("delete", "Process", proc.name, proc._id) : undefined}
+                  mobile={mobile}
                 />
               ))
             )}
@@ -808,21 +930,21 @@ export function MillerColumns() {
   const detailPanel = (mobile?: boolean) => (
     <div className="flex h-full flex-col">
       {mobile && selectedProcessId && (
-        <div className="shrink-0 border-b bg-background">
+        <div className="shrink-0 border-b bg-background px-2 py-2">
           <Button
             variant="ghost"
             size="sm"
             onClick={() => setMobileLevel(3)}
-            className="m-1"
+            className="min-h-10 max-w-full gap-2 px-3 text-sm"
           >
             <ChevronLeft className="h-4 w-4" />
-            {selectedDepartmentName || "Processes"}
+            <span className="truncate">{selectedDepartmentName || "Processes"}</span>
           </Button>
         </div>
       )}
       {!selectedProcessId ? (
         <div className="flex flex-1 flex-col overflow-y-auto scrollbar-hide">
-          <ColumnHeader title={selectedDepartmentId ? "Department Overview" : selectedFunctionId ? "Function Overview" : "Process Detail"} />
+          <ColumnHeader title={selectedDepartmentId ? "Department Overview" : selectedFunctionId ? "Function Overview" : "Process Detail"} mobile={mobile} />
 
           {/* On-demand Department Summary */}
           {selectedDepartmentId && !selectedProcessId && (
@@ -1236,10 +1358,131 @@ export function MillerColumns() {
     </div>
   );
 
+  const mobilePreviewSummary =
+    mobilePreview?.type === "function"
+      ? selectedFunction?.summary
+      : mobilePreview?.type === "department"
+        ? selectedDepartment?.summary
+        : mobilePreview?.type === "process"
+          ? selectedProcess?.rollingSummary
+          : undefined;
+  const mobilePreviewUpdatedAt =
+    mobilePreview?.type === "function"
+      ? selectedFunction?.summaryUpdatedAt
+      : mobilePreview?.type === "department"
+        ? selectedDepartment?.summaryUpdatedAt
+        : undefined;
+  const mobilePreviewStale =
+    mobilePreview?.type === "function"
+      ? selectedFunction?.summaryStale
+      : mobilePreview?.type === "department"
+        ? selectedDepartment?.summaryStale
+        : false;
+  const mobilePreviewLoading =
+    mobilePreview?.type === "function"
+      ? funcSummaryLoading
+      : mobilePreview?.type === "department"
+        ? deptSummaryLoading
+        : false;
+  const mobilePreviewError =
+    mobilePreview?.type === "function"
+      ? funcSummaryError
+      : mobilePreview?.type === "department"
+        ? deptSummaryError
+        : null;
+  const mobilePreviewTitle =
+    mobilePreview?.type === "function"
+      ? "Function Summary"
+      : mobilePreview?.type === "department"
+        ? "Department Summary"
+        : "Process Summary";
+  const mobilePreviewDescription =
+    mobilePreview?.type === "function"
+      ? "An at-a-glance view of the departments and work in this function."
+      : mobilePreview?.type === "department"
+        ? "An at-a-glance view of the processes inside this department."
+        : "The current process brief synthesized from captured conversations.";
+  const mobilePreviewNavigateLabel =
+    mobilePreview?.type === "function"
+      ? "View departments"
+      : mobilePreview?.type === "department"
+        ? "View processes"
+        : "Open process details";
+  const canGenerateMobilePreviewSummary =
+    mobilePreview?.type === "function" || mobilePreview?.type === "department";
+  const mobilePreviewGenerateLabel = mobilePreviewLoading
+    ? "Generating..."
+    : !mobilePreviewSummary
+      ? "Generate Summary"
+      : mobilePreviewStale
+        ? "Refresh Summary"
+        : "Regenerate";
+
+  const handleGenerateMobilePreviewSummary = async () => {
+    if (!mobilePreview) return;
+
+    if (mobilePreview.type === "function") {
+      setFuncSummaryLoading(true);
+      setFuncSummaryError(null);
+      try {
+        const result = await generateFunctionSummary({
+          functionId: mobilePreview.id,
+          forceRefresh: !!selectedFunction?.summary && !selectedFunction?.summaryStale,
+        });
+        if (!result.summary && result.message) {
+          setFuncSummaryError(result.message);
+        }
+      } catch {
+        setFuncSummaryError("Failed to generate summary. Please try again.");
+      } finally {
+        setFuncSummaryLoading(false);
+      }
+      return;
+    }
+
+    if (mobilePreview.type === "department") {
+      setDeptSummaryLoading(true);
+      setDeptSummaryError(null);
+      try {
+        const result = await generateDepartmentSummary({
+          departmentId: mobilePreview.id,
+          forceRefresh: !!selectedDepartment?.summary && !selectedDepartment?.summaryStale,
+        });
+        if (!result.summary && result.message) {
+          setDeptSummaryError(result.message);
+        }
+      } catch {
+        setDeptSummaryError("Failed to generate summary. Please try again.");
+      } finally {
+        setDeptSummaryLoading(false);
+      }
+    }
+  };
+
+  const handleMobilePreviewNavigate = () => {
+    if (!mobilePreview) return;
+
+    if (mobilePreview.type === "function") {
+      setSelectedFunctionId(mobilePreview.id);
+      setSelectedFunctionName(mobilePreview.name);
+      setMobileLevel(2);
+    } else if (mobilePreview.type === "department") {
+      setSelectedDepartmentId(mobilePreview.id);
+      setSelectedDepartmentName(mobilePreview.name);
+      setMobileLevel(3);
+    } else {
+      setSelectedProcessId(mobilePreview.id);
+      setSelectedProcessName(mobilePreview.name);
+      setMobileLevel(4);
+    }
+
+    setMobilePreview(null);
+  };
+
   return (
     <TooltipProvider>
     <div className="flex h-full flex-col bg-background">
-      {/* App header — desktop only (mobile shows header inside functions column) */}
+      {/* App header — desktop only */}
       <header className="hidden shrink-0 items-center justify-between border-b bg-background px-6 py-3 md:flex">
         <WorkspaceBrand />
         <UserMenu />
@@ -1272,11 +1515,126 @@ export function MillerColumns() {
 
       {/* Mobile: stacked single column */}
       <div className="flex flex-1 flex-col overflow-hidden md:hidden">
-        {mobileLevel === 1 && functionsColumn(true)}
-        {mobileLevel === 2 && departmentsColumn(true)}
-        {mobileLevel === 3 && processesColumn(true)}
-        {mobileLevel === 4 && detailPanel(true)}
+        <MobileAppHeader />
+        <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
+          {mobileLevel === 1 && functionsColumn(true)}
+          {mobileLevel === 2 && departmentsColumn(true)}
+          {mobileLevel === 3 && processesColumn(true)}
+          {mobileLevel === 4 && detailPanel(true)}
+        </div>
       </div>
+
+      <Sheet
+        open={!!mobilePreview}
+        onOpenChange={(open) => {
+          if (!open) setMobilePreview(null);
+        }}
+      >
+        <SheetContent
+          side="bottom"
+          className="max-h-[82dvh] gap-0 overflow-hidden rounded-t-2xl p-0"
+        >
+          <SheetHeader className="border-b p-5 pr-14">
+            <div className="flex items-center gap-3">
+              <div className="flex size-10 shrink-0 items-center justify-center rounded-xl bg-muted text-muted-foreground">
+                {mobilePreview?.type === "function" ? (
+                  <Building2 className="h-5 w-5" />
+                ) : mobilePreview?.type === "department" ? (
+                  <Layers className="h-5 w-5" />
+                ) : (
+                  <Cog className="h-5 w-5" />
+                )}
+              </div>
+              <div className="min-w-0 flex-1">
+                <SheetTitle className="truncate text-base">
+                  {mobilePreview?.name}
+                </SheetTitle>
+                <SheetDescription className="truncate text-xs">
+                  {mobilePreviewTitle}
+                </SheetDescription>
+              </div>
+            </div>
+          </SheetHeader>
+
+          <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4">
+            <div className="mb-4 flex items-center justify-between gap-3">
+              <p className="text-sm text-muted-foreground">
+                {mobilePreviewDescription}
+              </p>
+              {mobilePreviewStale && mobilePreviewSummary && (
+                <span className="shrink-0 rounded-full bg-amber-100 px-2 py-1 text-[10px] font-medium text-amber-700">
+                  New data
+                </span>
+              )}
+            </div>
+
+            {mobilePreviewLoading && !mobilePreviewSummary ? (
+              <LoadingSpinner />
+            ) : mobilePreviewSummary ? (
+              <div className="relative rounded-xl border bg-background p-4">
+                {mobilePreviewLoading && (
+                  <div className="absolute inset-0 z-10 flex items-center justify-center rounded-xl bg-background/70">
+                    <Loader2 className="h-6 w-6 animate-spin text-primary" />
+                  </div>
+                )}
+                <MarkdownSummary content={mobilePreviewSummary} />
+              </div>
+            ) : (
+              <div className="rounded-xl border border-dashed bg-muted/30 p-4 text-sm leading-6 text-muted-foreground">
+                {mobilePreview?.type === "process"
+                  ? "No process summary yet. Open the process details to record or review conversations."
+                  : "No summary has been generated yet."}
+              </div>
+            )}
+
+            {mobilePreviewUpdatedAt && (
+              <div className="mt-3 flex items-center gap-1 text-[11px] text-muted-foreground/70">
+                <Clock className="h-3 w-3" />
+                Last refreshed: {formatTimeAgo(mobilePreviewUpdatedAt)}
+              </div>
+            )}
+
+            {mobilePreviewError && (
+              <div className="mt-3 flex items-center gap-2 text-sm text-muted-foreground">
+                <AlertCircle className="h-4 w-4 shrink-0 text-amber-500" />
+                {mobilePreviewError}
+              </div>
+            )}
+          </div>
+
+          <SheetFooter className="border-t p-4">
+            {canGenerateMobilePreviewSummary && (
+              <Button
+                variant={
+                  !mobilePreviewSummary || mobilePreviewStale
+                    ? "default"
+                    : "outline"
+                }
+                size="lg"
+                className="min-h-11 w-full gap-2 rounded-xl"
+                disabled={mobilePreviewLoading}
+                onClick={handleGenerateMobilePreviewSummary}
+              >
+                {mobilePreviewLoading ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : (
+                  <Sparkles className="h-4 w-4" />
+                )}
+                {mobilePreviewGenerateLabel}
+              </Button>
+            )}
+            <Button
+              variant="outline"
+              size="lg"
+              className="min-h-12 w-full justify-between rounded-xl"
+              onClick={handleMobilePreviewNavigate}
+            >
+              {mobilePreviewNavigateLabel}
+              <ChevronRight className="h-4 w-4" />
+            </Button>
+          </SheetFooter>
+        </SheetContent>
+      </Sheet>
 
       {/* CRUD Dialog */}
       <CrudDialog

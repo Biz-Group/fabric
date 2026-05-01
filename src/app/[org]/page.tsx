@@ -39,7 +39,7 @@ export default function OrgHomePage() {
   }
 
   return (
-    <div className="flex h-screen flex-col">
+    <div className="flex h-dvh flex-col overflow-hidden">
       <MillerColumns />
     </div>
   );

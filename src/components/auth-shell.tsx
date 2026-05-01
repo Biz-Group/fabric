@@ -95,14 +95,14 @@ export async function AuthShell({
   const organization = await getSubdomainOrganization();
 
   return (
-    <div className="min-h-screen bg-background lg:grid lg:grid-cols-[minmax(0,1.05fr)_minmax(420px,0.95fr)]">
+    <div className="min-h-screen overflow-x-hidden bg-background lg:grid lg:grid-cols-[minmax(0,1.05fr)_minmax(420px,0.95fr)]">
       <FabricHero
         className="hidden min-h-screen p-12 lg:flex"
         organization={organization}
       />
 
-      <div className="flex min-h-screen items-center justify-center px-6 py-12">
-        <div className="w-full max-w-md space-y-8">
+      <div className="flex min-h-screen w-full min-w-0 items-center justify-center px-4 py-10 sm:px-6 sm:py-12">
+        <div className="w-full min-w-0 max-w-md space-y-6 sm:space-y-8">
           <div className="space-y-3 text-center lg:text-left">
             <WorkspaceBrandLockup
               as="p"
@@ -113,7 +113,7 @@ export async function AuthShell({
               logoContainerClassName="h-5 max-w-24 px-0"
               initialsClassName="text-[9px]"
             />
-            <h2 className="text-3xl font-semibold tracking-tight text-foreground">
+            <h2 className="text-2xl font-semibold tracking-tight text-foreground sm:text-3xl">
               {title}
             </h2>
             <p className="text-sm leading-6 text-muted-foreground">
@@ -121,8 +121,10 @@ export async function AuthShell({
             </p>
           </div>
 
-          <div className="rounded-3xl border border-border/70 bg-background p-6 shadow-sm sm:p-8">
-            {children}
+          <div className="overflow-hidden rounded-2xl border border-border/70 bg-background p-4 shadow-sm sm:rounded-3xl sm:p-8">
+            <div className="auth-clerk-content w-full min-w-0 max-w-full">
+              {children}
+            </div>
           </div>
         </div>
       </div>
@@ -132,24 +134,27 @@ export async function AuthShell({
 
 export const clerkAuthAppearance = {
   elements: {
-    rootBox: "w-full",
-    cardBox: "w-full shadow-none",
-    card: "w-full bg-transparent p-0 shadow-none",
-    header: "hidden",
-    footer: "mt-6",
+    rootBox: "!w-full !min-w-0 !max-w-full",
+    cardBox: "!w-full !min-w-0 !max-w-full shadow-none",
+    card: "!w-full !min-w-0 !max-w-full bg-transparent p-0 shadow-none",
+    main: "!w-full !min-w-0 !max-w-full",
+    header: "!hidden",
+    footer: "mt-6 !w-full !min-w-0 !max-w-full",
     footerAction: "justify-center",
     footerActionText: "text-sm text-muted-foreground",
     footerActionLink:
       "text-foreground underline underline-offset-4 hover:text-foreground/80",
     dividerLine: "bg-border",
     dividerText: "text-xs uppercase tracking-[0.2em] text-muted-foreground",
+    form: "!w-full !min-w-0 !max-w-full",
+    formField: "!w-full !min-w-0 !max-w-full",
     formFieldLabel: "text-sm font-medium text-foreground",
     formFieldInput:
-      "h-11 rounded-xl border-border bg-background text-sm shadow-none focus:ring-2 focus:ring-ring",
+      "h-11 !w-full !min-w-0 !max-w-full rounded-xl border-border bg-background text-sm shadow-none focus:ring-2 focus:ring-ring",
     formButtonPrimary:
-      "h-11 rounded-xl bg-foreground text-sm font-medium text-background hover:bg-foreground/90",
+      "h-11 !w-full !min-w-0 !max-w-full rounded-xl bg-foreground text-sm font-medium text-background hover:bg-foreground/90",
     socialButtonsBlockButton:
-      "h-11 rounded-xl border-border bg-background text-sm font-medium hover:bg-muted",
+      "h-11 !w-full !min-w-0 !max-w-full rounded-xl border-border bg-background text-sm font-medium hover:bg-muted",
     identityPreviewEditButton: "text-foreground hover:text-foreground/80",
     formResendCodeLink:
       "text-foreground underline underline-offset-4 hover:text-foreground/80",
@@ -157,6 +162,6 @@ export const clerkAuthAppearance = {
     formFieldWarningText: "text-xs",
     formFieldSuccessText: "text-xs",
     otpCodeFieldInput:
-      "h-11 rounded-xl border-border bg-background text-sm shadow-none focus:ring-2 focus:ring-ring",
+      "h-11 !min-w-0 !max-w-full rounded-xl border-border bg-background text-sm shadow-none focus:ring-2 focus:ring-ring",
   },
 };

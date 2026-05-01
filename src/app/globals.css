@@ -129,6 +129,32 @@
   }
 }
 
+@layer components {
+  .auth-clerk-content,
+  .auth-clerk-content .cl-rootBox,
+  .auth-clerk-content .cl-cardBox,
+  .auth-clerk-content .cl-card,
+  .auth-clerk-content .cl-main,
+  .auth-clerk-content .cl-footer,
+  .auth-clerk-content .cl-form,
+  .auth-clerk-content .cl-formField,
+  .auth-clerk-content .cl-socialButtonsBlockButton,
+  .auth-clerk-content .cl-formButtonPrimary,
+  .auth-clerk-content .cl-formFieldInput {
+    width: 100% !important;
+    min-width: 0 !important;
+    max-width: 100% !important;
+  }
+
+  .auth-clerk-content .cl-cardBox {
+    overflow: hidden;
+  }
+
+  .auth-clerk-content .cl-header {
+    display: none !important;
+  }
+}
+
 @layer utilities {
   .scrollbar-hide {
     -ms-overflow-style: none;

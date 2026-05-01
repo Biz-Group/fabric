@@ -16,7 +16,7 @@ function rootHostname(): string {
   return ROOT_DOMAIN.split(":")[0] ?? "";
 }
 
-export function UserMenu() {
+export function UserMenu({ compact = false }: { compact?: boolean }) {
   const membership = useQuery(api.users.getMyMembership);
   const role = membership?.role ?? "viewer";
   const { userMemberships } = useOrganizationList({ userMemberships: true });
@@ -37,16 +37,18 @@ export function UserMenu() {
       : undefined;
 
   return (
-    <div className="flex items-center gap-2">
+    <div className={compact ? "flex min-w-0 items-center gap-1.5" : "flex items-center gap-2"}>
       {isMultiOrgUser && (
         <OrganizationSwitcher
           hidePersonal
           afterSelectOrganizationUrl={afterSelectUrl}
           appearance={{
             elements: {
-              rootBox: "flex items-center",
+              rootBox: compact ? "flex min-w-0 items-center" : "flex items-center",
               organizationSwitcherTrigger:
-                "h-7 rounded-md px-2 text-xs font-medium hover:bg-muted",
+                compact
+                  ? "h-8 max-w-36 rounded-lg px-2 text-xs font-medium hover:bg-muted"
+                  : "h-7 rounded-md px-2 text-xs font-medium hover:bg-muted",
             },
           }}
         />
@@ -54,13 +56,18 @@ export function UserMenu() {
       {role === "admin" && (
         <Link
           href="/admin"
-          className="flex h-7 items-center gap-1 rounded-md px-2 text-xs font-medium text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+          aria-label="Admin settings"
+          className={
+            compact
+              ? "flex size-8 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+              : "flex h-7 items-center gap-1 rounded-md px-2 text-xs font-medium text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+          }
         >
           <Settings className="size-3.5" />
-          <span className="hidden sm:inline">Admin</span>
+          <span className={compact ? "sr-only" : "hidden sm:inline"}>Admin</span>
         </Link>
       )}
-      <span className="rounded-full bg-muted px-2 py-0.5 text-[10px] font-medium capitalize text-muted-foreground">
+      <span className={compact ? "hidden" : "rounded-full bg-muted px-2 py-0.5 text-[10px] font-medium capitalize text-muted-foreground"}>
         {role}
       </span>
       <UserButton />
