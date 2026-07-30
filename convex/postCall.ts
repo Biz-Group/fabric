@@ -17,6 +17,10 @@ import {
   generateAICompletion,
   isAIConfigured,
 } from "./lib/aiProvider";
+import {
+  isSamePersonName,
+  sanitizeContributorName,
+} from "./lib/contributorAttribution";
 
 // Normalize ElevenLabs transcript to the shape our UI expects:
 // ElevenLabs returns { role: "agent"|"user", message: string, time_in_call_secs: number }
@@ -56,6 +60,105 @@ export const requireOrgContributorInternal = internalQuery({
 });
 
 // ---------------------------------------------------------------------------
+// Contributor attribution
+// ---------------------------------------------------------------------------
+
+export type ResolvedAttribution = {
+  /** Display name of the person the recording is about. */
+  contributorName: string;
+  /** The submitting account. Always the authenticated caller. */
+  userId: Id<"users">;
+  /** The subject's account, when they are a verified org member. */
+  subjectUserId?: Id<"users">;
+  /** Set only when subject ≠ submitter; its presence marks an on-behalf row. */
+  submittedByName?: string;
+};
+
+/**
+ * Separates who a recording is *about* from who submitted it, so third-party
+ * consultants can file interviews for an employee without the record claiming
+ * the employee submitted it.
+ *
+ * Called by every public entry point that inserts a conversation. Passing no
+ * `contributorName`/`subjectUserId` (or naming yourself) yields the pre-existing
+ * behaviour: attribution derived from the caller's account.
+ *
+ * On-behalf-of submissions are gated on two things, because the modal's
+ * recording notice is consent from whoever is typing — not from the person named:
+ *   1. admin role, so an ordinary contributor cannot put words under a
+ *      colleague's byline;
+ *   2. an explicit consent attestation, recorded on the row by the caller.
+ * `subjectUserId` is verified against org membership the same way
+ * `submitSpeakerLabels` verifies speaker links.
+ */
+export const resolveContributorAttribution = internalQuery({
+  args: {
+    clerkOrgId: v.string(),
+    contributorName: v.optional(v.string()),
+    subjectUserId: v.optional(v.id("users")),
+    consentAttested: v.optional(v.boolean()),
+  },
+  handler: async (ctx, args): Promise<ResolvedAttribution> => {
+    const caller = await requireOrgContributor(ctx);
+    if (caller.orgId !== args.clerkOrgId) {
+      throw new Error("Organization mismatch");
+    }
+    const submitter = await ctx.db.get(caller.userId);
+    const submitterName =
+      sanitizeContributorName(submitter?.name ?? "") || "Anonymous";
+
+    let subjectUserId: Id<"users"> | undefined;
+    let subjectName: string | undefined;
+    if (args.subjectUserId) {
+      const subject = await ctx.db.get(args.subjectUserId);
+      if (!subject) throw new Error("Selected member was not found");
+      const memberships = await ctx.db
+        .query("memberships")
+        .withIndex("by_userId", (q) => q.eq("userId", args.subjectUserId!))
+        .take(100);
+      if (!memberships.some((m) => m.clerkOrgId === caller.orgId)) {
+        throw new Error("Selected member is not in this organization");
+      }
+      subjectUserId = subject._id;
+      subjectName = sanitizeContributorName(subject.name) || "Anonymous";
+    }
+
+    const typedName = sanitizeContributorName(args.contributorName ?? "");
+    const resolvedName = subjectName ?? typedName;
+
+    const isSelfRecording =
+      subjectUserId !== undefined
+        ? subjectUserId === caller.userId
+        : resolvedName === "" || isSamePersonName(resolvedName, submitterName);
+    if (isSelfRecording) {
+      return {
+        contributorName: submitterName,
+        userId: caller.userId,
+        subjectUserId: caller.userId,
+      };
+    }
+
+    if (caller.role !== "admin") {
+      throw new Error(
+        "Only organization admins can record on another person's behalf",
+      );
+    }
+    if (!args.consentAttested) {
+      throw new Error(
+        "Confirm the person was informed and consented before recording on their behalf",
+      );
+    }
+
+    return {
+      contributorName: resolvedName,
+      userId: caller.userId,
+      subjectUserId,
+      submittedByName: submitterName,
+    };
+  },
+});
+
+// ---------------------------------------------------------------------------
 // Internal helpers — all tenant-scoped via explicit clerkOrgId arg
 // ---------------------------------------------------------------------------
 
@@ -66,6 +169,9 @@ export const insertConversation = internalMutation({
     elevenlabsConversationId: v.optional(v.string()),
     contributorName: v.string(),
     userId: v.optional(v.id("users")),
+    subjectUserId: v.optional(v.id("users")),
+    submittedByName: v.optional(v.string()),
+    consentAttestedAt: v.optional(v.number()),
     inputMode: v.optional(
       v.union(
         v.literal("agent"),
@@ -130,6 +236,9 @@ export const insertConversation = internalMutation({
       elevenlabsConversationId: args.elevenlabsConversationId,
       contributorName: args.contributorName,
       userId: args.userId,
+      subjectUserId: args.subjectUserId,
+      submittedByName: args.submittedByName,
+      consentAttestedAt: args.consentAttestedAt,
       inputMode: args.inputMode ?? "agent",
       audioStorageId: args.audioStorageId,
       audioMimeType: args.audioMimeType,
@@ -245,18 +354,34 @@ export const fetchConversation = action({
   args: {
     elevenlabsConversationId: v.string(),
     processId: v.id("processes"),
+    // Optional on-behalf-of attribution; omitted for ordinary self-recordings.
+    contributorName: v.optional(v.string()),
+    subjectUserId: v.optional(v.id("users")),
+    consentAttested: v.optional(v.boolean()),
   },
   handler: async (ctx, args) => {
-    const { orgId, tokenIdentifier } = await resolveOrgForAction(ctx);
-    const caller: { orgId: string; userId: Id<"users"> } = await ctx.runQuery(
-      internal.postCall.requireOrgContributorInternal,
-      {},
+    const { orgId } = await resolveOrgForAction(ctx);
+    // Also gates the caller on contributor role — the resolver runs
+    // requireOrgContributor, and escalates to admin for on-behalf submissions.
+    const attribution: ResolvedAttribution = await ctx.runQuery(
+      internal.postCall.resolveContributorAttribution,
+      {
+        clerkOrgId: orgId,
+        contributorName: args.contributorName,
+        subjectUserId: args.subjectUserId,
+        consentAttested: args.consentAttested,
+      },
     );
-    const user = await ctx.runQuery(internal.postCall.getUserByToken, {
-      tokenIdentifier,
-    });
-    const userId = caller.userId;
-    const contributorName = user?.name ?? "Anonymous";
+    // Spread into every insert below rather than repeating the fields, so a
+    // future attribution field can't be added to one exit path and missed in
+    // the other four.
+    const attributionFields = {
+      contributorName: attribution.contributorName,
+      userId: attribution.userId,
+      subjectUserId: attribution.subjectUserId,
+      submittedByName: attribution.submittedByName,
+      consentAttestedAt: attribution.submittedByName ? Date.now() : undefined,
+    };
 
     const apiKey = process.env.ELEVENLABS_API_KEY;
     if (!apiKey) {
@@ -287,8 +412,7 @@ export const fetchConversation = action({
             processId: args.processId,
             clerkOrgId: orgId,
             elevenlabsConversationId: args.elevenlabsConversationId,
-            contributorName,
-            userId,
+            ...attributionFields,
             inputMode: "agent",
             transcriptionProvider: "elevenlabs-convai",
             analysisProvider: "elevenlabs-convai",
@@ -315,8 +439,7 @@ export const fetchConversation = action({
           processId: args.processId,
           clerkOrgId: orgId,
           elevenlabsConversationId: args.elevenlabsConversationId,
-          contributorName,
-          userId,
+          ...attributionFields,
           inputMode: "agent",
           transcriptionProvider: "elevenlabs-convai",
           analysisProvider: "elevenlabs-convai",
@@ -337,8 +460,7 @@ export const fetchConversation = action({
           processId: args.processId,
           clerkOrgId: orgId,
           elevenlabsConversationId: args.elevenlabsConversationId,
-          contributorName,
-          userId,
+          ...attributionFields,
           transcript,
           summary,
           analysis,
@@ -363,8 +485,7 @@ export const fetchConversation = action({
           processId: args.processId,
           clerkOrgId: orgId,
           elevenlabsConversationId: args.elevenlabsConversationId,
-          contributorName,
-          userId,
+          ...attributionFields,
           inputMode: "agent",
           transcriptionProvider: "elevenlabs-convai",
           analysisProvider: "elevenlabs-convai",
@@ -381,8 +502,7 @@ export const fetchConversation = action({
       processId: args.processId,
       clerkOrgId: orgId,
       elevenlabsConversationId: args.elevenlabsConversationId,
-      contributorName,
-      userId,
+      ...attributionFields,
       inputMode: "agent",
       transcriptionProvider: "elevenlabs-convai",
       analysisProvider: "elevenlabs-convai",

@@ -306,6 +306,12 @@ function Cover({ data }: { data: ProcessPdfData }) {
           label="Contributor"
           value={data.contributorName ?? "Not recorded"}
         />
+        {/* Only when the latest conversation was filed for someone else. This
+            report is a shareable artefact, so the attribution has to be
+            unambiguous once it leaves the app. */}
+        {data.submittedByName && (
+          <MetaItem label="Submitted by" value={data.submittedByName} />
+        )}
         <MetaItem label="Last updated" value={fmtDate(data.lastUpdatedAt)} />
         <MetaItem label="Generated" value={fmtDateTime(data.generatedAt)} />
       </View>

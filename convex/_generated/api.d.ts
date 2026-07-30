@@ -18,6 +18,7 @@ import type * as http from "../http.js";
 import type * as invitations from "../invitations.js";
 import type * as lib_aiProvider from "../lib/aiProvider.js";
 import type * as lib_clerkApi from "../lib/clerkApi.js";
+import type * as lib_contributorAttribution from "../lib/contributorAttribution.js";
 import type * as lib_orgAuth from "../lib/orgAuth.js";
 import type * as lib_slugs from "../lib/slugs.js";
 import type * as migrations from "../migrations.js";
@@ -53,6 +54,7 @@ declare const fullApi: ApiFromModules<{
   invitations: typeof invitations;
   "lib/aiProvider": typeof lib_aiProvider;
   "lib/clerkApi": typeof lib_clerkApi;
+  "lib/contributorAttribution": typeof lib_contributorAttribution;
   "lib/orgAuth": typeof lib_orgAuth;
   "lib/slugs": typeof lib_slugs;
   migrations: typeof migrations;

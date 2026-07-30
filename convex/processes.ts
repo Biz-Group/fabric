@@ -228,9 +228,17 @@ export const getWorkbench = query({
     // uploaded avatar via Clerk's org membership data. Only set when the
     // conversation is linked to a Fabric user (agent interviews); free-text
     // contributors on voice/upload flows fall back to initials.
+    // The avatar has to depict the person the header names, which on an
+    // on-behalf row is the subject rather than the submitting account. When the
+    // subject has no account (external interviewee) fall back to initials —
+    // showing the submitter's photo beside someone else's name would misattribute.
+    const latestContributorAccountId =
+      latestConversation?.subjectUserId ??
+      (latestConversation?.submittedByName ? null : latestConversation?.userId) ??
+      null;
     const latestContributorUser =
-      latestConversation?.userId != null
-        ? await ctx.db.get(latestConversation.userId)
+      latestContributorAccountId != null
+        ? await ctx.db.get(latestContributorAccountId)
         : null;
     const latestContributorClerkUserId =
       latestContributorUser?.tokenIdentifier.split("|").pop() || null;
@@ -276,6 +284,9 @@ export const getWorkbench = query({
             at: latestConversation._creationTime,
             inputMode: latestConversation.inputMode ?? "agent",
             clerkUserId: latestContributorClerkUserId,
+            // Non-null only when an admin filed this on someone else's behalf,
+            // so the header can disclose who actually submitted it.
+            submittedByName: latestConversation.submittedByName ?? null,
           }
         : null,
       lastUpdatedAt,

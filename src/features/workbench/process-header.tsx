@@ -181,6 +181,7 @@ function ProcessStatusBadge({
 
 function ProcessMetadata({
   contributorName,
+  submittedByName,
   contributorImageUrl,
   updatedAt,
   relativeUpdatedAt,
@@ -188,6 +189,7 @@ function ProcessMetadata({
   dateTime,
 }: {
   contributorName: string | null | undefined;
+  submittedByName: string | null | undefined;
   contributorImageUrl: string | null | undefined;
   updatedAt: number | null | undefined;
   relativeUpdatedAt: string | null;
@@ -218,6 +220,14 @@ function ProcessMetadata({
       )}
       <span className="min-w-0 truncate">
         <span className="font-medium text-foreground/80">{displayName}</span>
+        {/* Present only when someone filed this on the contributor's behalf.
+            Without it the byline would read as the contributor's own submission. */}
+        {submittedByName && (
+          <span title={`Submitted by ${submittedByName}`}>
+            {" "}
+            (submitted by {submittedByName})
+          </span>
+        )}
         <span aria-hidden="true"> · </span>
         {updatedAt && dateTime ? (
           <time dateTime={dateTime} title={absoluteUpdatedAt}>
@@ -403,6 +413,7 @@ export function ProcessHeader({
             <div className="flex min-w-0 flex-wrap items-center gap-2">
               <ProcessMetadata
                 contributorName={latestContributor?.name}
+                submittedByName={latestContributor?.submittedByName}
                 contributorImageUrl={contributorImageUrl}
                 updatedAt={workbench?.lastUpdatedAt}
                 relativeUpdatedAt={lastUpdated}

@@ -141,14 +141,20 @@ export const auditHierarchyIntegrity = internalQuery({
           processId: conversation.processId,
           elevenlabsConversationId: conversation.elevenlabsConversationId,
         })),
+      // Covers both the submitting account and, on rows recorded for someone
+      // else, the subject's account — either dangling reference breaks
+      // attribution, so both belong in the audit.
       orphanConversationsByUser: conversations
         .filter(
           (conversation) =>
-            conversation.userId && !userIds.has(conversation.userId),
+            (conversation.userId && !userIds.has(conversation.userId)) ||
+            (conversation.subjectUserId &&
+              !userIds.has(conversation.subjectUserId)),
         )
         .map((conversation) => ({
           _id: conversation._id,
           userId: conversation.userId,
+          subjectUserId: conversation.subjectUserId,
           elevenlabsConversationId: conversation.elevenlabsConversationId,
         })),
       orphanProcessFlows: processFlows

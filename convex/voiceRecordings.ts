@@ -20,6 +20,7 @@ import {
   isAIConfigured,
   isTokenLimitFinishReason,
 } from "./lib/aiProvider";
+import type { ResolvedAttribution } from "./postCall";
 
 type TranscriptMessage = {
   role: string;
@@ -414,6 +415,10 @@ export const processVoiceRecording = action({
     source: v.optional(
       v.union(v.literal("record"), v.literal("upload")),
     ),
+    // Optional on-behalf-of attribution; omitted for ordinary self-recordings.
+    contributorName: v.optional(v.string()),
+    subjectUserId: v.optional(v.id("users")),
+    consentAttested: v.optional(v.boolean()),
   },
   handler: async (ctx, args) => {
     const isUpload = args.source === "upload";
@@ -421,24 +426,35 @@ export const processVoiceRecording = action({
       throw new Error("Only audio file uploads are supported");
     }
 
-    const { orgId, tokenIdentifier } = await resolveOrgForAction(ctx);
-    const caller: { orgId: string; userId: Id<"users"> } =
-      await ctx.runQuery(internal.postCall.requireOrgContributorInternal, {});
+    const { orgId } = await resolveOrgForAction(ctx);
     await ctx.runQuery(internal.processFlows.assertProcessInOrg, {
       processId: args.processId,
       clerkOrgId: orgId,
     });
 
-    const user = await ctx.runQuery(internal.postCall.getUserByToken, {
-      tokenIdentifier,
-    });
+    // Also gates the caller on contributor role, and on admin + a consent
+    // attestation when the recording is attributed to someone else.
+    const attribution: ResolvedAttribution = await ctx.runQuery(
+      internal.postCall.resolveContributorAttribution,
+      {
+        clerkOrgId: orgId,
+        contributorName: args.contributorName,
+        subjectUserId: args.subjectUserId,
+        consentAttested: args.consentAttested,
+      },
+    );
     const conversationId: Id<"conversations"> = await ctx.runMutation(
       internal.postCall.insertConversation,
       {
         processId: args.processId,
         clerkOrgId: orgId,
-        contributorName: user?.name ?? "Anonymous",
-        userId: caller.userId,
+        contributorName: attribution.contributorName,
+        userId: attribution.userId,
+        subjectUserId: attribution.subjectUserId,
+        submittedByName: attribution.submittedByName,
+        consentAttestedAt: attribution.submittedByName
+          ? Date.now()
+          : undefined,
         inputMode: isUpload ? "audioUpload" : "voiceRecord",
         audioStorageId: args.storageId,
         audioMimeType: args.mimeType,

@@ -65,9 +65,18 @@ export function ConversationTranscriptDialog({
           </DialogTitle>
           <DialogDescription>
             {conversation
-              ? `${formatDateTime(conversation._creationTime)} · ${formatDuration(
-                  conversation.durationSeconds,
-                )}`
+              ? [
+                  formatDateTime(conversation._creationTime),
+                  formatDuration(conversation.durationSeconds),
+                  // Only present when an admin filed this for someone else; the
+                  // dialog is titled with the contributor's name, so an admin
+                  // auditing the record needs to see who actually submitted it.
+                  conversation.submittedByName
+                    ? `Submitted by ${conversation.submittedByName}`
+                    : null,
+                ]
+                  .filter(Boolean)
+                  .join(" · ")
               : "Loading..."}
           </DialogDescription>
         </DialogHeader>

@@ -39,6 +39,8 @@ export type ProcessPdfInput = {
   departmentName: string;
   summary: string | null;
   contributorName: string | null;
+  /** Set only when the latest conversation was recorded on the contributor's behalf. */
+  submittedByName: string | null;
   lastUpdatedAt: number | null;
   completedConversationCount: number;
   /** Full flow document, or null when none has been generated. */
@@ -54,6 +56,8 @@ export type ProcessPdfData = {
   functionName: string;
   departmentName: string;
   contributorName: string | null;
+  /** Set only when the latest conversation was recorded on the contributor's behalf. */
+  submittedByName: string | null;
   lastUpdatedAt: number | null;
   generatedAt: number;
   summary: string | null;
@@ -162,6 +166,7 @@ export function buildProcessPdfData(input: ProcessPdfInput): ProcessPdfData {
     functionName: input.functionName,
     departmentName: input.departmentName,
     contributorName: input.contributorName,
+    submittedByName: input.submittedByName,
     lastUpdatedAt: input.lastUpdatedAt,
     generatedAt: input.generatedAt,
     summary: input.summary,

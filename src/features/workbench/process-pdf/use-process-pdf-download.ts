@@ -13,6 +13,7 @@ export type ProcessPdfDownloadArgs = {
   departmentName: string;
   summary: string | null;
   contributorName: string | null;
+  submittedByName: string | null;
   lastUpdatedAt: number | null;
   completedConversationCount: number;
 };
@@ -52,6 +53,7 @@ export function useProcessPdfDownload() {
           departmentName: args.departmentName,
           summary: args.summary,
           contributorName: args.contributorName,
+          submittedByName: args.submittedByName,
           lastUpdatedAt: args.lastUpdatedAt,
           completedConversationCount: args.completedConversationCount,
           flow,

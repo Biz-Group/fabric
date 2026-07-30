@@ -950,6 +950,8 @@ export function ProcessWorkbench() {
       departmentName: workbenchDepartmentName,
       summary: processSummary ?? null,
       contributorName: processWorkbench?.latestContributor?.name ?? null,
+      submittedByName:
+        processWorkbench?.latestContributor?.submittedByName ?? null,
       lastUpdatedAt: processWorkbench?.lastUpdatedAt ?? null,
       completedConversationCount: completedProcessConversationCount,
     });

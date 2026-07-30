@@ -68,6 +68,8 @@ export const listCompactByProcess = query({
       processId: conversation.processId,
       contributorName: conversation.contributorName,
       userId: conversation.userId ?? null,
+      subjectUserId: conversation.subjectUserId ?? null,
+      submittedByName: conversation.submittedByName ?? null,
       inputMode: conversation.inputMode ?? "agent",
       status: conversation.status,
       durationSeconds: conversation.durationSeconds ?? null,
@@ -425,6 +427,13 @@ export const getFailedForRetry = internalQuery({
       conversationId: conv._id,
       processId: conv.processId,
       elevenlabsConversationId: conv.elevenlabsConversationId,
+      // Carry the original on-behalf-of attribution across the retry. The retry
+      // deletes and re-inserts the row, so without this the contributor would
+      // be re-derived from the retrying admin's account and the interview would
+      // be silently reattributed to them.
+      wasOnBehalf: Boolean(conv.submittedByName),
+      contributorName: conv.submittedByName ? conv.contributorName : undefined,
+      subjectUserId: conv.submittedByName ? conv.subjectUserId : undefined,
     };
   },
 });
@@ -482,6 +491,13 @@ export const retryFetch = action({
     return (await ctx.runAction(api.postCall.fetchConversation, {
       elevenlabsConversationId: target.elevenlabsConversationId,
       processId: target.processId,
+      contributorName: target.contributorName,
+      subjectUserId: target.subjectUserId,
+      // The original submitter already attested; a retry re-files an existing
+      // record rather than making a fresh consent decision. The new row's
+      // `submittedByName` becomes the retrying admin, which is accurate — theirs
+      // is the account that re-filed it.
+      consentAttested: target.wasOnBehalf ? true : undefined,
     })) as FetchResult;
   },
 });

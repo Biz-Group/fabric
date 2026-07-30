@@ -17,6 +17,14 @@ import {
   DialogFooter,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
+import { Checkbox } from "@/components/ui/checkbox";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import {
   Breadcrumb,
   BreadcrumbItem,
@@ -62,7 +70,68 @@ type ModalStep =
   | "review";
 export type RecordingMode = "agent" | "voiceRecord" | "audioUpload";
 
+/**
+ * Who the recording is about. "self" is the default and the only option for
+ * non-admins. "member" links a verified org member; "external" is free text for
+ * interviewees who have no Fabric account.
+ */
+type SubjectMode = "self" | "member" | "external";
+
+const SUBJECT_MODE_OPTIONS: { id: SubjectMode; label: string }[] = [
+  { id: "self", label: "Myself" },
+  { id: "member", label: "A team member" },
+  { id: "external", label: "Someone else" },
+];
+
+/** Attribution sent to the server; empty for ordinary self-recordings. */
+type AttributionArgs = {
+  contributorName?: string;
+  subjectUserId?: Id<"users">;
+  consentAttested?: boolean;
+};
+
 const MAX_UPLOAD_BYTES = 100 * 1024 * 1024; // 100 MB
+
+// Mirrors MAX_CONTRIBUTOR_NAME_LENGTH in convex/lib/contributorAttribution.ts,
+// which is the enforcing copy — this only stops the input growing past it.
+const MAX_CONTRIBUTOR_NAME_LENGTH = 120;
+
+/**
+ * Whether a stored conversation is about the same person as the one about to be
+ * recorded, used to decide which prior summaries to feed the agent.
+ *
+ * Prefers account identity over the display name. Matching on the name alone
+ * splits "Jane Doe" / "jane doe" into different contributors, and — worse —
+ * merges two members who happen to share a name, which would inject one
+ * employee's prior summaries into the other's interview prompt. Rows written
+ * before `subjectUserId` existed carry the subject in `userId`, so fall back to
+ * that; the name is only consulted for subjects with no account at all.
+ */
+function isSameSubject(
+  conversation: {
+    contributorName: string;
+    userId?: Id<"users"> | null;
+    subjectUserId?: Id<"users"> | null;
+    submittedByName?: string | null;
+  },
+  subjectUserId: Id<"users"> | null,
+  subjectName: string,
+): boolean {
+  if (subjectUserId) {
+    if (conversation.subjectUserId) {
+      return conversation.subjectUserId === subjectUserId;
+    }
+    // Legacy row: no subjectUserId, so the submitting account is the subject.
+    return (
+      !conversation.submittedByName && conversation.userId === subjectUserId
+    );
+  }
+  return (
+    !conversation.subjectUserId &&
+    conversation.contributorName.trim().toLowerCase() ===
+      subjectName.trim().toLowerCase()
+  );
+}
 
 function formatFileSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
@@ -182,7 +251,52 @@ export function RecordingModal({
   const userRole = membership?.role ?? "viewer";
   const isStoredAudio = mode === "voiceRecord" || mode === "audioUpload";
 
-  const contributorName = user?.name ?? "";
+  // Only admins may attribute a recording to someone other than themselves —
+  // the recording notice is consent from whoever is at the keyboard, so letting
+  // any contributor file under a colleague's name would let them put words in
+  // that colleague's mouth with nothing recording who actually submitted it.
+  const canRecordForOthers = userRole === "admin";
+  const accountName = user?.name ?? "";
+  const accountUserId = membership?.userId ?? null;
+
+  const [subjectMode, setSubjectMode] = useState<SubjectMode>("self");
+  const [subjectMemberId, setSubjectMemberId] = useState<Id<"users"> | null>(
+    null,
+  );
+  const [externalName, setExternalName] = useState("");
+  const [consentAttested, setConsentAttested] = useState(false);
+
+  const orgMembers = useQuery(
+    api.users.listOrgMemberOptions,
+    canRecordForOthers && open ? {} : "skip",
+  );
+  const selectedMember = useMemo(
+    () => orgMembers?.find((m) => m.userId === subjectMemberId) ?? null,
+    [orgMembers, subjectMemberId],
+  );
+
+  const isOnBehalf = subjectMode !== "self";
+  // The person the recording is about: drives the agent's greeting, the
+  // prior-interview lookup, and what is stored as contributorName.
+  const contributorName =
+    subjectMode === "member"
+      ? (selectedMember?.name ?? "")
+      : subjectMode === "external"
+        ? externalName
+        : accountName;
+  const subjectUserId: Id<"users"> | null =
+    subjectMode === "member"
+      ? subjectMemberId
+      : subjectMode === "self"
+        ? accountUserId
+        : null;
+  const attributionReady =
+    Boolean(contributorName.trim()) && (!isOnBehalf || consentAttested);
+
+  // Locked in when the user leaves the name step. The attribution fields unmount
+  // at that point, while the submit and onDisconnect handlers that need these
+  // values run later — capturing here keeps them from drifting or going stale.
+  const submittedAttributionRef = useRef<AttributionArgs>({});
 
   // Mic state — start as "prompt" (unchecked); only set to "checking" while acquiring
   const [micPermission, setMicPermission] = useState<
@@ -258,6 +372,11 @@ export function RecordingModal({
 
   const resetModalState = useCallback(() => {
     setStep("name");
+    setSubjectMode("self");
+    setSubjectMemberId(null);
+    setExternalName("");
+    setConsentAttested(false);
+    submittedAttributionRef.current = {};
     setMessages([]);
     setConversationId(null);
     conversationIdRef.current = null;
@@ -325,16 +444,20 @@ export function RecordingModal({
       existingConversations
         ?.filter(
           (c) =>
-            c.contributorName === contributorName &&
             c.status === "done" &&
-            c.summary
+            c.summary &&
+            isSameSubject(c, subjectUserId, contributorName)
         )
         .map((c) => c.summary)
         .join("\n\n") || "None.";
 
-    // Calculate tenure from hire date
+    // Calculate tenure from hire date. Profile-derived context describes the
+    // account holder, so it only applies when they are the one being
+    // interviewed — telling the agent the submitting consultant's tenure while
+    // it interviews someone else would put wrong facts in the prompt. The
+    // member picker carries a job title but no hire date, hence "Unknown".
     let tenure = "Unknown";
-    if (user?.hireDate) {
+    if (!isOnBehalf && user?.hireDate) {
       const hireDate = new Date(user.hireDate);
       const now = new Date();
       const years = Math.floor(
@@ -342,10 +465,13 @@ export function RecordingModal({
       );
       tenure = years < 1 ? "Less than 1 year" : `${years} year${years === 1 ? "" : "s"}`;
     }
+    const jobTitle = isOnBehalf
+      ? selectedMember?.jobTitle || "Unknown"
+      : user?.jobTitle || "Unknown";
 
     return {
       contributor_name: contributorName,
-      job_title: user?.jobTitle || "Unknown",
+      job_title: jobTitle,
       years_in_role: tenure,
       function_name: functionName,
       department_name: departmentName,
@@ -359,6 +485,9 @@ export function RecordingModal({
     selectedProcess,
     existingConversations,
     contributorName,
+    subjectUserId,
+    isOnBehalf,
+    selectedMember,
     user,
     functionName,
     departmentName,
@@ -408,6 +537,7 @@ export function RecordingModal({
         fetchConversation({
           elevenlabsConversationId: currentConvId,
           processId,
+          ...submittedAttributionRef.current,
         })
           .then((result) => {
             setPostCallResult({ status: result.status });
@@ -620,6 +750,7 @@ export function RecordingModal({
         durationSeconds: voiceRecordSeconds || undefined,
         mimeType,
         source: mode === "audioUpload" ? "upload" : "record",
+        ...submittedAttributionRef.current,
       });
       setPostCallResult({ status: result.status });
       setSubmittedVoiceConversationId(result.conversationId);
@@ -688,7 +819,18 @@ export function RecordingModal({
 
   // Handle name submission → acquire mic (if needed) → move to recording step
   const handleNameSubmit = useCallback(async () => {
-    if (!contributorName.trim()) return;
+    if (!attributionReady) return;
+
+    // Freeze attribution before leaving the step that collects it. Self
+    // recordings send nothing and the server derives attribution from the
+    // account, exactly as before this flow existed.
+    submittedAttributionRef.current = isOnBehalf
+      ? {
+          contributorName: contributorName.trim(),
+          subjectUserId: subjectUserId ?? undefined,
+          consentAttested: true,
+        }
+      : {};
 
     // Audio upload mode never needs the microphone; file picker handles capture
     if (mode === "audioUpload") {
@@ -710,7 +852,15 @@ export function RecordingModal({
     } else {
       startSession();
     }
-  }, [contributorName, mode, startSession, startVoiceRecording]);
+  }, [
+    attributionReady,
+    contributorName,
+    isOnBehalf,
+    subjectUserId,
+    mode,
+    startSession,
+    startVoiceRecording,
+  ]);
 
   // If the user bails before approving speaker labels, drop the conversation
   // row + audio so we don't retain half-processed inputs. The server gates
@@ -776,40 +926,147 @@ export function RecordingModal({
                 {mode === "audioUpload"
                   ? "Upload an Audio File"
                   : mode === "voiceRecord"
-                    ? "Record Your Voice"
+                    ? isOnBehalf
+                      ? "Record a Voice Note"
+                      : "Record Your Voice"
                     : "Record a Conversation"}
               </DialogTitle>
               <DialogDescription>
                 {mode === "audioUpload"
                   ? "You're about to upload an audio recording about "
                   : mode === "voiceRecord"
-                    ? "You're about to record yourself describing "
+                    ? isOnBehalf
+                      ? "You're about to record them describing "
+                      : "You're about to record yourself describing "
                     : "You're about to record a conversation about "}
                 <span className="font-medium text-foreground">
                   {processName}
                 </span>
-                . Confirm your name and review the notices below to get
-                started.
+                {isOnBehalf
+                  ? ". Confirm who is being recorded and review the notices below to get started."
+                  : ". Confirm your name and review the notices below to get started."}
               </DialogDescription>
             </DialogHeader>
             <div className="mt-4 space-y-4">
+              {canRecordForOthers && (
+                <div className="space-y-2">
+                  <span className="text-sm font-medium">
+                    Who is being recorded?
+                  </span>
+                  <div className="flex flex-wrap gap-2">
+                    {SUBJECT_MODE_OPTIONS.map((option) => (
+                      <Button
+                        key={option.id}
+                        type="button"
+                        size="sm"
+                        variant={
+                          subjectMode === option.id ? "default" : "outline"
+                        }
+                        className="rounded-full"
+                        onClick={() => {
+                          setSubjectMode(option.id);
+                          // Consent is specific to the person named, so a change
+                          // of subject must be attested again.
+                          setConsentAttested(false);
+                        }}
+                      >
+                        {option.label}
+                      </Button>
+                    ))}
+                  </div>
+                </div>
+              )}
+
               <div className="space-y-2">
                 <label
                   htmlFor="contributor-name"
                   className="text-sm font-medium"
                 >
-                  Your Name
+                  {isOnBehalf ? "Person being recorded" : "Your Name"}
                 </label>
-                <Input
-                  // disabled
-                  id="contributor-name"
-                  value={contributorName}
-                  placeholder="Enter your name"
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter") handleNameSubmit();
-                  }}
-                />
+                {subjectMode === "member" ? (
+                  <Select
+                    value={subjectMemberId ?? undefined}
+                    onValueChange={(value) => {
+                      setSubjectMemberId(value as Id<"users">);
+                      setConsentAttested(false);
+                    }}
+                  >
+                    <SelectTrigger id="contributor-name" className="w-full">
+                      <SelectValue
+                        placeholder={
+                          orgMembers === undefined
+                            ? "Loading team members…"
+                            : "Select a team member"
+                        }
+                      />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {(orgMembers ?? [])
+                        .filter((m) => m.userId !== accountUserId)
+                        .map((member) => (
+                          <SelectItem key={member.userId} value={member.userId}>
+                            {member.jobTitle
+                              ? `${member.name} — ${member.jobTitle}`
+                              : member.name}
+                          </SelectItem>
+                        ))}
+                    </SelectContent>
+                  </Select>
+                ) : (
+                  <Input
+                    id="contributor-name"
+                    value={subjectMode === "external" ? externalName : accountName}
+                    readOnly={subjectMode === "self"}
+                    maxLength={MAX_CONTRIBUTOR_NAME_LENGTH}
+                    placeholder={
+                      subjectMode === "external"
+                        ? "Enter their full name"
+                        : "Enter your name"
+                    }
+                    onChange={(e) => setExternalName(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") handleNameSubmit();
+                    }}
+                  />
+                )}
+                <p className="text-xs text-muted-foreground">
+                  {subjectMode === "self"
+                    ? "Taken from your Fabric profile."
+                    : `This recording will be attributed to them, and recorded as submitted by ${accountName || "your account"}.`}
+                </p>
               </div>
+
+              {isOnBehalf && (
+                <div className="flex items-start gap-2.5 rounded-lg border border-amber-500/40 bg-amber-500/5 p-4 text-sm leading-relaxed">
+                  <Checkbox
+                    id="consent-attestation"
+                    checked={consentAttested}
+                    onCheckedChange={(checked) =>
+                      setConsentAttested(checked === true)
+                    }
+                    aria-labelledby="consent-attestation-label"
+                    className="mt-0.5"
+                  />
+                  {/* The text toggles too, for a usable hit area. It sits beside
+                      the checkbox rather than wrapping it, so a click can never
+                      reach both handlers and cancel itself out. */}
+                  <span
+                    id="consent-attestation-label"
+                    className="cursor-pointer"
+                    onClick={() => setConsentAttested((prev) => !prev)}
+                  >
+                    <span className="font-medium">Consent confirmation</span>
+                    <span className="mt-1 block text-muted-foreground">
+                      I confirm that{" "}
+                      {contributorName.trim() || "this person"} was shown the
+                      recording notice below and consented to being recorded,
+                      transcribed, and analysed. This confirmation is stored
+                      against your account.
+                    </span>
+                  </span>
+                </div>
+              )}
 
               <div className="rounded-lg border bg-muted/30 p-4 text-sm leading-relaxed">
                 <p className="flex items-center gap-1.5 font-medium">
@@ -818,11 +1075,23 @@ export function RecordingModal({
                 </p>
                 <p className="mt-1 text-muted-foreground">
                   {mode === "audioUpload"
-                    ? "Your uploaded audio will be transcribed and stored to help document our processes."
+                    ? "The uploaded audio will be transcribed and stored to help document our processes."
                     : mode === "voiceRecord"
-                      ? "Your recording will be transcribed and stored to help document our processes."
+                      ? "This recording will be transcribed and stored to help document our processes."
                       : "This conversation will be recorded, transcribed, and stored to help document our processes."}
                 </p>
+                {isOnBehalf && (
+                  // The notice is only meaningful to the person whose voice is
+                  // captured, and they are not the one reading this screen.
+                  <p className="mt-2 text-muted-foreground">
+                    Because you are recording on someone else&apos;s behalf, show
+                    or read this notice to{" "}
+                    {contributorName.trim() || "the person being recorded"}{" "}
+                    {mode === "audioUpload"
+                      ? "before uploading their audio."
+                      : "before you start."}
+                  </p>
+                )}
               </div>
               <div className="rounded-lg border bg-muted/30 p-4 text-sm leading-relaxed">
                 <p className="font-medium">Content guidelines</p>
@@ -866,9 +1135,7 @@ export function RecordingModal({
               </Button>
               <Button
                 onClick={handleNameSubmit}
-                disabled={
-                  !contributorName.trim() || micPermission === "checking"
-                }
+                disabled={!attributionReady || micPermission === "checking"}
                 className="gap-2"
               >
                 {mode === "audioUpload" ? (

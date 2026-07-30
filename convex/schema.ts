@@ -320,6 +320,18 @@ export default defineSchema({
     elevenlabsConversationId: v.optional(v.string()),
     contributorName: v.string(),
     userId: v.optional(v.id("users")),
+    // On-behalf-of attribution. `userId` is always the *submitting* account;
+    // `contributorName` / `subjectUserId` describe whose process knowledge the
+    // recording captures. Normally they are the same person, and
+    // `submittedByName` is absent — its presence is the "recorded on someone
+    // else's behalf" flag, and it carries the submitter's display name so read
+    // surfaces can show "<subject> · submitted by <submitter>" without an extra
+    // lookup (same denormalization rationale as `contributorName`).
+    // `consentAttestedAt` records when the submitter asserted the subject was
+    // informed and consented.
+    subjectUserId: v.optional(v.id("users")),
+    submittedByName: v.optional(v.string()),
+    consentAttestedAt: v.optional(v.number()),
     inputMode: v.optional(
       v.union(
         v.literal("agent"),

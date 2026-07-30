@@ -411,6 +411,14 @@ function buildConversationPdfPages(
     lineHeight: 12,
     gapBefore: 3,
   });
+  // Only on rows filed for someone else. The export leaves the client's hands,
+  // so the distinction between subject and submitter has to travel with it.
+  if (conversation.submittedByName) {
+    addLine(`Submitted by: ${conversation.submittedByName}`, {
+      size: 9,
+      lineHeight: 12,
+    });
+  }
   addLine(`Recorded: ${formatDate(conversation._creationTime)}`, {
     size: 9,
     lineHeight: 12,
@@ -1050,6 +1058,14 @@ function ConversationEntry({
             <span className="min-w-0 truncate text-sm font-medium">
               {conversation.contributorName}
             </span>
+            {/* Present only when an admin filed this on the contributor's
+                behalf. The card is headed by the contributor's name, so leaving
+                this out would present it as their own submission. */}
+            {conversation.submittedByName && (
+              <span className="min-w-0 truncate text-xs text-muted-foreground">
+                submitted by {conversation.submittedByName}
+              </span>
+            )}
             <ConversationTypeBadge inputMode={conversation.inputMode} />
           </div>
           <div className="flex shrink-0 items-center gap-1.5 text-xs text-muted-foreground">

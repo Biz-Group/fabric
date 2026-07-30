@@ -16,6 +16,7 @@ import {
   Mic,
   PlayCircle,
   Upload,
+  UserCheck,
 } from "lucide-react";
 import { api } from "../../../convex/_generated/api";
 import type { Id } from "../../../convex/_generated/dataModel";
@@ -251,6 +252,17 @@ function ConversationRow({
             <span className="tabular-nums" title={conversation.durationSeconds === null ? "Duration unavailable" : undefined}>
               {formatDuration(conversation.durationSeconds)}
             </span>
+            {/* Set only when an admin recorded on the contributor's behalf. The
+                row title names the contributor, so without this the entry reads
+                as their own submission. */}
+            {conversation.submittedByName && (
+              <span className="inline-flex min-w-0 items-center gap-1.5">
+                <UserCheck className="size-3.5 shrink-0" aria-hidden="true" />
+                <span className="truncate">
+                  Submitted by {conversation.submittedByName}
+                </span>
+              </span>
+            )}
           </span>
         </span>
       </button>

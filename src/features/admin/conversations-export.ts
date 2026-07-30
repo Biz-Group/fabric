@@ -8,6 +8,10 @@ const CSV_COLUMNS = [
   "id",
   "created_at",
   "contributor",
+  // Populated only when an admin filed the recording on someone else's behalf;
+  // blank means the contributor submitted it themselves.
+  "submitted_by",
+  "consent_attested_at",
   "function",
   "department",
   "process",
@@ -29,6 +33,12 @@ function rowToCsv(r: Row): string {
     escape(r._id),
     escape(new Date(r._creationTime).toISOString()),
     escape(r.contributorName),
+    escape(r.submittedByName ?? ""),
+    escape(
+      r.consentAttestedAt
+        ? new Date(r.consentAttestedAt).toISOString()
+        : "",
+    ),
     escape(r.functionName),
     escape(r.departmentName),
     escape(r.processName),
