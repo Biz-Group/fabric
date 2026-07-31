@@ -406,6 +406,16 @@ function buildConversationPdfPages(
   };
 
   addLine("Conversation Export", { size: 18, font: "F2", lineHeight: 24 });
+  // The analysis title, when there is one. The export is read outside the app,
+  // where "Conversation Export" on its own names nothing.
+  if (conversation.title?.trim()) {
+    addLine(conversation.title.trim(), {
+      size: 11,
+      font: "F2",
+      lineHeight: 15,
+      gapBefore: 4,
+    });
+  }
   addLine(`Contributor: ${conversation.contributorName}`, {
     size: 9,
     lineHeight: 12,

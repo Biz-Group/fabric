@@ -15,6 +15,7 @@ import {
   requireOrgMember,
   resolveOrgForAction,
 } from "./lib/orgAuth";
+import { conversationTitle } from "./lib/conversationTitle";
 
 const DEFAULT_COMPACT_CONVERSATION_LIMIT = 50;
 const MAX_COMPACT_CONVERSATION_LIMIT = 100;
@@ -72,6 +73,9 @@ export const listCompactByProcess = query({
       submittedByName: conversation.submittedByName ?? null,
       inputMode: conversation.inputMode ?? "agent",
       status: conversation.status,
+      // Falls back to the analysis blob so rows written before the `title`
+      // column existed are still titled by what was discussed.
+      title: conversationTitle(conversation) ?? null,
       durationSeconds: conversation.durationSeconds ?? null,
       hasAudio: Boolean(
         conversation.elevenlabsConversationId || conversation.audioStorageId,

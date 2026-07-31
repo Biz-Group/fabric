@@ -20,6 +20,7 @@ import {
   isAIConfigured,
   isTokenLimitFinishReason,
 } from "./lib/aiProvider";
+import { normalizeSummaryTitle } from "./lib/conversationTitle";
 import type { ResolvedAttribution } from "./postCall";
 
 type TranscriptMessage = {
@@ -44,6 +45,9 @@ type ScribeResponse = {
 };
 
 type AnalysisPayload = {
+  /** Empty when the model omitted it; mirrors ElevenLabs' field of the same
+   *  name so every input mode titles conversations the same way. */
+  call_summary_title: string;
   transcript_summary: string;
   data_collection: {
     process_steps: string;
@@ -92,6 +96,7 @@ const VOICE_RECORDING_ANALYSIS_PROMPT = `You are analyzing a diarized voice reco
 
 Return ONLY a valid JSON object with this exact shape:
 {
+  "call_summary_title": "Short headline (4-8 words) naming what this recording covered.",
   "transcript_summary": "Concise 4-6 sentence summary of what the contributor explained.",
   "data_collection": {
     "process_steps": "JSON array string of steps: [{\\"id\\":\\"kebab-case\\",\\"name\\":\\"Step name\\",\\"type\\":\\"action|decision|handoff|wait\\",\\"actor\\":\\"person/team\\",\\"tools\\":[\\"tool\\"],\\"duration\\":\\"duration or null\\"}]",
@@ -112,6 +117,7 @@ Return ONLY a valid JSON object with this exact shape:
 
 Rules:
 - Base the JSON only on the transcript. Do not invent tools, dependencies, speakers, or durations.
+- call_summary_title names the work discussed, with no trailing period and no speaker names. Use Title Case to match the interview titles it sits beside in the UI — e.g. "Monthly Payroll Close and Approvals". Never write a generic title like "Process Interview".
 - Preserve named speakers as actors when the transcript makes their role in the process clear.
 - process_steps, step_connections, and step_issues must be strings containing valid JSON arrays.
 - Use stable kebab-case ids for steps so downstream process-flow generation can merge them.
@@ -277,6 +283,7 @@ export function coerceAnalysisPayload(
       : {};
 
   return {
+    call_summary_title: normalizeSummaryTitle(root.call_summary_title) ?? "",
     transcript_summary:
       stringValue(root.transcript_summary) || fallbackSummary,
     data_collection: {
@@ -488,6 +495,7 @@ export const finishVoiceRecording = internalMutation({
     clerkOrgId: v.string(),
     transcript: v.array(transcriptMessageValidator),
     summary: v.string(),
+    title: v.optional(v.string()),
     analysis: v.any(),
     analysisProvider: v.union(
       v.literal("fabric-openrouter"),
@@ -503,6 +511,7 @@ export const finishVoiceRecording = internalMutation({
     await ctx.db.patch(args.conversationId, {
       transcript: args.transcript,
       summary: args.summary,
+      title: args.title,
       analysis: args.analysis,
       analysisProvider: args.analysisProvider,
       durationSeconds: args.durationSeconds,
@@ -688,6 +697,7 @@ export const retryAudioProcessing = mutation({
       await ctx.db.patch(args.conversationId, {
         status: "processing",
         summary: undefined,
+        title: undefined,
         analysis: undefined,
       });
       await ctx.scheduler.runAfter(
@@ -707,6 +717,7 @@ export const retryAudioProcessing = mutation({
       transcript: undefined,
       speakerLabels: undefined,
       summary: undefined,
+      title: undefined,
       analysis: undefined,
     });
     await ctx.scheduler.runAfter(
@@ -849,6 +860,7 @@ export const analyzeVoiceRecordingInternal = internalAction({
         clerkOrgId: args.clerkOrgId,
         transcript: recording.transcript,
         summary: analysis.transcript_summary,
+        title: analysis.call_summary_title || undefined,
         analysis,
         analysisProvider,
         durationSeconds: recording.durationSeconds,

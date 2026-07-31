@@ -16,6 +16,7 @@ import {
   Mic,
   PlayCircle,
   Upload,
+  User,
   UserCheck,
 } from "lucide-react";
 import { api } from "../../../convex/_generated/api";
@@ -149,10 +150,19 @@ function conversationTitleFromParts(
   return `${TYPE_META[inputMode].label} with ${contributorName}`;
 }
 
+/**
+ * Prefers the one-line title from post-call analysis (ElevenLabs'
+ * `call_summary_title` for interviews, our own model's for uploaded audio) so a
+ * row says what was discussed. Rows still processing — or from a provider that
+ * returned no title — fall back to the input mode + contributor phrasing.
+ */
 function conversationTitle(conversation: CompactConversation) {
-  return conversationTitleFromParts(
-    conversation.inputMode,
-    conversation.contributorName,
+  return (
+    conversation.title?.trim() ||
+    conversationTitleFromParts(
+      conversation.inputMode,
+      conversation.contributorName,
+    )
   );
 }
 
@@ -202,23 +212,32 @@ function ConversationRow({
       )}
     >
       <div className="flex shrink-0 items-start p-3 pr-0">
-        <Button
-          type="button"
-          variant="outline"
-          size="icon-lg"
-          className={cn(
-            "size-11 rounded-xl bg-background text-foreground shadow-none",
-            selected && "border-org-accent-border text-org-accent",
-          )}
-          aria-label={conversation.hasAudio ? `Open audio for ${title}` : `Open details for ${title}`}
-          onClick={onSelect}
-        >
-          {conversation.hasAudio ? (
-            <PlayCircle className="size-5" />
-          ) : (
-            <FileText className="size-5" />
-          )}
-        </Button>
+        {/* Carries the input mode, so the three capture types are told apart at
+            the start of the row rather than by a second trailing icon. */}
+        <Tooltip>
+          <TooltipTrigger
+            render={
+              <Button
+                type="button"
+                variant="outline"
+                size="icon-lg"
+                className={cn(
+                  "size-11 rounded-xl bg-background text-foreground shadow-none",
+                  selected && "border-org-accent-border text-org-accent",
+                )}
+                aria-label={
+                  conversation.hasAudio
+                    ? `${type.label} — open audio for ${title}`
+                    : `${type.label} — open details for ${title}`
+                }
+                onClick={onSelect}
+              >
+                <TypeIcon className="size-5" aria-hidden="true" />
+              </Button>
+            }
+          />
+          <TooltipContent>{type.label}</TooltipContent>
+        </Tooltip>
       </div>
       <button
         type="button"
@@ -245,6 +264,12 @@ function ConversationRow({
             </Badge>
           </span>
           <span className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
+            {/* The title now describes the conversation rather than naming the
+                contributor, so the byline moves here. */}
+            <span className="inline-flex min-w-0 items-center gap-1.5">
+              <User className="size-3.5 shrink-0" aria-hidden="true" />
+              <span className="truncate">{conversation.contributorName}</span>
+            </span>
             <span className="inline-flex min-w-0 items-center gap-1.5">
               <Clock className="size-3.5 shrink-0" aria-hidden="true" />
               <span className="truncate">{formatDateTime(conversation._creationTime)}</span>
@@ -253,8 +278,8 @@ function ConversationRow({
               {formatDuration(conversation.durationSeconds)}
             </span>
             {/* Set only when an admin recorded on the contributor's behalf. The
-                row title names the contributor, so without this the entry reads
-                as their own submission. */}
+                byline above names the contributor, so without this the entry
+                reads as their own submission. */}
             {conversation.submittedByName && (
               <span className="inline-flex min-w-0 items-center gap-1.5">
                 <UserCheck className="size-3.5 shrink-0" aria-hidden="true" />
@@ -266,19 +291,6 @@ function ConversationRow({
           </span>
         </span>
       </button>
-      <div className="flex shrink-0 items-start p-3 pl-0">
-        <Tooltip>
-          <TooltipTrigger
-            type="button"
-            tabIndex={-1}
-            className="inline-flex size-6 items-center justify-center rounded-md text-muted-foreground outline-none transition-colors hover:bg-org-accent-subtle hover:text-foreground focus-visible:ring-3 focus-visible:ring-org-accent-ring/35"
-            aria-label={`Conversation type: ${type.label}`}
-          >
-            <TypeIcon className="size-3.5" aria-hidden="true" />
-          </TooltipTrigger>
-          <TooltipContent>{type.label}</TooltipContent>
-        </Tooltip>
-      </div>
     </div>
   );
 }

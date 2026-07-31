@@ -361,6 +361,11 @@ export default defineSchema({
     ),
     speakerLabels: v.optional(v.array(speakerLabelValidator)),
     summary: v.optional(v.string()),
+    // One-line headline for the conversation, denormalized out of
+    // `analysis.call_summary_title` so list surfaces can label rows without
+    // loading the analysis blob. Absent until analysis completes, and on rows
+    // written before this column existed — see lib/conversationTitle.ts.
+    title: v.optional(v.string()),
     // Opaque ElevenLabs analysis payload — kept as v.any() because the
     // upstream schema is not under our control and may change.
     analysis: v.optional(v.any()),

@@ -168,6 +168,7 @@ async function seedFailedAudioConversation(
       speakerName?: string;
     }>;
     summary: string;
+    title: string;
     analysis: Record<string, unknown>;
   }> = {},
 ) {
@@ -204,6 +205,7 @@ async function seedFailedAudioConversation(
       analysisProvider: "fabric-openrouter",
       transcript: overrides.transcript,
       summary: overrides.summary,
+      title: overrides.title,
       analysis: overrides.analysis,
       durationSeconds: 42,
       status: "failed",
@@ -267,6 +269,7 @@ describe("voice recording helpers", () => {
   test("coerces analysis fields into the process-flow compatible shape", () => {
     const analysis = coerceAnalysisPayload(
       {
+        call_summary_title: "  Monthly payroll checks  ",
         transcript_summary: "Contributor described monthly payroll checks.",
         data_collection: {
           process_steps: [{ id: "pull-report", name: "Pull report" }],
@@ -284,6 +287,7 @@ describe("voice recording helpers", () => {
       "Fallback",
     );
 
+    expect(analysis.call_summary_title).toBe("Monthly payroll checks");
     expect(analysis.transcript_summary).toBe(
       "Contributor described monthly payroll checks.",
     );
@@ -296,6 +300,7 @@ describe("voice recording helpers", () => {
 
   test("parses a well-formed analysis response into a payload", () => {
     const payload = {
+      call_summary_title: "Payroll close walkthrough",
       transcript_summary: "Contributor walked through the payroll close.",
       data_collection: {
         process_steps: "[]",
@@ -308,6 +313,7 @@ describe("voice recording helpers", () => {
       "Fallback",
     );
 
+    expect(analysis.call_summary_title).toBe("Payroll close walkthrough");
     expect(analysis.transcript_summary).toBe(
       "Contributor walked through the payroll close.",
     );
@@ -510,6 +516,7 @@ describe("audio retry", () => {
     const { conversationId } = await seedFailedAudioConversation(t, {
       transcript,
       summary: "Stale summary",
+      title: "Stale title",
       analysis: { stale: true },
     });
 
@@ -525,6 +532,7 @@ describe("audio retry", () => {
     expect(row?.status).toBe("processing");
     expect(row?.transcript).toEqual(transcript);
     expect(row?.summary).toBeUndefined();
+    expect(row?.title).toBeUndefined();
     expect(row?.analysis).toBeUndefined();
   });
 

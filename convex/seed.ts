@@ -353,7 +353,9 @@ export const seed = internalMutation({
       ],
       summary:
         "Sarah described the monthly salary calculation process including data sourcing from Workday HRIS on the 15th, validation against approved compensation bands, and flagging discrepancies to the Payroll Manager. She highlighted a recurring issue where terminated employees appear in the export due to offboarding lag in the HR system, requiring 2–3 hours of manual cross-referencing with the Employee Relations termination log each cycle.",
+      title: "Monthly salary calculation and band validation",
       analysis: {
+        call_summary_title: "Monthly salary calculation and band validation",
         transcript_summary:
           "Sarah described the monthly salary calculation process including data sourcing from Workday HRIS on the 15th, validation against approved compensation bands, and flagging discrepancies to the Payroll Manager.",
         data_collection: {
@@ -446,7 +448,9 @@ export const seed = internalMutation({
       ],
       summary:
         "Ahmed explained the bank transfer setup phase of compensation. After Sarah's validation, he formats the approved payroll file for HSBC BACS using a conversion macro, manually verifies sort codes and account numbers for new starters, coordinates with Treasury to ensure funds are available two business days before pay date, and submits the BACS file only after receiving Treasury's confirmation. He noted that unverified banking details for mid-cycle joiners are a recurring risk.",
+      title: "BACS file setup and Treasury funding handoff",
       analysis: {
+        call_summary_title: "BACS file setup and Treasury funding handoff",
         transcript_summary:
           "Ahmed explained the bank transfer setup phase of the compensation process, covering BACS file formatting, banking detail verification for new starters, and Treasury funding coordination.",
         data_collection: {

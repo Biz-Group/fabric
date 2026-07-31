@@ -21,6 +21,7 @@ import {
   isSamePersonName,
   sanitizeContributorName,
 } from "./lib/contributorAttribution";
+import { summaryTitleFromAnalysis } from "./lib/conversationTitle";
 
 // Normalize ElevenLabs transcript to the shape our UI expects:
 // ElevenLabs returns { role: "agent"|"user", message: string, time_in_call_secs: number }
@@ -215,6 +216,7 @@ export const insertConversation = internalMutation({
       ),
     ),
     summary: v.optional(v.string()),
+    title: v.optional(v.string()),
     analysis: v.optional(v.any()),
     durationSeconds: v.optional(v.number()),
     status: v.union(
@@ -248,6 +250,7 @@ export const insertConversation = internalMutation({
       transcript: args.transcript,
       speakerLabels: args.speakerLabels,
       summary: args.summary,
+      title: args.title,
       analysis: args.analysis,
       durationSeconds: args.durationSeconds,
       status: args.status,
@@ -453,6 +456,7 @@ export const fetchConversation = action({
       if (data.status === "done") {
         const transcript = normalizeTranscript(data.transcript);
         const summary = data.analysis?.transcript_summary ?? undefined;
+        const title = summaryTitleFromAnalysis(data.analysis);
         const analysis = data.analysis ?? null;
         const durationSeconds = data.metadata?.call_duration_secs ?? undefined;
 
@@ -463,6 +467,7 @@ export const fetchConversation = action({
           ...attributionFields,
           transcript,
           summary,
+          title,
           analysis,
           durationSeconds,
           inputMode: "agent",
@@ -742,6 +747,7 @@ export const importConversation = internalAction({
 
     const transcript = normalizeTranscript(data.transcript);
     const summary = data.analysis?.transcript_summary ?? undefined;
+    const title = summaryTitleFromAnalysis(data.analysis);
     const analysis = data.analysis ?? null;
     const durationSeconds = data.metadata?.call_duration_secs ?? undefined;
 
@@ -752,6 +758,7 @@ export const importConversation = internalAction({
       contributorName: args.contributorName,
       transcript,
       summary,
+      title,
       analysis,
       durationSeconds,
       inputMode: "agent",
@@ -803,6 +810,7 @@ export const refreshConversationAnalysis = internalAction({
     const data = await response.json();
     const transcript = normalizeTranscript(data.transcript) ?? existing.transcript;
     const summary = data.analysis?.transcript_summary ?? existing.summary;
+    const title = summaryTitleFromAnalysis(data.analysis) ?? existing.title;
     const analysis = data.analysis ?? existing.analysis;
     const durationSeconds = data.metadata?.call_duration_secs ?? existing.durationSeconds;
 
@@ -811,6 +819,7 @@ export const refreshConversationAnalysis = internalAction({
       clerkOrgId: args.clerkOrgId,
       transcript,
       summary,
+      title,
       analysis,
       durationSeconds,
     });
@@ -853,6 +862,7 @@ export const updateConversationAnalysis = internalMutation({
       ),
     ),
     summary: v.optional(v.string()),
+    title: v.optional(v.string()),
     analysis: v.optional(v.any()),
     durationSeconds: v.optional(v.number()),
   },
@@ -864,6 +874,7 @@ export const updateConversationAnalysis = internalMutation({
     await ctx.db.patch(args.conversationId, {
       transcript: args.transcript,
       summary: args.summary,
+      title: args.title,
       analysis: args.analysis,
       durationSeconds: args.durationSeconds,
     });
