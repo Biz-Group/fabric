@@ -17,6 +17,11 @@ export function ServiceWorkerRegistration() {
   useEffect(() => {
     if (!("serviceWorker" in navigator)) return;
 
+    // Service workers and Turbopack's mutable development chunks must never
+    // share a cache. The root layout also removes legacy registrations before
+    // hydration so a stale worker cannot prevent this component from loading.
+    if (process.env.NODE_ENV !== "production") return;
+
     const canRegister =
       window.location.protocol === "https:" ||
       isLocalHostname(window.location.hostname);
@@ -25,16 +30,19 @@ export function ServiceWorkerRegistration() {
 
     let cancelled = false;
 
-    const register = () => {
+    const register = async () => {
       if (cancelled) return;
 
-      navigator.serviceWorker.register("/sw.js", { scope: "/" }).catch(() => {
+      await navigator.serviceWorker.register("/sw.js", {
+        scope: "/",
+        updateViaCache: "none",
+      }).catch(() => {
         // Service workers can be unavailable in some embedded previews.
       });
     };
 
     if (document.readyState === "complete") {
-      register();
+      void register();
     } else {
       window.addEventListener("load", register, { once: true });
     }

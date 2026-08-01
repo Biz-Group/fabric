@@ -1,7 +1,8 @@
 const CACHE_PREFIX = "fabric-pwa";
-const STATIC_CACHE = `${CACHE_PREFIX}-static-v1`;
+const STATIC_CACHE = `${CACHE_PREFIX}-static-v2`;
 
 const STATIC_ASSET_PATHS = [
+  "/manifest.webmanifest",
   "/fabric-icon.ico",
   "/fabric-icon-black.ico",
   "/pwa/apple-touch-icon.png",
@@ -70,7 +71,11 @@ self.addEventListener("install", (event) => {
   event.waitUntil(
     caches
       .open(STATIC_CACHE)
-      .then((cache) => cache.addAll(STATIC_ASSET_PATHS))
+      .then((cache) =>
+        Promise.allSettled(
+          STATIC_ASSET_PATHS.map((assetPath) => cache.add(assetPath)),
+        ),
+      )
       .catch(() => undefined),
   );
   self.skipWaiting();
@@ -111,21 +116,13 @@ self.addEventListener("fetch", (event) => {
     return;
   }
 
-  if (isCacheableStaticAsset(url.pathname)) {
+  // Never cache Next.js application chunks here. In development, Turbopack can
+  // reuse a chunk URL for a different module graph; in production, Next.js
+  // already gives immutable build assets content-addressed cache headers.
+  if (STATIC_ASSET_PATHS.includes(url.pathname)) {
     event.respondWith(cacheFirst(request));
   }
 });
-
-function isCacheableStaticAsset(pathname) {
-  return (
-    pathname.startsWith("/pwa/") ||
-    pathname.startsWith("/_next/static/") ||
-    pathname === "/favicon.ico" ||
-    pathname === "/fabric-icon.ico" ||
-    pathname === "/fabric-icon-black.ico" ||
-    /\.(?:avif|gif|ico|jpg|jpeg|png|svg|webp|woff|woff2)$/.test(pathname)
-  );
-}
 
 async function cacheFirst(request) {
   const cache = await caches.open(STATIC_CACHE);
