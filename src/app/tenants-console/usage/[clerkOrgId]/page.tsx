@@ -26,14 +26,15 @@ import {
   formatTimestamp,
   formatTokens,
   formatUsd,
+  resolveUsageRange,
   utcRangeEndingToday,
 } from "@/features/tenants-console/usage-format";
 import {
-  RANGE_DAYS,
   UsageCaveats,
   UsageFilters,
   UsageLedgerNote,
   UsageStatTiles,
+  rangePreset,
   toBreakdownRow,
   type DeploymentFilter,
   type RangeKey,
@@ -52,11 +53,14 @@ export default function TenantUsagePage() {
   const clerkOrgId = params.clerkOrgId;
 
   const [range, setRange] = useState<RangeKey>("30d");
+  const [custom, setCustom] = useState(() => utcRangeEndingToday(30));
   const [deployment, setDeployment] = useState<DeploymentFilter>("prod");
 
+  const availability = useQuery(api.aiUsage.usageDataRange, {});
+
   const { from, to } = useMemo(
-    () => utcRangeEndingToday(RANGE_DAYS[range]),
-    [range],
+    () => resolveUsageRange(rangePreset(range), custom, availability ?? null),
+    [range, custom, availability],
   );
 
   const deploymentArg = deployment === "all" ? {} : { deployment };
@@ -74,7 +78,7 @@ export default function TenantUsagePage() {
     { initialNumItems: LOG_PAGE_SIZE },
   );
 
-  if (data === undefined) {
+  if (data === undefined || availability === undefined) {
     return <LoadingScreen message="Loading tenant usage..." />;
   }
 
@@ -101,6 +105,9 @@ export default function TenantUsagePage() {
         <UsageFilters
           range={range}
           onRangeChange={setRange}
+          custom={custom}
+          onCustomChange={setCustom}
+          availability={availability}
           deployment={deployment}
           onDeploymentChange={setDeployment}
         />
@@ -130,7 +137,7 @@ export default function TenantUsagePage() {
         labelHeader="Operation"
         totalCostMicroUsd={data.totals.costMicroUsd}
         rows={data.byOperation.map((row) =>
-          toBreakdownRow(row, row.operation as string),
+          toBreakdownRow({ ...row, deployments: undefined }, row.operation as string),
         )}
       />
 
@@ -139,7 +146,7 @@ export default function TenantUsagePage() {
         labelHeader="Model"
         totalCostMicroUsd={data.totals.costMicroUsd}
         rows={data.byModel.map((row) =>
-          toBreakdownRow(row, row.model as string, {
+          toBreakdownRow({ ...row, deployments: undefined }, row.model as string, {
             sublabel: row.provider as string,
           }),
         )}

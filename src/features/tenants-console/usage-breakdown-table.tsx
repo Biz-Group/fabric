@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { Badge } from "@/components/ui/badge";
 import {
   Table,
   TableBody,
@@ -37,7 +38,29 @@ export type BreakdownRow = {
   unpricedCount: number;
   synthesisTokens: number;
   agentTokens: number;
+  /**
+   * Which deployments contributed. A row can span both when the filter is
+   * "prod + dev", so this is a list rather than a single value.
+   */
+  deployments?: string[];
 };
+
+/** Renders as text, not colour alone — a badge with a word in it. */
+function DeploymentCell({ deployments }: { deployments: string[] }) {
+  if (deployments.length === 0) return <span className="text-muted-foreground">—</span>;
+  return (
+    <div className="flex flex-wrap justify-end gap-1">
+      {deployments.map((deployment) => (
+        <Badge
+          key={deployment}
+          variant={deployment === "prod" ? "secondary" : "outline"}
+        >
+          {deployment}
+        </Badge>
+      ))}
+    </div>
+  );
+}
 
 export function UsageBreakdownTable({
   title,
@@ -55,6 +78,8 @@ export function UsageBreakdownTable({
   emptyMessage?: string;
 }) {
   const max = Math.max(...rows.map((r) => r.costMicroUsd), 1);
+  // Only shown where it carries information — the caller supplies deployments.
+  const showDeployment = rows.some((row) => row.deployments !== undefined);
 
   return (
     <section className="space-y-3">
@@ -90,6 +115,9 @@ export function UsageBreakdownTable({
                   Synthesis tokens
                 </TableHead>
                 <TableHead className="text-right">Agent LLM tokens</TableHead>
+                {showDeployment && (
+                  <TableHead className="text-right">Deployment</TableHead>
+                )}
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -155,6 +183,11 @@ export function UsageBreakdownTable({
                   <TableCell className="text-right tabular-nums">
                     {formatTokens(row.agentTokens)}
                   </TableCell>
+                  {showDeployment && (
+                    <TableCell className="text-right">
+                      <DeploymentCell deployments={row.deployments ?? []} />
+                    </TableCell>
+                  )}
                 </TableRow>
               ))}
             </TableBody>

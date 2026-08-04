@@ -6,6 +6,7 @@ import {
   formatTokens,
   formatUsd,
   formatUsdCompact,
+  resolveUsageRange,
   utcDayKey,
   utcRangeEndingToday,
 } from "./usage-format";
@@ -105,5 +106,67 @@ describe("utc helpers", () => {
 
   test("passes through an unparseable period rather than showing NaN", () => {
     expect(formatPeriod("not-a-day")).toBe("not-a-day");
+  });
+});
+
+describe("resolveUsageRange", () => {
+  const today = utcDayKey();
+  const custom = { from: "2026-07-01", to: "2026-07-15" };
+
+  test("clamps a preset start to the first day that has data", () => {
+    // Without this a 90-day preset on a young ledger flags ~76 days as
+    // "no rollup yet", which reads as a broken fold rather than as a ledger
+    // that did not exist then.
+    const availability = { earliest: "2026-08-01", latest: today };
+    expect(resolveUsageRange(90, custom, availability).from).toBe("2026-08-01");
+  });
+
+  test("leaves a preset start alone when data reaches further back", () => {
+    const availability = { earliest: "2020-01-01", latest: today };
+    const range = resolveUsageRange(7, custom, availability);
+    expect(range.from).toBe(utcRangeEndingToday(7).from);
+  });
+
+  test("always ends the window at today, even if data is older", () => {
+    // A gap between the newest data and today is a signal (nothing recorded, or
+    // the fold has stalled) and must stay visible rather than being hidden by
+    // shrinking the range.
+    const availability = { earliest: "2026-07-01", latest: "2026-07-20" };
+    expect(resolveUsageRange(30, custom, availability).to).toBe(today);
+  });
+
+  test("falls back to the raw preset when there is no data at all", () => {
+    expect(resolveUsageRange(30, custom, null)).toEqual(
+      utcRangeEndingToday(30),
+    );
+  });
+
+  test("clamps a custom range into the available window", () => {
+    const availability = { earliest: "2026-07-05", latest: "2026-07-10" };
+    expect(
+      resolveUsageRange("custom", { from: "2026-01-01", to: "2026-12-31" }, availability),
+    ).toEqual({ from: "2026-07-05", to: "2026-07-10" });
+  });
+
+  test("swaps a reversed custom range instead of querying an empty window", () => {
+    expect(
+      resolveUsageRange("custom", { from: "2026-07-15", to: "2026-07-01" }, null),
+    ).toEqual({ from: "2026-07-01", to: "2026-07-15" });
+  });
+
+  test("pulls a wholly out-of-range custom selection back to the data", () => {
+    const availability = { earliest: "2026-07-05", latest: "2026-07-10" };
+    const range = resolveUsageRange(
+      "custom",
+      { from: "2030-01-01", to: "2030-02-01" },
+      availability,
+    );
+    expect(range.from).toBe("2026-07-10");
+    expect(range.to).toBe("2026-07-10");
+  });
+
+  test("leaves a valid custom range untouched", () => {
+    const availability = { earliest: "2026-06-01", latest: "2026-08-01" };
+    expect(resolveUsageRange("custom", custom, availability)).toEqual(custom);
   });
 });

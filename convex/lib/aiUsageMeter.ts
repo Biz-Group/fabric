@@ -68,6 +68,15 @@ export function resolveDeploymentLabel(): DeploymentLabel {
   return "dev";
 }
 
+/**
+ * Test seam. The warn-once flag is module state, so any earlier test that
+ * happens to resolve a label would otherwise consume it and make the
+ * warning test fail depending on execution order.
+ */
+export function resetDeploymentLabelWarning(): void {
+  warnedMissingLabel = false;
+}
+
 type CompletionEventInput = {
   attribution: UsageAttribution;
   request: AIRequest;

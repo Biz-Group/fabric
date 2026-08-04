@@ -356,9 +356,16 @@ http.route({
   handler: httpAction(async (ctx, req) => {
     const secret = process.env.USAGE_SINK_SECRET?.trim();
     if (!secret) {
-      // Not configured as a sink — behave as if the route does not exist rather
-      // than advertising an unprotected endpoint.
-      return new Response("Not found", { status: 404 });
+      // 503, NOT 404. An earlier version returned 404 here to avoid advertising
+      // the endpoint — but Convex also returns 404 for an unmatched route, which
+      // made "this deployment isn't configured as a sink" indistinguishable from
+      // "your URL is wrong". Those need completely different fixes, so the status
+      // has to tell them apart. Knowing the route exists buys an attacker
+      // nothing: it is bearer-authenticated and names no secret.
+      return new Response(
+        "ai-usage ingest is not configured on this deployment: set USAGE_SINK_SECRET",
+        { status: 503 },
+      );
     }
 
     const authorization = req.headers.get("authorization") ?? "";
@@ -390,9 +397,14 @@ http.route({
     try {
       // The rows are checked by `ingestBatch`'s own argument validator — a
       // malformed one rejects the whole batch, which the sender then retries.
+      // `?dryRun=1` validates auth, routing and row shape without writing, so
+      // this endpoint can be diagnosed without putting probe rows into a
+      // production billing ledger.
+      const dryRun = new URL(req.url).searchParams.get("dryRun") !== null;
       const result = await ctx.runMutation(internal.aiUsage.ingestBatch, {
         events,
         localDeployment,
+        ...(dryRun ? { dryRun: true } : {}),
       });
       return Response.json(result);
     } catch (error) {

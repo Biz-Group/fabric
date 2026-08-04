@@ -306,26 +306,107 @@ async function collectUsageGroups(
   return { groups, missingPeriods, partial };
 }
 
+/**
+ * Resolves tenant display names for a set of org ids.
+ *
+ * A read-time join rather than a value stamped onto every ledger row: it costs
+ * nothing on the AI call path, and a renamed tenant is reflected immediately
+ * instead of leaving old rows labelled with a stale name.
+ *
+ * One lookup per DISTINCT org in the result, not per row — the callers pass an
+ * already-grouped id list.
+ *
+ * Forwarded dev rows are the case this cannot serve: their `clerkOrgId` may
+ * belong to a different Clerk instance and have no local `tenants` row, which is
+ * exactly what the denormalized `tenantName` on the event is for. Callers fall
+ * back to it.
+ */
+async function resolveTenantNames(
+  ctx: QueryCtx,
+  clerkOrgIds: readonly string[],
+): Promise<Map<string, string>> {
+  const names = new Map<string, string>();
+  for (const clerkOrgId of new Set(clerkOrgIds)) {
+    const tenant = await ctx.db
+      .query("tenants")
+      .withIndex("by_clerkOrgId", (q) => q.eq("clerkOrgId", clerkOrgId))
+      .unique();
+    if (tenant) names.set(clerkOrgId, tenant.name);
+  }
+  return names;
+}
+
+type SummarizedRow = { key: string } & Record<string, unknown> & UsageTotals;
+
 function summarizeBy(
   groups: readonly UsageRollupGroup[],
   key: (group: UsageRollupGroup) => string,
   label: (group: UsageRollupGroup) => Record<string, string | undefined>,
-): Array<{ key: string } & Record<string, unknown> & UsageTotals> {
+): Array<SummarizedRow & { deployments: string[] }> {
   const map = new Map<
     string,
-    { key: string } & Record<string, unknown> & UsageTotals
+    { entry: SummarizedRow; deployments: Set<string> }
   >();
   for (const group of groups) {
     const id = key(group);
-    let entry = map.get(id);
-    if (!entry) {
-      entry = { key: id, ...label(group), ...emptyUsageTotals() };
-      map.set(id, entry);
+    let bucket = map.get(id);
+    if (!bucket) {
+      bucket = {
+        entry: { key: id, ...label(group), ...emptyUsageTotals() },
+        deployments: new Set<string>(),
+      };
+      map.set(id, bucket);
     }
-    addGroup(entry, group);
+    // Which deployments a row spans is a property of the group, not of any one
+    // row, so it has to be collected here rather than read off a sample.
+    bucket.deployments.add(group.deployment);
+    addGroup(bucket.entry, group);
   }
-  return [...map.values()].sort((a, b) => b.costMicroUsd - a.costMicroUsd);
+  return [...map.values()]
+    .map(({ entry, deployments }) => ({
+      ...entry,
+      deployments: [...deployments].sort(),
+    }))
+    .sort((a, b) => b.costMicroUsd - a.costMicroUsd);
 }
+
+/**
+ * The UTC days for which any usage exists, for bounding the range picker.
+ *
+ * Checks both tables because they cover different windows: rollups hold closed
+ * days (and outlive the ledger's 180-day retention), the ledger holds today and
+ * anything not yet folded. Four indexed `.first()` reads, no scan.
+ */
+export const usageDataRange = query({
+  args: {},
+  handler: async (
+    ctx,
+  ): Promise<{ earliest: string; latest: string } | null> => {
+    await requireSuperAdmin(ctx);
+
+    const [firstRollup, lastRollup, firstEvent, lastEvent] = await Promise.all([
+      ctx.db.query("aiUsageRollups").withIndex("by_period").order("asc").first(),
+      ctx.db.query("aiUsageRollups").withIndex("by_period").order("desc").first(),
+      ctx.db.query("aiUsageEvents").withIndex("by_createdAt").order("asc").first(),
+      ctx.db.query("aiUsageEvents").withIndex("by_createdAt").order("desc").first(),
+    ]);
+
+    const candidates = [
+      firstRollup?.period,
+      lastRollup?.period,
+      firstEvent ? utcDayKey(firstEvent.createdAt) : undefined,
+      lastEvent ? utcDayKey(lastEvent.createdAt) : undefined,
+    ].filter((period): period is string => period !== undefined);
+
+    if (candidates.length === 0) return null;
+    // `YYYY-MM-DD` sorts lexicographically, so string compare is date compare.
+    candidates.sort();
+    return {
+      earliest: candidates[0]!,
+      latest: candidates[candidates.length - 1]!,
+    };
+  },
+});
 
 /** Platform-wide usage for a date range. */
 export const usageOverview = query({
@@ -351,14 +432,26 @@ export const usageOverview = query({
       (g) => ({ period: g.period }),
     ).sort((a, b) => String(a.key).localeCompare(String(b.key)));
 
+    const byTenant = summarizeBy(
+      groups,
+      (g) => g.clerkOrgId,
+      (g) => ({ clerkOrgId: g.clerkOrgId, tenantName: g.tenantName }),
+    );
+    // Live name wins; the row's stored name covers forwarded dev tenants that
+    // have no local `tenants` row; the org id is the last resort.
+    const tenantNames = await resolveTenantNames(
+      ctx,
+      byTenant.map((row) => row.clerkOrgId as string),
+    );
+    for (const row of byTenant) {
+      row.tenantName =
+        tenantNames.get(row.clerkOrgId as string) ?? row.tenantName;
+    }
+
     return {
       totals,
       byDay,
-      byTenant: summarizeBy(
-        groups,
-        (g) => g.clerkOrgId,
-        (g) => ({ clerkOrgId: g.clerkOrgId, tenantName: g.tenantName }),
-      ),
+      byTenant,
       byOperation: summarizeBy(
         groups,
         (g) => g.operation,
@@ -393,9 +486,13 @@ export const usageForTenant = query({
     const totals = emptyUsageTotals();
     for (const group of groups) addGroup(totals, group);
 
+    const liveName = (
+      await resolveTenantNames(ctx, [args.clerkOrgId])
+    ).get(args.clerkOrgId);
+
     return {
       totals,
-      tenantName: groups.find((g) => g.tenantName)?.tenantName,
+      tenantName: liveName ?? groups.find((g) => g.tenantName)?.tenantName,
       byDay: summarizeBy(
         groups,
         (g) => g.period,
@@ -463,6 +560,19 @@ const FORWARD_BATCH_SIZE = 100;
 const FORWARD_ATTEMPT_ALARM = 5;
 
 /**
+ * Host + path of the sink, safe to log. The secret is sent as a header and never
+ * appears here; a URL could still carry a query string, so it is dropped.
+ */
+function sinkHostAndPath(sinkUrl: string): string {
+  try {
+    const url = new URL(sinkUrl);
+    return `${url.host}${url.pathname}`;
+  } catch {
+    return "<unparseable USAGE_SINK_URL>";
+  }
+}
+
+/**
  * Projects a stored row down to exactly the fields the sink accepts.
  *
  * Derived from `aiUsageEventFields` rather than by destructuring away the
@@ -488,6 +598,14 @@ export const listUnforwarded = internalQuery({
       .query("aiUsageEvents")
       .withIndex("by_forwardedAt", (q) => q.eq("forwardedAt", undefined))
       .take(Math.min(args.limit ?? FORWARD_BATCH_SIZE, FORWARD_BATCH_SIZE));
+  },
+});
+
+export const tenantNamesForOrgs = internalQuery({
+  args: { clerkOrgIds: v.array(v.string()) },
+  handler: async (ctx, args): Promise<Record<string, string>> => {
+    const names = await resolveTenantNames(ctx, args.clerkOrgIds);
+    return Object.fromEntries(names);
   },
 });
 
@@ -540,10 +658,25 @@ export const forwardPendingUsage = internalAction({
         count: stuck.length,
         oldestCreatedAt: stuck[0]?.createdAt,
         attempts: stuck[0]?.forwardAttempts,
+        sink: sinkHostAndPath(sinkUrl),
+        // The rejection logged immediately after this says why.
+        hint: "See the sink response logged below for the cause.",
       });
     }
 
-    const events = rows.map(toForwardableEvent);
+    // Stamp the tenant name on the way out. The sink cannot resolve it: a dev
+    // `clerkOrgId` may belong to a different Clerk instance and have no row in
+    // prod's `tenants` table, so without this the merged console can only show
+    // dev tenants as raw org ids.
+    const localNames: Record<string, string> = await ctx.runQuery(
+      internal.aiUsage.tenantNamesForOrgs,
+      { clerkOrgIds: [...new Set(rows.map((row) => row.clerkOrgId))] },
+    );
+    const events = rows.map((row) => {
+      const event = toForwardableEvent(row);
+      const name = event.tenantName ?? localNames[row.clerkOrgId];
+      return name === undefined ? event : { ...event, tenantName: name };
+    });
 
     let response: Response;
     try {
@@ -567,17 +700,63 @@ export const forwardPendingUsage = internalAction({
     }
 
     if (!response.ok) {
-      await response.body?.cancel();
+      // Read the body: it is what distinguishes the failure modes, and each one
+      // has a different fix.
+      const detail = await response.text().catch(() => "");
       await ctx.runMutation(internal.aiUsage.recordForwardFailure, {
         ids: rows.map((row) => row._id),
       });
+
+      const diagnosis =
+        response.status === 503
+          ? "The sink deployment is reachable but has no USAGE_SINK_SECRET set."
+          : response.status === 404
+            ? "Nothing is serving this path. Check USAGE_SINK_URL against the " +
+              "sink's 'HTTP Actions URL' in its dashboard: it must be " +
+              ".convex.site (not .convex.cloud) AND must include the region " +
+              "segment for a regionalized deployment (e.g. " +
+              "<deployment>.eu-west-1.convex.site). A missing region resolves " +
+              "to a different host that returns a bare 404."
+            : response.status === 401
+              ? "USAGE_SINK_SECRET does not match the sink's."
+              : "Unexpected sink response.";
+
       console.error("AI usage sink rejected a batch", {
         status: response.status,
         count: rows.length,
+        // Host and path only — the secret travels in a header and is never logged.
+        sink: sinkHostAndPath(sinkUrl),
+        detail: detail.slice(0, 200),
+        diagnosis,
       });
       return { forwarded: 0, pending: rows.length };
     }
-    await response.body?.cancel();
+    // A 2xx is NOT sufficient: `ingestBatch` returns {accepted, rejected} and
+    // rejects rows whose deployment matches the sink's own label — which is what
+    // happens if USAGE_SINK_URL points at this deployment. Marking those
+    // forwarded would silently discard billing rows while reporting success, so
+    // the batch is only cleared when the sink accepted all of it.
+    const body: unknown = await response.json().catch(() => null);
+    const rejected =
+      typeof (body as { rejected?: unknown })?.rejected === "number"
+        ? (body as { rejected: number }).rejected
+        : 0;
+
+    if (rejected > 0) {
+      await ctx.runMutation(internal.aiUsage.recordForwardFailure, {
+        ids: rows.map((row) => row._id),
+      });
+      console.error("AI usage sink accepted the request but rejected rows", {
+        rejected,
+        count: rows.length,
+        sink: sinkHostAndPath(sinkUrl),
+        diagnosis:
+          "The sink rejected rows labelled with its own deployment. " +
+          "USAGE_SINK_URL is almost certainly pointing at this deployment " +
+          "instead of the other one.",
+      });
+      return { forwarded: 0, pending: rows.length };
+    }
 
     await ctx.runMutation(internal.aiUsage.markForwarded, {
       ids: rows.map((row) => row._id),
@@ -599,17 +778,30 @@ export const ingestBatch = internalMutation({
   args: {
     events: v.array(aiUsageEventValidator),
     localDeployment: v.union(v.literal("prod"), v.literal("dev")),
+    /**
+     * Validates auth, routing and every row's shape, then writes nothing.
+     *
+     * Exists because diagnosing this endpoint otherwise means POSTing real rows
+     * into a production billing ledger — which is exactly the mistake that
+     * prompted it. Convex validates `events` against the validator before the
+     * handler runs, so a malformed row still fails here.
+     */
+    dryRun: v.optional(v.boolean()),
   },
   handler: async (
     ctx,
     args,
-  ): Promise<{ accepted: number; rejected: number }> => {
+  ): Promise<{ accepted: number; rejected: number; dryRun?: boolean }> => {
     let accepted = 0;
     let rejected = 0;
 
     for (const event of args.events) {
       if (event.deployment === args.localDeployment) {
         rejected += 1;
+        continue;
+      }
+      if (args.dryRun) {
+        accepted += 1;
         continue;
       }
       const existing = await ctx.db
@@ -634,7 +826,9 @@ export const ingestBatch = internalMutation({
         localDeployment: args.localDeployment,
       });
     }
-    return { accepted, rejected };
+    return args.dryRun
+      ? { accepted, rejected, dryRun: true }
+      : { accepted, rejected };
   },
 });
 

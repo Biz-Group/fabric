@@ -1,6 +1,9 @@
 "use client";
 
+import type { FunctionReturnType } from "convex/server";
 import { AlertTriangle, Info } from "lucide-react";
+import type { api } from "../../../convex/_generated/api";
+import { Input } from "@/components/ui/input";
 import {
   Select,
   SelectContent,
@@ -13,40 +16,40 @@ import {
   formatDuration,
   formatTokens,
   formatUsd,
+  type DataAvailability,
+  type UsageRange,
 } from "./usage-format";
 import type { BreakdownRow } from "./usage-breakdown-table";
 
 export type DeploymentFilter = "prod" | "dev" | "all";
-export type RangeKey = "7d" | "30d" | "90d";
+export type RangeKey = "7d" | "30d" | "60d" | "90d" | "custom";
 
-export const RANGE_DAYS: Record<RangeKey, number> = {
+export const RANGE_DAYS: Record<Exclude<RangeKey, "custom">, number> = {
   "7d": 7,
   "30d": 30,
+  "60d": 60,
   "90d": 90,
 };
 
-/** The totals shape returned by `usageOverview` / `usageForTenant`. */
-export type UsageTotals = {
-  costMicroUsd: number;
-  providerReportedCostMicroUsd: number;
-  callCount: number;
-  failedCount: number;
-  truncatedCount: number;
-  unpricedCount: number;
-  seconds: number;
-  synthesisInputTokens: number;
-  synthesisOutputTokens: number;
-  synthesisCachedReadTokens: number;
-  synthesisCacheWriteTokens: number;
-  agentInputTokens: number;
-  agentOutputTokens: number;
-  agentCachedReadTokens: number;
-  agentCacheWriteTokens: number;
-};
+/** The `preset` argument `resolveUsageRange` expects. */
+export function rangePreset(range: RangeKey): number | "custom" {
+  return range === "custom" ? "custom" : RANGE_DAYS[range];
+}
+
+/**
+ * Derived from the query's return type rather than restated.
+ *
+ * It was declared by hand here and again in `convex/aiUsage.ts`, which meant
+ * adding a totals field silently left the UI's copy stale. Deriving it makes that
+ * a compile error instead.
+ */
+export type UsageTotals = FunctionReturnType<
+  typeof api.aiUsage.usageOverview
+>["totals"];
 
 /** Maps a summarize-by row from the server onto the breakdown table's shape. */
 export function toBreakdownRow(
-  row: UsageTotals & { key: string },
+  row: UsageTotals & { key: string; deployments?: string[] },
   label: string,
   extras: { sublabel?: string; href?: string } = {},
 ): BreakdownRow {
@@ -55,6 +58,7 @@ export function toBreakdownRow(
     label,
     sublabel: extras.sublabel,
     href: extras.href,
+    deployments: row.deployments,
     costMicroUsd: row.costMicroUsd,
     callCount: row.callCount,
     failedCount: row.failedCount,
@@ -67,14 +71,25 @@ export function toBreakdownRow(
 export function UsageFilters({
   range,
   onRangeChange,
+  custom,
+  onCustomChange,
+  availability,
   deployment,
   onDeploymentChange,
 }: {
   range: RangeKey;
   onRangeChange: (value: RangeKey) => void;
+  custom: UsageRange;
+  onCustomChange: (value: UsageRange) => void;
+  availability: DataAvailability;
   deployment: DeploymentFilter;
   onDeploymentChange: (value: DeploymentFilter) => void;
 }) {
+  // Bounds come from the data, so the picker cannot select a window that is
+  // guaranteed to be empty.
+  const min = availability?.earliest;
+  const max = availability?.latest;
+
   return (
     <div className="flex flex-wrap items-center gap-2">
       <Select value={range} onValueChange={(v) => onRangeChange(v as RangeKey)}>
@@ -84,9 +99,39 @@ export function UsageFilters({
         <SelectContent>
           <SelectItem value="7d">Last 7 days</SelectItem>
           <SelectItem value="30d">Last 30 days</SelectItem>
+          <SelectItem value="60d">Last 60 days</SelectItem>
           <SelectItem value="90d">Last 90 days</SelectItem>
+          <SelectItem value="custom" disabled={!availability}>
+            Custom range
+          </SelectItem>
         </SelectContent>
       </Select>
+
+      {range === "custom" && (
+        <div className="flex items-center gap-1.5">
+          <Input
+            type="date"
+            aria-label="Range start"
+            className="w-[150px]"
+            value={custom.from}
+            min={min}
+            max={max}
+            onChange={(e) =>
+              onCustomChange({ ...custom, from: e.target.value })
+            }
+          />
+          <span className="text-xs text-muted-foreground">to</span>
+          <Input
+            type="date"
+            aria-label="Range end"
+            className="w-[150px]"
+            value={custom.to}
+            min={min}
+            max={max}
+            onChange={(e) => onCustomChange({ ...custom, to: e.target.value })}
+          />
+        </div>
+      )}
 
       <Select
         value={deployment}

@@ -155,7 +155,7 @@ function warnUnpriced(kind: string, key: string): void {
   });
 }
 
-export function tokenRateKey(provider: string, model: string): string {
+function tokenRateKey(provider: string, model: string): string {
   return `${provider}:${model}`;
 }
 

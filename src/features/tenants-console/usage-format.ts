@@ -106,3 +106,46 @@ export function utcRangeEndingToday(days: number): {
   const from = utcDayKey(Date.now() - (days - 1) * 24 * 60 * 60 * 1000);
   return { from, to };
 }
+
+export type DataAvailability = { earliest: string; latest: string } | null;
+
+export type UsageRange = { from: string; to: string };
+
+/**
+ * Turns a preset (or a custom range) into the query window, clamped to the days
+ * that actually hold data.
+ *
+ * Clamping the start matters for more than tidiness: without it a 90-day preset
+ * on a two-week-old ledger reports ~76 days as "no rollup yet", which reads as a
+ * broken fold rather than as a ledger that simply did not exist then.
+ *
+ * The END is deliberately NOT clamped to the newest data — the window runs to
+ * today so a genuine gap (nothing recorded for three days, or a fold that has
+ * stopped) stays visible instead of being hidden by shrinking the range.
+ *
+ * All comparisons are plain string compares: `YYYY-MM-DD` sorts as dates do.
+ */
+export function resolveUsageRange(
+  preset: number | "custom",
+  custom: UsageRange,
+  availability: DataAvailability,
+): UsageRange {
+  if (preset === "custom") {
+    // Keep the picker inside the available window, and keep from <= to.
+    let { from, to } = custom;
+    if (availability) {
+      if (from < availability.earliest) from = availability.earliest;
+      if (to > availability.latest) to = availability.latest;
+      if (from > availability.latest) from = availability.latest;
+      if (to < availability.earliest) to = availability.earliest;
+    }
+    return from > to ? { from: to, to: from } : { from, to };
+  }
+
+  const raw = utcRangeEndingToday(preset);
+  if (!availability) return raw;
+  return {
+    from: raw.from < availability.earliest ? availability.earliest : raw.from,
+    to: raw.to,
+  };
+}

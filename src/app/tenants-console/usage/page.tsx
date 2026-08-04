@@ -6,13 +6,16 @@ import { api } from "../../../../convex/_generated/api";
 import { LoadingScreen } from "@/components/ui/loading-screen";
 import { UsageBreakdownTable } from "@/features/tenants-console/usage-breakdown-table";
 import { UsageCostChart } from "@/features/tenants-console/usage-cost-chart";
-import { utcRangeEndingToday } from "@/features/tenants-console/usage-format";
 import {
-  RANGE_DAYS,
+  resolveUsageRange,
+  utcRangeEndingToday,
+} from "@/features/tenants-console/usage-format";
+import {
   UsageCaveats,
   UsageFilters,
   UsageLedgerNote,
   UsageStatTiles,
+  rangePreset,
   toBreakdownRow,
   type DeploymentFilter,
   type RangeKey,
@@ -20,13 +23,16 @@ import {
 
 export default function UsageOverviewPage() {
   const [range, setRange] = useState<RangeKey>("30d");
+  const [custom, setCustom] = useState(() => utcRangeEndingToday(30));
   // Prod by default — dev usage is real but should never quietly inflate the
   // production picture.
   const [deployment, setDeployment] = useState<DeploymentFilter>("prod");
 
+  const availability = useQuery(api.aiUsage.usageDataRange, {});
+
   const { from, to } = useMemo(
-    () => utcRangeEndingToday(RANGE_DAYS[range]),
-    [range],
+    () => resolveUsageRange(rangePreset(range), custom, availability ?? null),
+    [range, custom, availability],
   );
 
   const data = useQuery(api.aiUsage.usageOverview, {
@@ -35,7 +41,7 @@ export default function UsageOverviewPage() {
     ...(deployment === "all" ? {} : { deployment }),
   });
 
-  if (data === undefined) {
+  if (data === undefined || availability === undefined) {
     return <LoadingScreen message="Loading usage..." />;
   }
 
@@ -51,6 +57,9 @@ export default function UsageOverviewPage() {
         <UsageFilters
           range={range}
           onRangeChange={setRange}
+          custom={custom}
+          onCustomChange={setCustom}
+          availability={availability}
           deployment={deployment}
           onDeploymentChange={setDeployment}
         />
@@ -86,19 +95,17 @@ export default function UsageOverviewPage() {
         description="Highest spend first. Select a tenant for its per-call log."
         labelHeader="Tenant"
         totalCostMicroUsd={data.totals.costMicroUsd}
-        rows={data.byTenant.map((row) =>
-          toBreakdownRow(
-            row,
-            (row.tenantName as string | undefined) ??
-              (row.clerkOrgId as string),
-            {
-              sublabel: row.tenantName
-                ? (row.clerkOrgId as string)
-                : undefined,
-              href: `/usage/${row.clerkOrgId as string}`,
-            },
-          ),
-        )}
+        rows={data.byTenant.map((row) => {
+          const clerkOrgId = row.clerkOrgId as string;
+          const name = row.tenantName as string | undefined;
+          return toBreakdownRow(row, name ?? clerkOrgId, {
+            // An unresolvable name is itself information: the tenant was
+            // deleted, or the row came from a deployment on a different Clerk
+            // instance. Say so instead of showing a bare id.
+            sublabel: name ? clerkOrgId : `${clerkOrgId} · not in tenant registry`,
+            href: `/usage/${clerkOrgId}`,
+          });
+        })}
       />
 
       <UsageBreakdownTable
@@ -107,7 +114,9 @@ export default function UsageOverviewPage() {
         labelHeader="Operation"
         totalCostMicroUsd={data.totals.costMicroUsd}
         rows={data.byOperation.map((row) =>
-          toBreakdownRow(row, row.operation as string),
+          // No deployment column here: an operation runs on both deployments by
+          // definition, so the column would read "prod dev" on every row.
+          toBreakdownRow({ ...row, deployments: undefined }, row.operation as string),
         )}
       />
 
@@ -117,7 +126,7 @@ export default function UsageOverviewPage() {
         labelHeader="Model"
         totalCostMicroUsd={data.totals.costMicroUsd}
         rows={data.byModel.map((row) =>
-          toBreakdownRow(row, row.model as string, {
+          toBreakdownRow({ ...row, deployments: undefined }, row.model as string, {
             sublabel: row.provider as string,
           }),
         )}

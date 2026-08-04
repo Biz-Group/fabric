@@ -614,6 +614,25 @@ call has produced a row yet.
 
 Four decisions worth recording:
 
+0. **The ingest route returns 503, not 404, when the deployment is not a sink.**
+   The first version returned 404 to avoid advertising the endpoint. That was a
+   mistake: Convex also returns 404 for an unmatched route, so "prod is missing
+   `USAGE_SINK_SECRET`" and "your `USAGE_SINK_URL` is wrong" produced identical
+   logs despite needing completely different fixes. Knowing the route exists buys
+   an attacker nothing — it is bearer-authenticated and the body names no secret.
+   The forwarder now logs the sink host+path (never the secret), the response
+   body, and a per-status diagnosis.
+0a. **`POST /ai-usage/ingest?dryRun=1` validates without writing.** Auth,
+   routing and every row's shape are checked (Convex validates the args before
+   the handler runs), then nothing is inserted. Added after diagnosing this
+   endpoint the wrong way — by POSTing a probe row into the production ledger.
+   Use the dry run instead.
+0b. **A 2xx from the sink is not treated as success on its own.** `ingestBatch`
+   returns `{accepted, rejected}` and rejects rows labelled with the sink's own
+   deployment — which is what happens when `USAGE_SINK_URL` points at the sending
+   deployment. Clearing the batch on HTTP status alone would mark those rows
+   forwarded while discarding them: silent loss of billing data, reported as
+   success. The forwarder now only clears a batch when `rejected === 0`.
 1. **Forward failures retry forever.** No abandonment path. A persistently
    failing sink means unforwarded rows accumulate — which is the correct signal
    ("go fix the sink") rather than silently discarding billing data. The batch
@@ -671,6 +690,39 @@ for the undefined case.
 
 Removed as scaffolding: the Phase 0 `listRecent` query, now fully superseded by
 `usageLog`.
+
+**The range picker is bounded by real data.** `usageDataRange` returns the
+earliest and latest UTC day holding usage — four indexed `.first()` reads across
+both tables, because they cover different windows (rollups outlive the ledger's
+180-day retention; the ledger holds today and anything unfolded). Presets are
+7/30/60/90 days plus a custom picker whose inputs are `min`/`max`-bounded to that
+window.
+
+`resolveUsageRange` clamps the preset **start** to the earliest available day.
+This is not cosmetic: without it a 90-day preset on a two-week-old ledger reports
+~76 days as "no rollup yet", which reads as a broken fold rather than as a ledger
+that did not exist then. The **end** is deliberately never clamped to the newest
+data — a gap between the last recorded day and today is a real signal (nothing
+recorded, or a stalled fold) and must stay visible rather than be hidden by
+shrinking the window.
+
+**The by-tenant table carries a deployment column.** `summarizeBy` collects the
+set of deployments contributing to each group, so a tenant active on both reads
+`prod dev` under the "Prod + dev" filter. Applied to the tenant breakdown only —
+on by-operation and by-model every row would say `prod dev` by definition, so the
+column is suppressed there rather than adding a constant.
+
+**Tenant names are a read-time join, not a stamped value.** `resolveTenantNames`
+looks each org up in `tenants` at query time — one lookup per *distinct* tenant in
+the result. Deliberately not written onto every ledger row: that would be a
+database read on the AI call path, and a renamed tenant would leave older rows
+labelled with a stale name. The stored `tenantName` remains the fallback for the
+one case a join cannot serve — a forwarded dev row whose `clerkOrgId` belongs to
+a different Clerk instance and has no local `tenants` row — and
+`forwardPendingUsage` now stamps it on the way out for exactly that reason. When
+neither resolves, the table says "not in tenant registry" rather than showing a
+bare id, because an unresolvable name is itself a signal (deleted tenant, or a
+foreign Clerk instance).
 
 Not yet verified live: the pages have not been opened against real rollup data —
 `next build` compiles both routes and the queries typecheck, but no fold has run
