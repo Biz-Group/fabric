@@ -10,7 +10,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "foundry:smoke": "node scripts/foundry-smoke.mjs",
-    "foundry:throughput": "node scripts/foundry-throughput.mjs"
+    "foundry:throughput": "node scripts/foundry-throughput.mjs",
+    "elevenlabs:charging": "node scripts/elevenlabs-charging-probe.mjs"
   },
   "dependencies": {
     "@anthropic-ai/foundry-sdk": "^0.4.0",

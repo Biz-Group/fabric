@@ -6,9 +6,9 @@ import { resolveOrgForAction } from "./lib/orgAuth";
 import {
   AITruncationError,
   assertCompletionNotTruncated,
-  generateAICompletion,
   isAIConfigured,
 } from "./lib/aiProvider";
+import { meteredCompletion } from "./lib/aiUsageMeter";
 
 // --- Shared Prompt Constants ---
 
@@ -75,7 +75,10 @@ export const generateDepartmentSummary = action({
     args,
   ): Promise<{ summary: string | null; message: string | null }> => {
     const { orgId } = await resolveOrgForAction(ctx);
-    await ctx.runQuery(internal.postCall.requireOrgContributorInternal, {});
+    const caller = await ctx.runQuery(
+      internal.postCall.requireOrgContributorInternal,
+      {},
+    );
 
     const dept: Doc<"departments"> | null = await ctx.runQuery(
       internal.summariesHelpers.getDepartment,
@@ -118,13 +121,23 @@ export const generateDepartmentSummary = action({
 
     let generated: string | null;
     try {
-      const completion = await generateAICompletion({
-        capability: "synthesis",
-        operation: "department-summary",
-        system: DEPARTMENT_SUMMARY_SYSTEM_PROMPT,
-        user: `Here are the process summaries for this department:\n\n${summaryBlock}`,
-        maxTokens: ROLLUP_SUMMARY_MAX_TOKENS,
-      });
+      const completion = await meteredCompletion(
+        ctx,
+        {
+          clerkOrgId: orgId,
+          entityType: "department",
+          entityId: args.departmentId,
+          entityLabel: dept.name,
+          actorUserId: caller.userId,
+        },
+        {
+          capability: "synthesis",
+          operation: "department-summary",
+          system: DEPARTMENT_SUMMARY_SYSTEM_PROMPT,
+          user: `Here are the process summaries for this department:\n\n${summaryBlock}`,
+          maxTokens: ROLLUP_SUMMARY_MAX_TOKENS,
+        },
+      );
       assertCompletionNotTruncated(
         completion,
         "department-summary",
@@ -172,7 +185,10 @@ export const generateFunctionSummary = action({
     args,
   ): Promise<{ summary: string | null; message: string | null }> => {
     const { orgId } = await resolveOrgForAction(ctx);
-    await ctx.runQuery(internal.postCall.requireOrgContributorInternal, {});
+    const caller = await ctx.runQuery(
+      internal.postCall.requireOrgContributorInternal,
+      {},
+    );
 
     const func: Doc<"functions"> | null = await ctx.runQuery(
       internal.summariesHelpers.getFunction,
@@ -248,13 +264,23 @@ export const generateFunctionSummary = action({
 
     let summary: string | null;
     try {
-      const completion = await generateAICompletion({
-        capability: "synthesis",
-        operation: "function-summary",
-        system: FUNCTION_SUMMARY_SYSTEM_PROMPT,
-        user: `Here are the department summaries for this function:\n\n${summaryBlock}`,
-        maxTokens: ROLLUP_SUMMARY_MAX_TOKENS,
-      });
+      const completion = await meteredCompletion(
+        ctx,
+        {
+          clerkOrgId: orgId,
+          entityType: "function",
+          entityId: args.functionId,
+          entityLabel: func.name,
+          actorUserId: caller.userId,
+        },
+        {
+          capability: "synthesis",
+          operation: "function-summary",
+          system: FUNCTION_SUMMARY_SYSTEM_PROMPT,
+          user: `Here are the department summaries for this function:\n\n${summaryBlock}`,
+          maxTokens: ROLLUP_SUMMARY_MAX_TOKENS,
+        },
+      );
       assertCompletionNotTruncated(
         completion,
         "function-summary",

@@ -115,9 +115,21 @@ export type AIRequest = {
   tool?: AITool;
 };
 
+/**
+ * Token counts exactly as the provider reported them — deliberately NOT
+ * normalised. This feeds a billing ledger, so raw fidelity matters for auditing
+ * against an invoice.
+ *
+ * The consequence is that `inputTokens` means different things per provider:
+ * Anthropic reports three disjoint buckets, while OpenAI folds cached tokens
+ * into `prompt_tokens`. `aiPricing.ts` owns that reconciliation via
+ * `TokenRate.inputIncludesCached` — do not pre-subtract here.
+ */
 export type AIUsage = {
   inputTokens: number;
   outputTokens: number;
+  cachedReadTokens?: number;
+  cacheWriteTokens?: number;
 };
 
 export type AICompletion = {
@@ -129,6 +141,12 @@ export type AICompletion = {
   finishReason: string | null;
   usage: AIUsage | null;
   requestId: string | null;
+  /**
+   * Provider-reported cost in USD, when the provider gives one. OpenRouter
+   * does; Foundry does not, so this is undefined there and the ledger prices
+   * from `aiPricing.ts` instead.
+   */
+  costUsd?: number;
 };
 
 type ResolvedAIBackend = {
@@ -156,6 +174,12 @@ type OpenRouterResponse = {
   usage?: {
     prompt_tokens?: unknown;
     completion_tokens?: unknown;
+    // Always returned now; the old `usage: {include: true}` opt-in is a no-op.
+    cost?: unknown;
+    prompt_tokens_details?: {
+      cached_tokens?: unknown;
+      cache_write_tokens?: unknown;
+    };
   };
 };
 
@@ -320,6 +344,17 @@ function asNonEmptyText(value: unknown): string | null {
 
 function asFiniteTokenCount(value: unknown): number {
   return typeof value === "number" && Number.isFinite(value) ? value : 0;
+}
+
+/**
+ * Unlike token counts, an absent cost and a zero cost are different facts — a
+ * free model legitimately reports 0 — so this returns undefined rather than
+ * collapsing "not reported" into "free".
+ */
+function asReportedCost(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0
+    ? value
+    : undefined;
 }
 
 function parseToolArguments(value: unknown): unknown | null {
@@ -506,8 +541,16 @@ async function callFoundryClaude(
     toolInput: anthropicToolInput(message, request.tool?.name),
     finishReason: message.stop_reason,
     usage: {
+      // Anthropic reports these three as disjoint buckets — `input_tokens`
+      // excludes both cache figures. `aiPricing.ts` relies on that.
       inputTokens: message.usage.input_tokens,
       outputTokens: message.usage.output_tokens,
+      cachedReadTokens: asFiniteTokenCount(
+        message.usage.cache_read_input_tokens,
+      ),
+      cacheWriteTokens: asFiniteTokenCount(
+        message.usage.cache_creation_input_tokens,
+      ),
     },
     requestId: requestIdFrom(message),
   };
@@ -572,8 +615,15 @@ async function callFoundryOpenAI(
     finishReason: choice?.finish_reason ?? null,
     usage: completion.usage
       ? {
+          // OpenAI folds cached tokens INTO prompt_tokens; left as reported,
+          // and reconciled by `TokenRate.inputIncludesCached`.
           inputTokens: completion.usage.prompt_tokens,
           outputTokens: completion.usage.completion_tokens,
+          cachedReadTokens: asFiniteTokenCount(
+            completion.usage.prompt_tokens_details?.cached_tokens,
+          ),
+          // Azure's automatic caching has no separate write step to report.
+          cacheWriteTokens: 0,
         }
       : null,
     requestId: requestIdFrom(completion),
@@ -709,10 +759,19 @@ async function callOpenRouter(
     finishReason,
     usage: result.usage
       ? {
+          // OpenAI-shaped: prompt_tokens includes cached_tokens.
           inputTokens: asFiniteTokenCount(result.usage.prompt_tokens),
           outputTokens: asFiniteTokenCount(result.usage.completion_tokens),
+          cachedReadTokens: asFiniteTokenCount(
+            result.usage.prompt_tokens_details?.cached_tokens,
+          ),
+          cacheWriteTokens: asFiniteTokenCount(
+            result.usage.prompt_tokens_details?.cache_write_tokens,
+          ),
         }
       : null,
+    // OpenRouter is the one provider that prices the request for us.
+    costUsd: asReportedCost(result.usage?.cost),
     requestId: requestIdFrom(result),
   };
 }

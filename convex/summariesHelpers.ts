@@ -9,9 +9,9 @@ import { Doc } from "./_generated/dataModel";
 import {
   AITruncationError,
   assertCompletionNotTruncated,
-  generateAICompletion,
   isAIConfigured,
 } from "./lib/aiProvider";
+import { meteredCompletion } from "./lib/aiUsageMeter";
 
 // ---------------------------------------------------------------------------
 // Staleness propagation — internal mutations, always called from an org-scoped
@@ -225,13 +225,25 @@ export const generateDepartmentSummaryInternal = internalAction({
 
     let generated: string | null;
     try {
-      const completion = await generateAICompletion({
-        capability: "synthesis",
-        operation: "department-summary-cascade",
-        system: DEPARTMENT_SUMMARY_SYSTEM_PROMPT,
-        user: `Here are the process summaries for this department:\n\n${summaryBlock}`,
-        maxTokens: CASCADE_SUMMARY_MAX_TOKENS,
-      });
+      const completion = await meteredCompletion(
+        ctx,
+        {
+          clerkOrgId: args.clerkOrgId,
+          entityType: "department",
+          entityId: args.departmentId,
+          entityLabel: dept.name,
+          // No actor: this is the cascade triggered by a conversation
+          // completing, not a person pressing a button. Attributing it to
+          // whoever happened to record last would be a lie.
+        },
+        {
+          capability: "synthesis",
+          operation: "department-summary-cascade",
+          system: DEPARTMENT_SUMMARY_SYSTEM_PROMPT,
+          user: `Here are the process summaries for this department:\n\n${summaryBlock}`,
+          maxTokens: CASCADE_SUMMARY_MAX_TOKENS,
+        },
+      );
       assertCompletionNotTruncated(
         completion,
         "department-summary-cascade",

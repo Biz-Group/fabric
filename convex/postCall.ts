@@ -16,9 +16,12 @@ import {
 } from "./lib/orgAuth";
 import {
   assertCompletionNotTruncated,
-  generateAICompletion,
   isAIConfigured,
 } from "./lib/aiProvider";
+import {
+  meteredCompletion,
+  recordAgentConversationUsage,
+} from "./lib/aiUsageMeter";
 import {
   isSamePersonName,
   sanitizeContributorName,
@@ -494,6 +497,22 @@ export const fetchConversation = action({
           },
         );
 
+        // ElevenLabs itemises this conversation's bill in metadata.charging —
+        // capture it now rather than estimating from duration later.
+        await recordAgentConversationUsage(
+          ctx,
+          {
+            clerkOrgId: orgId,
+            entityType: "conversation",
+            entityId: conversationId,
+            entityLabel: attributionFields.contributorName,
+          },
+          {
+            elevenlabsConversationId: args.elevenlabsConversationId,
+            metadata: data.metadata,
+          },
+        );
+
         // Build this conversation's map record now, so a later rebuild is a
         // single reduce instead of a backfill chain.
         await ctx.scheduler.runAfter(
@@ -792,6 +811,20 @@ export const importConversation = internalAction({
       },
     );
 
+    await recordAgentConversationUsage(
+      ctx,
+      {
+        clerkOrgId: args.clerkOrgId,
+        entityType: "conversation",
+        entityId: conversationId,
+        entityLabel: args.contributorName,
+      },
+      {
+        elevenlabsConversationId: args.elevenlabsConversationId,
+        metadata: data.metadata,
+      },
+    );
+
     await ctx.scheduler.runAfter(
       0,
       internal.postCall.generateConversationSummaryInput,
@@ -844,6 +877,21 @@ export const refreshConversationAnalysis = internalAction({
     const analysis = data.analysis ?? existing.analysis;
     const durationSeconds =
       data.metadata?.call_duration_secs ?? existing.durationSeconds;
+
+    // Re-reading the same immutable bill, so this converges on the existing row
+    // (the ledger upserts on idempotencyKey) rather than double-counting.
+    await recordAgentConversationUsage(
+      ctx,
+      {
+        clerkOrgId: args.clerkOrgId,
+        entityType: "conversation",
+        entityId: existing._id,
+      },
+      {
+        elevenlabsConversationId: args.elevenlabsConversationId,
+        metadata: data.metadata,
+      },
+    );
 
     await ctx.runMutation(internal.postCall.updateConversationAnalysis, {
       conversationId: existing._id,
@@ -1136,14 +1184,23 @@ async function generateSummaryInputForConversation(
   const transcriptHash = hashTranscript(conv.transcript);
   if (conv.processSummaryInputHash === transcriptHash) return;
 
-  const completion = await generateAICompletion({
-    capability: "synthesis",
-    operation: "conversation-summary-input",
-    system: CONVERSATION_MAP_SYSTEM_PROMPT,
-    user: formatTranscript(conv.transcript, conv.contributorName, 1),
-    maxTokens: CONVERSATION_MAP_MAX_TOKENS,
-    timeoutMs: CONVERSATION_MAP_TIMEOUT_MS,
-  });
+  const completion = await meteredCompletion(
+    ctx,
+    {
+      clerkOrgId,
+      entityType: "conversation",
+      entityId: conversationId,
+      entityLabel: conv.contributorName,
+    },
+    {
+      capability: "synthesis",
+      operation: "conversation-summary-input",
+      system: CONVERSATION_MAP_SYSTEM_PROMPT,
+      user: formatTranscript(conv.transcript, conv.contributorName, 1),
+      maxTokens: CONVERSATION_MAP_MAX_TOKENS,
+      timeoutMs: CONVERSATION_MAP_TIMEOUT_MS,
+    },
+  );
   assertCompletionNotTruncated(
     completion,
     "conversation-summary-input",
@@ -1449,14 +1506,22 @@ export const regenerateProcessSummary = internalAction({
           )
           .join("\n\n---\n\n");
 
-        const completion = await generateAICompletion({
-          capability: "synthesis",
-          operation: "process-summary-reduce",
-          system: PROCESS_SUMMARY_REDUCE_SYSTEM_PROMPT,
-          user: `Here are the structured records for the ${ready.length} conversations recorded for this process:\n\n${recordBlock}`,
-          maxTokens: PROCESS_SUMMARY_REDUCE_MAX_TOKENS,
-          timeoutMs: PROCESS_SUMMARY_REDUCE_TIMEOUT_MS,
-        });
+        const completion = await meteredCompletion(
+          ctx,
+          {
+            clerkOrgId: args.clerkOrgId,
+            entityType: "process",
+            entityId: args.processId,
+          },
+          {
+            capability: "synthesis",
+            operation: "process-summary-reduce",
+            system: PROCESS_SUMMARY_REDUCE_SYSTEM_PROMPT,
+            user: `Here are the structured records for the ${ready.length} conversations recorded for this process:\n\n${recordBlock}`,
+            maxTokens: PROCESS_SUMMARY_REDUCE_MAX_TOKENS,
+            timeoutMs: PROCESS_SUMMARY_REDUCE_TIMEOUT_MS,
+          },
+        );
         assertCompletionNotTruncated(
           completion,
           "process-summary-reduce",
@@ -1516,13 +1581,21 @@ export const regenerateProcessSummary = internalAction({
         userContent = `Here is the existing process summary:\n\n${existingSummary}\n\n---\n\nA new conversation has been recorded. Integrate the information from this transcript into the existing summary, updating all sections as needed:\n\n${latestTranscript}`;
       }
 
-      const completion = await generateAICompletion({
-        capability: "synthesis",
-        operation: "process-summary-incremental",
-        system: PROCESS_SUMMARY_SYSTEM_PROMPT,
-        user: userContent,
-        maxTokens: PROCESS_SUMMARY_MAX_TOKENS,
-      });
+      const completion = await meteredCompletion(
+        ctx,
+        {
+          clerkOrgId: args.clerkOrgId,
+          entityType: "process",
+          entityId: args.processId,
+        },
+        {
+          capability: "synthesis",
+          operation: "process-summary-incremental",
+          system: PROCESS_SUMMARY_SYSTEM_PROMPT,
+          user: userContent,
+          maxTokens: PROCESS_SUMMARY_MAX_TOKENS,
+        },
+      );
       // Throwing here leaves the previous rolling summary intact. Saving a
       // truncated one would be worse than saving nothing: the incremental path
       // feeds itself, so a half-written summary becomes the base every later

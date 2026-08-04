@@ -8,6 +8,7 @@
  * @module
  */
 
+import type * as aiUsage from "../aiUsage.js";
 import type * as cleanup from "../cleanup.js";
 import type * as conversations from "../conversations.js";
 import type * as crons from "../crons.js";
@@ -17,10 +18,14 @@ import type * as functions from "../functions.js";
 import type * as hierarchy from "../hierarchy.js";
 import type * as http from "../http.js";
 import type * as invitations from "../invitations.js";
+import type * as lib_aiPricing from "../lib/aiPricing.js";
 import type * as lib_aiProvider from "../lib/aiProvider.js";
+import type * as lib_aiUsageMeter from "../lib/aiUsageMeter.js";
+import type * as lib_aiUsageRollup from "../lib/aiUsageRollup.js";
 import type * as lib_clerkApi from "../lib/clerkApi.js";
 import type * as lib_contributorAttribution from "../lib/contributorAttribution.js";
 import type * as lib_conversationTitle from "../lib/conversationTitle.js";
+import type * as lib_elevenLabsCharging from "../lib/elevenLabsCharging.js";
 import type * as lib_flowQuality from "../lib/flowQuality.js";
 import type * as lib_flowStages from "../lib/flowStages.js";
 import type * as lib_orgAuth from "../lib/orgAuth.js";
@@ -49,6 +54,7 @@ import type {
 } from "convex/server";
 
 declare const fullApi: ApiFromModules<{
+  aiUsage: typeof aiUsage;
   cleanup: typeof cleanup;
   conversations: typeof conversations;
   crons: typeof crons;
@@ -58,10 +64,14 @@ declare const fullApi: ApiFromModules<{
   hierarchy: typeof hierarchy;
   http: typeof http;
   invitations: typeof invitations;
+  "lib/aiPricing": typeof lib_aiPricing;
   "lib/aiProvider": typeof lib_aiProvider;
+  "lib/aiUsageMeter": typeof lib_aiUsageMeter;
+  "lib/aiUsageRollup": typeof lib_aiUsageRollup;
   "lib/clerkApi": typeof lib_clerkApi;
   "lib/contributorAttribution": typeof lib_contributorAttribution;
   "lib/conversationTitle": typeof lib_conversationTitle;
+  "lib/elevenLabsCharging": typeof lib_elevenLabsCharging;
   "lib/flowQuality": typeof lib_flowQuality;
   "lib/flowStages": typeof lib_flowStages;
   "lib/orgAuth": typeof lib_orgAuth;

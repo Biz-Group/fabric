@@ -5,6 +5,7 @@ import {
   internalMutation,
   internalQuery,
   mutation,
+  type ActionCtx,
 } from "./_generated/server";
 import { internal } from "./_generated/api";
 import { Id } from "./_generated/dataModel";
@@ -15,11 +16,15 @@ import {
   resolveOrgForAction,
 } from "./lib/orgAuth";
 import {
-  generateAICompletion,
   getPersistedAIProvider,
   isAIConfigured,
   isTokenLimitFinishReason,
 } from "./lib/aiProvider";
+import {
+  meteredCompletion,
+  recordVoiceUsage,
+  type UsageAttribution,
+} from "./lib/aiUsageMeter";
 import { normalizeSummaryTitle } from "./lib/conversationTitle";
 import type { ResolvedAttribution } from "./postCall";
 
@@ -385,12 +390,16 @@ export function parseAnalysisResponse(
   return coerceAnalysisPayload(parsed, fallbackSummary);
 }
 
-async function analyzeTranscript(transcript: TranscriptMessage[]): Promise<{
+async function analyzeTranscript(
+  ctx: ActionCtx,
+  attribution: UsageAttribution,
+  transcript: TranscriptMessage[],
+): Promise<{
   analysis: AnalysisPayload;
   analysisProvider: "fabric-openrouter" | "fabric-foundry";
 }> {
   const fallbackSummary = fallbackSummaryFromTranscript(transcript);
-  const completion = await generateAICompletion({
+  const completion = await meteredCompletion(ctx, attribution, {
     capability: "synthesis",
     operation: "voice-recording-analysis",
     system: VOICE_RECORDING_ANALYSIS_PROMPT,
@@ -787,19 +796,71 @@ export const processVoiceRecordingInternal = internalAction({
         throw new Error(`Storage object ${args.storageId} not found`);
       }
 
-      const scribeResult = await transcribeWithScribe(
-        audio,
-        elevenLabsKey,
-        args.mimeType,
-      );
-      const transcript = normalizeScribeTranscript(scribeResult);
-      if (transcript.length === 0) {
-        throw new Error("Scribe returned an empty transcript");
+      const transcriptionStartedAt = Date.now();
+      let scribeResult: ScribeResponse;
+      try {
+        scribeResult = await transcribeWithScribe(
+          audio,
+          elevenLabsKey,
+          args.mimeType,
+        );
+      } catch (transcriptionError) {
+        // Recorded even on failure: ElevenLabs may well have processed audio
+        // before erroring, and an unmetered failure is indistinguishable from a
+        // call that never happened.
+        await recordVoiceUsage(
+          ctx,
+          {
+            clerkOrgId: args.clerkOrgId,
+            entityType: "conversation",
+            entityId: args.conversationId,
+          },
+          {
+            operation: "voice-transcription",
+            provider: "elevenlabs",
+            model: "scribe_v2",
+            rateKey: "elevenlabs:scribe_v2",
+            seconds: args.durationSeconds ?? 0,
+            status: "failed",
+            startedAt: transcriptionStartedAt,
+            errorType:
+              transcriptionError instanceof Error
+                ? transcriptionError.name
+                : "UnknownError",
+          },
+        );
+        throw transcriptionError;
       }
+
+      const transcript = normalizeScribeTranscript(scribeResult);
 
       const inferredDuration =
         args.durationSeconds ??
         transcript[transcript.length - 1]?.time_in_call_secs;
+
+      // Scribe bills per audio minute regardless of what came back, so this is
+      // metered before the empty-transcript guard below.
+      await recordVoiceUsage(
+        ctx,
+        {
+          clerkOrgId: args.clerkOrgId,
+          entityType: "conversation",
+          entityId: args.conversationId,
+        },
+        {
+          operation: "voice-transcription",
+          provider: "elevenlabs",
+          model: "scribe_v2",
+          rateKey: "elevenlabs:scribe_v2",
+          seconds: inferredDuration ?? 0,
+          startedAt: transcriptionStartedAt,
+        },
+      );
+
+      if (transcript.length === 0) {
+        throw new Error("Scribe returned an empty transcript");
+      }
+
       const speakerLabels = defaultSpeakerLabels(transcript);
 
       await ctx.runMutation(
@@ -851,6 +912,12 @@ export const analyzeVoiceRecordingInternal = internalAction({
       }
 
       const { analysis, analysisProvider } = await analyzeTranscript(
+        ctx,
+        {
+          clerkOrgId: args.clerkOrgId,
+          entityType: "conversation",
+          entityId: args.conversationId,
+        },
         recording.transcript,
       );
 

@@ -608,4 +608,152 @@ export default defineSchema({
       "generationId",
       "status",
     ]),
+
+  // Append-only ledger of every paid AI call: LLM completions (tokens) and
+  // ElevenLabs voice work (seconds). One row per call. Nothing mutates a row
+  // after insert except `forwardedAt` and the agent-conversation re-fetch path,
+  // which upserts on `idempotencyKey`.
+  //
+  // This exists because per-tenant attribution is impossible downstream: every
+  // tenant shares one Foundry deployment, so Azure's own telemetry can only
+  // report per-deployment. The tenant dimension has to be stamped at the call
+  // site or it does not exist at all. See docs/ai-usage-metering-plan.md.
+  aiUsageEvents: defineTable({
+    // Which Convex deployment produced the row. Dev rows are forwarded to prod
+    // so the platform console can show one merged view.
+    deployment: v.union(v.literal("prod"), v.literal("dev")),
+    // Dedupe key for cross-deployment forwarding and for re-fetched
+    // conversations. Retrying either path must not double-count.
+    idempotencyKey: v.string(),
+    createdAt: v.number(),
+
+    // The join key is `clerkOrgId`, deliberately NOT an Id<"tenants">: a
+    // forwarded dev row references a dev-only document id that resolves to
+    // nothing in prod. `tenantName` is denormalized for the same reason — the
+    // console must be able to label a tenant it has no local row for.
+    clerkOrgId: v.string(),
+    tenantName: v.optional(v.string()),
+
+    // The *billing basis*, not an exclusive tag. An ElevenLabs agent row is
+    // billed per second but also carries the agent LLM's token counts, so both
+    // `seconds` and the token fields are populated on it.
+    unit: v.union(v.literal("tokens"), v.literal("seconds")),
+    operation: v.string(),
+    provider: v.string(),
+    model: v.string(),
+    providerDeployment: v.optional(v.string()),
+    status: v.union(
+      v.literal("ok"),
+      // Completed and billed, but cut off at the token limit — see
+      // AITruncationError. Billed work that produced nothing usable.
+      v.literal("truncated"),
+      v.literal("failed"),
+    ),
+
+    inputTokens: v.optional(v.number()),
+    outputTokens: v.optional(v.number()),
+    cachedReadTokens: v.optional(v.number()),
+    cacheWriteTokens: v.optional(v.number()),
+    seconds: v.optional(v.number()),
+    // Separates our own synthesis tokens from an ElevenLabs agent's LLM tokens.
+    // They are different models on different bills; summing them into one
+    // "input tokens" figure produces a number that means nothing.
+    tokenClass: v.optional(
+      v.union(v.literal("fabric-synthesis"), v.literal("agent-llm")),
+    ),
+
+    // Integer micro-USD, and ALWAYS notional list-rate cost — never the
+    // marginal amount charged. ElevenLabs plan-included minutes are a
+    // workspace-wide pool shared by every tenant, so the marginal cost of an
+    // identical call is $0 or $0.08 depending purely on which tenant called
+    // first this period. Only a list-rate figure is comparable across tenants.
+    costMicroUsd: v.number(),
+    priceVersion: v.string(),
+    costSource: v.union(v.literal("computed"), v.literal("provider")),
+    // What the provider says it actually charged, for invoice reconciliation.
+    // OpenRouter: `usage.cost`. ElevenLabs agents: `metadata.cost_fiat`, which
+    // is legitimately 0 for calls absorbed by the plan allowance.
+    providerReportedCostMicroUsd: v.optional(v.number()),
+    // ElevenLabs agent calls arrive pre-itemised in `metadata.charging`.
+    llmCostMicroUsd: v.optional(v.number()),
+    callCostMicroUsd: v.optional(v.number()),
+    platformCostMicroUsd: v.optional(v.number()),
+
+    // Opaque strings rather than Ids, for the cross-deployment reason above,
+    // paired with a denormalized label so the log reads without a join.
+    entityType: v.optional(v.string()),
+    entityId: v.optional(v.string()),
+    entityLabel: v.optional(v.string()),
+    actorUserId: v.optional(v.string()),
+    actorName: v.optional(v.string()),
+    // Groups every call in one pipeline run (reuses processFlows.generationId
+    // where it exists) so "what did this flow cost end to end" is one query.
+    runId: v.optional(v.string()),
+
+    latencyMs: v.optional(v.number()),
+    finishReason: v.optional(v.string()),
+    requestId: v.optional(v.string()),
+    errorType: v.optional(v.string()),
+
+    // Set at insert on the sink deployment; unset on dev until forwarded.
+    forwardedAt: v.optional(v.number()),
+    forwardAttempts: v.optional(v.number()),
+  })
+    .index("by_idempotencyKey", ["idempotencyKey"])
+    .index("by_createdAt", ["createdAt"])
+    .index("by_deployment_and_createdAt", ["deployment", "createdAt"])
+    .index("by_clerkOrgId_and_createdAt", ["clerkOrgId", "createdAt"])
+    .index("by_operation_and_createdAt", ["operation", "createdAt"])
+    .index("by_runId", ["runId"])
+    // Drives the dev→prod forwarding sweep. Unforwarded rows have
+    // `forwardedAt: undefined`, which this index matches on equality.
+    .index("by_forwardedAt", ["forwardedAt"]),
+
+  // Pre-aggregated usage, one row per (UTC day, deployment, tenant, operation,
+  // model). Built by a daily cron that folds the ledger — NOT incremented on
+  // write: the flow pipeline fires many calls in bursts, and a per-write counter
+  // would serialise on one document and trip OCC.
+  //
+  // The ledger stays the source of truth, so a wrong rollup is repairable by
+  // re-running the fold. The fold is idempotent (it replaces, never adds).
+  aiUsageRollups: defineTable({
+    /** UTC day, "YYYY-MM-DD". */
+    period: v.string(),
+    deployment: v.union(v.literal("prod"), v.literal("dev")),
+    clerkOrgId: v.string(),
+    tenantName: v.optional(v.string()),
+    operation: v.string(),
+    provider: v.string(),
+    model: v.string(),
+    // Stored, not inferred from `operation`: synthesis tokens and an agent's
+    // LLM tokens are different bills and must never be summed (§4.3).
+    tokenClass: v.optional(
+      v.union(v.literal("fabric-synthesis"), v.literal("agent-llm")),
+    ),
+
+    callCount: v.number(),
+    failedCount: v.number(),
+    truncatedCount: v.number(),
+    inputTokens: v.number(),
+    outputTokens: v.number(),
+    cachedReadTokens: v.number(),
+    cacheWriteTokens: v.number(),
+    seconds: v.number(),
+    costMicroUsd: v.number(),
+    providerReportedCostMicroUsd: v.number(),
+    /** Calls whose model had no rate, so their cost is missing rather than zero. */
+    unpricedCount: v.number(),
+    updatedAt: v.number(),
+  })
+    .index("by_period", ["period"])
+    .index("by_clerkOrgId_and_period", ["clerkOrgId", "period"])
+    .index("by_deployment_and_period", ["deployment", "period"])
+    // The upsert key for the fold.
+    .index("by_rollupKey", [
+      "period",
+      "deployment",
+      "clerkOrgId",
+      "operation",
+      "model",
+    ]),
 });

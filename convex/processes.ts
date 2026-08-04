@@ -5,6 +5,7 @@ import {
   internalQuery,
   mutation,
   query,
+  type ActionCtx,
 } from "./_generated/server";
 import { internal } from "./_generated/api";
 import { Doc, Id } from "./_generated/dataModel";
@@ -14,6 +15,7 @@ import {
   DescriptionSafetyRisk,
   normalizeDescriptionInput,
 } from "./descriptionSafety";
+import type { UsageAttribution } from "./lib/aiUsageMeter";
 import {
   assertOrgOwns,
   requireOrgContributor,
@@ -94,6 +96,8 @@ function applyDescriptionUpdate(
 }
 
 async function buildDescriptionUpdate(
+  ctx: ActionCtx,
+  attribution: UsageAttribution,
   description: string | undefined,
   current: Pick<
     Doc<"processes">,
@@ -112,7 +116,11 @@ async function buildDescriptionUpdate(
     return { kind: "unchanged" };
   }
 
-  const decision = await classifyDescriptionSafety(normalized.value);
+  const decision = await classifyDescriptionSafety(
+    ctx,
+    attribution,
+    normalized.value,
+  );
   return {
     kind: "set",
     ...buildSafeDescriptionFields(normalized.value, decision),
@@ -317,13 +325,24 @@ export const create = action({
   },
   handler: async (ctx, args): Promise<Id<"processes">> => {
     const { orgId } = await resolveOrgForAction(ctx);
-    await ctx.runQuery(internal.postCall.requireOrgContributorInternal, {});
+    const caller = await ctx.runQuery(
+      internal.postCall.requireOrgContributorInternal,
+      {},
+    );
     const parentExists: boolean = await ctx.runQuery(
       internal.processes.departmentExistsInOrg,
       { departmentId: args.departmentId, clerkOrgId: orgId },
     );
     if (!parentExists) throw new Error("Not found");
     const descriptionUpdate = await buildDescriptionUpdate(
+      ctx,
+      {
+        clerkOrgId: orgId,
+        // No entityId: the process does not exist yet at safety-check time.
+        entityType: "process",
+        entityLabel: args.name,
+        actorUserId: caller.userId,
+      },
       args.description,
       null,
     );
@@ -414,7 +433,10 @@ export const update = action({
   },
   handler: async (ctx, args): Promise<null> => {
     const { orgId } = await resolveOrgForAction(ctx);
-    await ctx.runQuery(internal.postCall.requireOrgContributorInternal, {});
+    const caller = await ctx.runQuery(
+      internal.postCall.requireOrgContributorInternal,
+      {},
+    );
     const proc: Doc<"processes"> | null = await ctx.runQuery(
       internal.processes.getForDescriptionUpdate,
       { processId: args.processId, clerkOrgId: orgId },
@@ -422,6 +444,14 @@ export const update = action({
     if (!proc) throw new Error("Not found");
 
     const descriptionUpdate = await buildDescriptionUpdate(
+      ctx,
+      {
+        clerkOrgId: orgId,
+        entityType: "process",
+        entityId: args.processId,
+        entityLabel: args.name,
+        actorUserId: caller.userId,
+      },
       args.description,
       proc,
     );
