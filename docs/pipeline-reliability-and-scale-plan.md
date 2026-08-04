@@ -425,7 +425,7 @@ Run the matrix in dev (`npx convex dev` deployment) before each scale-up:
 | 2 | Phase 1c code fix DONE (per-request `timeoutMs`/`maxRetries` plumbed; flow-gen set to 450 s × 1 attempt). Env flip = pending user decision | S | user sign-off on env flip |
 | 3 | Phase 2c baseline probe DONE — single-request Foundry is healthy (80 tok/s, 3 s TTFT). Root cause reclassified: **output volume vs. old 120 s timeout, not throughput**. Capacity raise DEFERRED to scaling (Phase 4 concurrency probe), not needed for this bug. NEXT: deploy Phase 1c fix + re-run real flow gen | S | deploy access |
 | 4 | Phase 1b upstream fixes (truncation checks, map-reduce rebuild, bounded reads) | M | — |
-| 5 | Phase 1a: v2 plan Phase 1 (staged flow generation, incl. watchdog) | L | — |
+| 5 | Phase 1a: staged flow generation — now governed by `docs/process-flow-generation-v3-plan.md` (v2 backbone + time-budgeted calls) | L | — |
 | 6 | Phase 2a retry hardening (incl. per-request maxRetries from 1c) | S | — |
 | 7 | Phase 2b workpool + regen coalescing | M | — |
 | 8 | Phase 4a observability (status fields, aiCallLog, log stream) | M | — |

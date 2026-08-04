@@ -1,11 +1,6 @@
 "use client";
 
-import {
-  useState,
-  useCallback,
-  useEffect,
-  useMemo,
-} from "react";
+import { useState, useCallback, useEffect, useMemo } from "react";
 import { useSearchParams, useRouter, usePathname } from "next/navigation";
 import { useQuery, useAction, useMutation } from "convex/react";
 import { api } from "../../../convex/_generated/api";
@@ -34,9 +29,7 @@ import {
   AlertCircle,
   Clock,
 } from "lucide-react";
-import {
-  TooltipProvider,
-} from "@/components/ui/tooltip";
+import { TooltipProvider } from "@/components/ui/tooltip";
 import { ProcessHeader } from "@/features/workbench/process-header";
 import { ProcessAppShell } from "@/features/shell/process-app-shell";
 import { useWorkspaceRoutes } from "@/features/shell/use-workspace-routes";
@@ -141,6 +134,36 @@ async function copyTextToClipboard(text: string): Promise<boolean> {
   }
 }
 
+/**
+ * Mirrors SUMMARY_REGEN_STALE_MS in convex/postCall.ts. Past this, a gate that
+ * was never released means the run died rather than that it is still working.
+ */
+const SUMMARY_REGEN_STALE_MS = 120_000;
+
+/**
+ * True once a regeneration that started at `startedAt` has been running long
+ * enough to be considered dead. A crashed run leaves its timestamp behind, and
+ * a reactive query has no reason to re-fire just because time passed — without
+ * this timer the panel would spin forever.
+ */
+function useRegenWindowExpired(startedAt: number | null): boolean {
+  // Expiry is derived from a clock reading rather than stored, so the effect
+  // only ever sets state from the timer callback. `now` lags until the
+  // deadline passes, which is exactly when the answer can change.
+  const [now, setNow] = useState(() => Date.now());
+
+  useEffect(() => {
+    if (startedAt === null) return;
+    const remaining = startedAt + SUMMARY_REGEN_STALE_MS - Date.now();
+    if (remaining <= 0) return;
+    const timer = window.setTimeout(() => setNow(Date.now()), remaining);
+    return () => window.clearTimeout(timer);
+  }, [startedAt]);
+
+  if (startedAt === null) return false;
+  return now >= startedAt + SUMMARY_REGEN_STALE_MS;
+}
+
 // --- Main Component ---
 
 export function ProcessWorkbench() {
@@ -172,8 +195,7 @@ export function ProcessWorkbench() {
 
   // Recording modal state
   const [recordingOpen, setRecordingOpen] = useState(false);
-  const [recordingMode, setRecordingMode] =
-    useState<RecordingMode>("agent");
+  const [recordingMode, setRecordingMode] = useState<RecordingMode>("agent");
 
   // Mobile navigation level
   const [mobileLevel, setMobileLevel] = useState<MobileLevel>(
@@ -197,10 +219,17 @@ export function ProcessWorkbench() {
   const [funcSummaryError, setFuncSummaryError] = useState<string | null>(null);
 
   // On-demand summary actions
-  const generateDepartmentSummary = useAction(api.summaries.generateDepartmentSummary);
-  const generateFunctionSummary = useAction(api.summaries.generateFunctionSummary);
-  const forceRefreshProcessSummary = useAction(api.summaries.forceRefreshProcessSummary);
-  const [processSummaryRefreshing, setProcessSummaryRefreshing] = useState(false);
+  const generateDepartmentSummary = useAction(
+    api.summaries.generateDepartmentSummary,
+  );
+  const generateFunctionSummary = useAction(
+    api.summaries.generateFunctionSummary,
+  );
+  const forceRefreshProcessSummary = useAction(
+    api.summaries.forceRefreshProcessSummary,
+  );
+  const [processSummaryRefreshing, setProcessSummaryRefreshing] =
+    useState(false);
 
   // Process report PDF export (flow fetched + rendered on demand).
   const { download: downloadProcessPdf, isDownloading: isDownloadingPdf } =
@@ -219,31 +248,46 @@ export function ProcessWorkbench() {
 
   // CRUD dialog state
   const [crudOpen, setCrudOpen] = useState(false);
-  const [crudMode, setCrudMode] = useState<"create" | "edit" | "delete">("create");
-  const [crudEntity, setCrudEntity] = useState<"Function" | "Department" | "Process">("Function");
+  const [crudMode, setCrudMode] = useState<"create" | "edit" | "delete">(
+    "create",
+  );
+  const [crudEntity, setCrudEntity] = useState<
+    "Function" | "Department" | "Process"
+  >("Function");
   const [crudTargetName, setCrudTargetName] = useState("");
   const [crudTargetDescription, setCrudTargetDescription] = useState("");
   const [crudTargetId, setCrudTargetId] = useState<string | null>(null);
-  const [crudCurrentLocationId, setCrudCurrentLocationId] = useState<string | null>(null);
+  const [crudCurrentLocationId, setCrudCurrentLocationId] = useState<
+    string | null
+  >(null);
 
   // Server-computed delete eligibility for the selected delete target.
   const deleteFnEligibility = useQuery(
     api.functions.deleteEligibility,
-    crudOpen && crudMode === "delete" && crudEntity === "Function" && crudTargetId
+    crudOpen &&
+      crudMode === "delete" &&
+      crudEntity === "Function" &&
+      crudTargetId
       ? { functionId: crudTargetId as Id<"functions"> }
-      : "skip"
+      : "skip",
   );
   const deleteDeptEligibility = useQuery(
     api.departments.deleteEligibility,
-    crudOpen && crudMode === "delete" && crudEntity === "Department" && crudTargetId
+    crudOpen &&
+      crudMode === "delete" &&
+      crudEntity === "Department" &&
+      crudTargetId
       ? { departmentId: crudTargetId as Id<"departments"> }
-      : "skip"
+      : "skip",
   );
   const deleteProcEligibility = useQuery(
     api.processes.deleteEligibility,
-    crudOpen && crudMode === "delete" && crudEntity === "Process" && crudTargetId
+    crudOpen &&
+      crudMode === "delete" &&
+      crudEntity === "Process" &&
+      crudTargetId
       ? { processId: crudTargetId as Id<"processes"> }
-      : "skip"
+      : "skip",
   );
   const deleteEligibility =
     crudEntity === "Function"
@@ -256,7 +300,9 @@ export function ProcessWorkbench() {
     if (crudEntity !== "Process" || !crudTargetId) return;
     setCrudOpen(false);
     router.push(
-      routes.withWorkspacePath(`/admin/conversations?processId=${crudTargetId}`),
+      routes.withWorkspacePath(
+        `/admin/conversations?processId=${crudTargetId}`,
+      ),
     );
   }, [crudEntity, crudTargetId, router, routes]);
 
@@ -267,7 +313,7 @@ export function ProcessWorkbench() {
       targetName?: string,
       targetId?: string,
       currentLocationId?: string,
-      currentDescription?: string
+      currentDescription?: string,
     ) => {
       setCrudMode(mode);
       setCrudEntity(entity);
@@ -277,7 +323,7 @@ export function ProcessWorkbench() {
       setCrudCurrentLocationId(currentLocationId ?? null);
       setCrudOpen(true);
     },
-    []
+    [],
   );
 
   const handleCrudConfirm = useCallback(
@@ -286,7 +332,10 @@ export function ProcessWorkbench() {
         if (crudMode === "create") {
           await createFunction({ name });
         } else if (crudMode === "edit" && crudTargetId) {
-          await updateFunction({ functionId: crudTargetId as Id<"functions">, name });
+          await updateFunction({
+            functionId: crudTargetId as Id<"functions">,
+            name,
+          });
         } else if (crudMode === "delete" && crudTargetId) {
           await removeFunction({ functionId: crudTargetId as Id<"functions"> });
           if (selectedFunctionId === crudTargetId) {
@@ -315,7 +364,9 @@ export function ProcessWorkbench() {
             setSelectedProcessId(null);
           }
         } else if (crudMode === "delete" && crudTargetId) {
-          await removeDepartment({ departmentId: crudTargetId as Id<"departments"> });
+          await removeDepartment({
+            departmentId: crudTargetId as Id<"departments">,
+          });
           if (selectedDepartmentId === crudTargetId) {
             setSelectedDepartmentId(null);
             setSelectedProcessId(null);
@@ -329,7 +380,8 @@ export function ProcessWorkbench() {
             description,
           });
         } else if (crudMode === "edit" && crudTargetId) {
-          const newDepartmentId = newLocationId as Id<"departments"> | undefined;
+          const newDepartmentId = newLocationId as
+            Id<"departments"> | undefined;
           await updateProcess({
             processId: crudTargetId as Id<"processes">,
             name,
@@ -363,7 +415,7 @@ export function ProcessWorkbench() {
       createProcess,
       updateProcess,
       removeProcess,
-    ]
+    ],
   );
 
   // Convex queries
@@ -371,15 +423,15 @@ export function ProcessWorkbench() {
   const functions = useQuery(api.functions.list);
   const departments = useQuery(
     api.departments.listByFunction,
-    selectedFunctionId ? { functionId: selectedFunctionId } : "skip"
+    selectedFunctionId ? { functionId: selectedFunctionId } : "skip",
   );
   const processes = useQuery(
     api.processes.listByDepartment,
-    selectedDepartmentId ? { departmentId: selectedDepartmentId } : "skip"
+    selectedDepartmentId ? { departmentId: selectedDepartmentId } : "skip",
   );
   const selectedProcess = useQuery(
     api.processes.get,
-    selectedProcessId ? { processId: selectedProcessId } : "skip"
+    selectedProcessId ? { processId: selectedProcessId } : "skip",
   );
   const processWorkbench = useQuery(
     api.processes.getWorkbench,
@@ -387,11 +439,11 @@ export function ProcessWorkbench() {
   );
   const selectedDepartment = useQuery(
     api.departments.get,
-    selectedDepartmentId ? { departmentId: selectedDepartmentId } : "skip"
+    selectedDepartmentId ? { departmentId: selectedDepartmentId } : "skip",
   );
   const selectedFunction = useQuery(
     api.functions.get,
-    selectedFunctionId ? { functionId: selectedFunctionId } : "skip"
+    selectedFunctionId ? { functionId: selectedFunctionId } : "skip",
   );
   const allDepartments = useQuery(api.departments.listAll);
   const allProcesses = useQuery(api.processes.listAll);
@@ -400,7 +452,7 @@ export function ProcessWorkbench() {
   );
   const processConversations = useQuery(
     api.conversations.listByProcess,
-    selectedProcessId ? { processId: selectedProcessId } : "skip"
+    selectedProcessId ? { processId: selectedProcessId } : "skip",
   );
   const processSummary =
     selectedProcess?.rollingSummary ??
@@ -410,9 +462,21 @@ export function ProcessWorkbench() {
     selectedProcessId !== null &&
     selectedProcess === undefined &&
     processWorkbench === undefined;
+  const summaryRegenStartedAt =
+    processWorkbench?.process.summaryRegenStartedAt ?? null;
+  const summaryRegenWindowExpired = useRegenWindowExpired(
+    summaryRegenStartedAt,
+  );
+  // Server state is what keeps the spinner up for the whole run: the rebuild
+  // action returns as soon as the work is scheduled. The local flag only
+  // covers the moment before the gate lands in this query.
+  const processSummaryRebuilding =
+    processSummaryRefreshing ||
+    (summaryRegenStartedAt !== null && !summaryRegenWindowExpired);
   const completedProcessConversationCount =
-    processConversations?.filter((conversation) => conversation.status === "done")
-      .length ?? 0;
+    processConversations?.filter(
+      (conversation) => conversation.status === "done",
+    ).length ?? 0;
 
   // Row scent, derived from the lists already loaded for navigation/search
   // (no per-row queries). See plan: "compute on read".
@@ -438,7 +502,8 @@ export function ProcessWorkbench() {
   // Display names sourced from the reactive docs so renames reflect immediately,
   // falling back to the snapshot captured at selection time while the doc loads.
   const functionDisplayName = selectedFunction?.name ?? selectedFunctionName;
-  const departmentDisplayName = selectedDepartment?.name ?? selectedDepartmentName;
+  const departmentDisplayName =
+    selectedDepartment?.name ?? selectedDepartmentName;
   const processDisplayName = selectedProcess?.name ?? selectedProcessName;
   const workbenchFunctionName =
     processWorkbench?.function.name ?? functionDisplayName;
@@ -652,7 +717,7 @@ export function ProcessWorkbench() {
       setMobilePreview(null);
       setMobileLevel(2);
     },
-    []
+    [],
   );
 
   const handlePreviewFunction = useCallback(
@@ -667,7 +732,7 @@ export function ProcessWorkbench() {
       setFuncSummaryError(null);
       setMobilePreview({ type: "function", id, name });
     },
-    []
+    [],
   );
 
   const handleSelectDepartment = useCallback(
@@ -680,7 +745,7 @@ export function ProcessWorkbench() {
       setMobilePreview(null);
       setMobileLevel(3);
     },
-    []
+    [],
   );
 
   const handlePreviewDepartment = useCallback(
@@ -692,7 +757,7 @@ export function ProcessWorkbench() {
       setDeptSummaryError(null);
       setMobilePreview({ type: "department", id, name });
     },
-    []
+    [],
   );
 
   const handleSelectProcess = useCallback(
@@ -702,7 +767,7 @@ export function ProcessWorkbench() {
       setMobilePreview(null);
       setMobileLevel(4);
     },
-    []
+    [],
   );
 
   const handlePreviewProcess = useCallback(
@@ -711,7 +776,7 @@ export function ProcessWorkbench() {
       setSelectedProcessName(name);
       setMobilePreview({ type: "process", id, name });
     },
-    []
+    [],
   );
 
   // --- Command palette (⌘K jump-to-anything) ---
@@ -748,7 +813,7 @@ export function ProcessWorkbench() {
       setMobilePreview(null);
       setMobileLevel(3);
     },
-    []
+    [],
   );
 
   const jumpToProcess = useCallback(
@@ -771,7 +836,7 @@ export function ProcessWorkbench() {
       setMobilePreview(null);
       setMobileLevel(4);
     },
-    []
+    [],
   );
 
   const handleTreeSelectFunction = useCallback(
@@ -991,7 +1056,9 @@ export function ProcessWorkbench() {
               title="No functions yet"
               description="Organizational functions will appear here."
               actionLabel={canEdit ? "Add function" : undefined}
-              onAction={canEdit ? () => openCrud("create", "Function") : undefined}
+              onAction={
+                canEdit ? () => openCrud("create", "Function") : undefined
+              }
             />
           ) : (
             functions.map((fn) => (
@@ -1007,10 +1074,22 @@ export function ProcessWorkbench() {
                     ? handlePreviewFunction(fn._id, fn.name)
                     : handleSelectFunction(fn._id, fn.name)
                 }
-                onNavigate={mobile ? () => handleSelectFunction(fn._id, fn.name) : undefined}
+                onNavigate={
+                  mobile
+                    ? () => handleSelectFunction(fn._id, fn.name)
+                    : undefined
+                }
                 navigateLabel={`View departments in ${fn.name}`}
-                onEdit={canEdit && mobile ? () => openCrud("edit", "Function", fn.name, fn._id) : undefined}
-                onDelete={canEdit && mobile ? () => openCrud("delete", "Function", fn.name, fn._id) : undefined}
+                onEdit={
+                  canEdit && mobile
+                    ? () => openCrud("edit", "Function", fn.name, fn._id)
+                    : undefined
+                }
+                onDelete={
+                  canEdit && mobile
+                    ? () => openCrud("delete", "Function", fn.name, fn._id)
+                    : undefined
+                }
                 mobile={mobile}
               />
             ))
@@ -1038,7 +1117,11 @@ export function ProcessWorkbench() {
       <ColumnHeader
         title="Departments"
         count={departments?.length}
-        onAdd={canEdit && selectedFunctionId ? () => openCrud("create", "Department") : undefined}
+        onAdd={
+          canEdit && selectedFunctionId
+            ? () => openCrud("create", "Department")
+            : undefined
+        }
         mobile={mobile}
       />
       <div className="flex-1 overflow-y-auto scrollbar-hide">
@@ -1077,10 +1160,31 @@ export function ProcessWorkbench() {
                     ? handlePreviewDepartment(dept._id, dept.name)
                     : handleSelectDepartment(dept._id, dept.name)
                 }
-                onNavigate={mobile ? () => handleSelectDepartment(dept._id, dept.name) : undefined}
+                onNavigate={
+                  mobile
+                    ? () => handleSelectDepartment(dept._id, dept.name)
+                    : undefined
+                }
                 navigateLabel={`View processes in ${dept.name}`}
-                onEdit={canEdit && mobile ? () => openCrud("edit", "Department", dept.name, dept._id, dept.functionId, dept.description) : undefined}
-                onDelete={canEdit && mobile ? () => openCrud("delete", "Department", dept.name, dept._id) : undefined}
+                onEdit={
+                  canEdit && mobile
+                    ? () =>
+                        openCrud(
+                          "edit",
+                          "Department",
+                          dept.name,
+                          dept._id,
+                          dept.functionId,
+                          dept.description,
+                        )
+                    : undefined
+                }
+                onDelete={
+                  canEdit && mobile
+                    ? () =>
+                        openCrud("delete", "Department", dept.name, dept._id)
+                    : undefined
+                }
                 mobile={mobile}
               />
             ))
@@ -1101,14 +1205,20 @@ export function ProcessWorkbench() {
             className="min-h-10 max-w-full gap-2 px-3 text-sm"
           >
             <ChevronLeft className="h-4 w-4" />
-            <span className="truncate">{functionDisplayName || "Departments"}</span>
+            <span className="truncate">
+              {functionDisplayName || "Departments"}
+            </span>
           </Button>
         </div>
       )}
       <ColumnHeader
         title="Processes"
         count={processes?.length}
-        onAdd={canEdit && selectedDepartmentId ? () => openCrud("create", "Process") : undefined}
+        onAdd={
+          canEdit && selectedDepartmentId
+            ? () => openCrud("create", "Process")
+            : undefined
+        }
         mobile={mobile}
       />
       <div className="flex-1 overflow-y-auto scrollbar-hide">
@@ -1152,10 +1262,30 @@ export function ProcessWorkbench() {
                     ? handlePreviewProcess(proc._id, proc.name)
                     : handleSelectProcess(proc._id, proc.name)
                 }
-                onNavigate={mobile ? () => handleSelectProcess(proc._id, proc.name) : undefined}
+                onNavigate={
+                  mobile
+                    ? () => handleSelectProcess(proc._id, proc.name)
+                    : undefined
+                }
                 navigateLabel={`Open ${proc.name}`}
-                onEdit={canEdit && mobile ? () => openCrud("edit", "Process", proc.name, proc._id, proc.departmentId, proc.description) : undefined}
-                onDelete={canEdit && mobile ? () => openCrud("delete", "Process", proc.name, proc._id) : undefined}
+                onEdit={
+                  canEdit && mobile
+                    ? () =>
+                        openCrud(
+                          "edit",
+                          "Process",
+                          proc.name,
+                          proc._id,
+                          proc.departmentId,
+                          proc.description,
+                        )
+                    : undefined
+                }
+                onDelete={
+                  canEdit && mobile
+                    ? () => openCrud("delete", "Process", proc.name, proc._id)
+                    : undefined
+                }
                 mobile={mobile}
               />
             ))
@@ -1176,14 +1306,22 @@ export function ProcessWorkbench() {
             className="min-h-10 max-w-full gap-2 px-3 text-sm"
           >
             <ChevronLeft className="h-4 w-4" />
-            <span className="truncate">{departmentDisplayName || "Processes"}</span>
+            <span className="truncate">
+              {departmentDisplayName || "Processes"}
+            </span>
           </Button>
         </div>
       )}
       {!selectedProcessId ? (
         <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-y-auto scrollbar-hide">
           <ColumnHeader
-            title={selectedDepartmentId ? "Department Overview" : selectedFunctionId ? "Function Overview" : "Process Detail"}
+            title={
+              selectedDepartmentId
+                ? "Department Overview"
+                : selectedFunctionId
+                  ? "Function Overview"
+                  : "Process Detail"
+            }
             mobile={mobile}
             actions={
               canEdit && selectedDepartmentId ? (
@@ -1197,12 +1335,17 @@ export function ProcessWorkbench() {
                       departmentDisplayName,
                       selectedDepartmentId,
                       selectedDepartment?.functionId,
-                      selectedDepartment?.description
+                      selectedDepartment?.description,
                     )
                   }
                   onDelete={() =>
                     selectedDepartmentId &&
-                    openCrud("delete", "Department", departmentDisplayName, selectedDepartmentId)
+                    openCrud(
+                      "delete",
+                      "Department",
+                      departmentDisplayName,
+                      selectedDepartmentId,
+                    )
                   }
                 />
               ) : canEdit && selectedFunctionId ? (
@@ -1210,11 +1353,21 @@ export function ProcessWorkbench() {
                   entityLabel={functionDisplayName}
                   onEdit={() =>
                     selectedFunctionId &&
-                    openCrud("edit", "Function", functionDisplayName, selectedFunctionId)
+                    openCrud(
+                      "edit",
+                      "Function",
+                      functionDisplayName,
+                      selectedFunctionId,
+                    )
                   }
                   onDelete={() =>
                     selectedFunctionId &&
-                    openCrud("delete", "Function", functionDisplayName, selectedFunctionId)
+                    openCrud(
+                      "delete",
+                      "Function",
+                      functionDisplayName,
+                      selectedFunctionId,
+                    )
                   }
                 />
               ) : undefined
@@ -1244,11 +1397,12 @@ export function ProcessWorkbench() {
                   <CardTitle className="flex items-center gap-2 text-base">
                     <Sparkles className="h-4 w-4 text-muted-foreground" />
                     Department Summary
-                    {selectedDepartment?.summaryStale && selectedDepartment?.summary && (
-                      <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-medium text-amber-700">
-                        New data available
-                      </span>
-                    )}
+                    {selectedDepartment?.summaryStale &&
+                      selectedDepartment?.summary && (
+                        <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-medium text-amber-700">
+                          New data available
+                        </span>
+                      )}
                   </CardTitle>
                   <CardDescription>
                     {selectedDepartment?.summary
@@ -1273,7 +1427,8 @@ export function ProcessWorkbench() {
                   {selectedDepartment?.summaryUpdatedAt && (
                     <div className="flex items-center gap-1 text-[11px] text-muted-foreground/60">
                       <Clock className="h-3 w-3" />
-                      Last refreshed: {formatTimeAgo(selectedDepartment.summaryUpdatedAt)}
+                      Last refreshed:{" "}
+                      {formatTimeAgo(selectedDepartment.summaryUpdatedAt)}
                     </div>
                   )}
                   {deptSummaryError && (
@@ -1300,13 +1455,17 @@ export function ProcessWorkbench() {
                       try {
                         const result = await generateDepartmentSummary({
                           departmentId: selectedDepartmentId,
-                          forceRefresh: !!selectedDepartment?.summary && !selectedDepartment?.summaryStale,
+                          forceRefresh:
+                            !!selectedDepartment?.summary &&
+                            !selectedDepartment?.summaryStale,
                         });
                         if (!result.summary && result.message) {
                           setDeptSummaryError(result.message);
                         }
                       } catch {
-                        setDeptSummaryError("Failed to generate summary. Please try again.");
+                        setDeptSummaryError(
+                          "Failed to generate summary. Please try again.",
+                        );
                       } finally {
                         setDeptSummaryLoading(false);
                       }
@@ -1337,7 +1496,8 @@ export function ProcessWorkbench() {
                 </CardContent>
               </Card>
               <p className="text-center text-xs text-muted-foreground">
-                Select a process from the list to view conversations and details.
+                Select a process from the list to view conversations and
+                details.
               </p>
             </div>
           )}
@@ -1350,11 +1510,12 @@ export function ProcessWorkbench() {
                   <CardTitle className="flex items-center gap-2 text-base">
                     <Sparkles className="h-4 w-4 text-muted-foreground" />
                     Function Summary
-                    {selectedFunction?.summaryStale && selectedFunction?.summary && (
-                      <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-medium text-amber-700">
-                        New data available
-                      </span>
-                    )}
+                    {selectedFunction?.summaryStale &&
+                      selectedFunction?.summary && (
+                        <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-medium text-amber-700">
+                          New data available
+                        </span>
+                      )}
                   </CardTitle>
                   <CardDescription>
                     {selectedFunction?.summary
@@ -1379,7 +1540,8 @@ export function ProcessWorkbench() {
                   {selectedFunction?.summaryUpdatedAt && (
                     <div className="flex items-center gap-1 text-[11px] text-muted-foreground/60">
                       <Clock className="h-3 w-3" />
-                      Last refreshed: {formatTimeAgo(selectedFunction.summaryUpdatedAt)}
+                      Last refreshed:{" "}
+                      {formatTimeAgo(selectedFunction.summaryUpdatedAt)}
                     </div>
                   )}
                   {funcSummaryError && (
@@ -1406,13 +1568,17 @@ export function ProcessWorkbench() {
                       try {
                         const result = await generateFunctionSummary({
                           functionId: selectedFunctionId,
-                          forceRefresh: !!selectedFunction?.summary && !selectedFunction?.summaryStale,
+                          forceRefresh:
+                            !!selectedFunction?.summary &&
+                            !selectedFunction?.summaryStale,
                         });
                         if (!result.summary && result.message) {
                           setFuncSummaryError(result.message);
                         }
                       } catch {
-                        setFuncSummaryError("Failed to generate summary. Please try again.");
+                        setFuncSummaryError(
+                          "Failed to generate summary. Please try again.",
+                        );
                       } finally {
                         setFuncSummaryLoading(false);
                       }
@@ -1505,8 +1671,7 @@ export function ProcessWorkbench() {
           <Tabs
             value={detailTab}
             onValueChange={(value) => {
-              const nextTab =
-                typeof value === "number" ? value : Number(value);
+              const nextTab = typeof value === "number" ? value : Number(value);
               setDetailTab(Number.isFinite(nextTab) ? nextTab : 0);
             }}
             className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden gap-0"
@@ -1542,7 +1707,10 @@ export function ProcessWorkbench() {
             </div>
 
             {/* Overview tab */}
-            <TabsContent value={0} className="min-h-0 min-w-0 flex-1 overflow-y-auto">
+            <TabsContent
+              value={0}
+              className="min-h-0 min-w-0 flex-1 overflow-y-auto"
+            >
               <div className="min-h-full p-4 md:h-full md:min-h-0 md:p-6">
                 <div className="mx-auto h-full min-h-[28rem] max-w-5xl">
                   <ProcessSummaryPanel
@@ -1554,7 +1722,7 @@ export function ProcessWorkbench() {
                       !!processSummary &&
                       completedProcessConversationCount > 1
                     }
-                    isRefreshing={processSummaryRefreshing}
+                    isRefreshing={processSummaryRebuilding}
                     onRefresh={async () => {
                       if (!selectedProcessId) return;
                       setProcessSummaryRefreshing(true);
@@ -1574,7 +1742,10 @@ export function ProcessWorkbench() {
             </TabsContent>
 
             {/* Conversations tab */}
-            <TabsContent value={1} className="min-h-0 min-w-0 flex-1 overflow-y-auto md:overflow-hidden">
+            <TabsContent
+              value={1}
+              className="min-h-0 min-w-0 flex-1 overflow-y-auto md:overflow-hidden"
+            >
               <ProcessConversationsTab
                 key={selectedProcessId}
                 processId={selectedProcessId!}
@@ -1584,7 +1755,10 @@ export function ProcessWorkbench() {
             </TabsContent>
 
             {/* Process Flow tab */}
-            <TabsContent value={2} className="min-h-0 min-w-0 flex-1 overflow-y-auto md:overflow-hidden">
+            <TabsContent
+              value={2}
+              className="min-h-0 min-w-0 flex-1 overflow-y-auto md:overflow-hidden"
+            >
               <ProcessFlowTab
                 key={selectedProcessId}
                 processId={selectedProcessId!}
@@ -1592,13 +1766,16 @@ export function ProcessWorkbench() {
                 flow={
                   processWorkbench === undefined
                     ? undefined
-                    : processWorkbench?.flow ?? null
+                    : (processWorkbench?.flow ?? null)
                 }
               />
             </TabsContent>
 
             {/* Insights tab */}
-            <TabsContent value={3} className="min-h-0 min-w-0 flex-1 overflow-y-auto scrollbar-hide">
+            <TabsContent
+              value={3}
+              className="min-h-0 min-w-0 flex-1 overflow-y-auto scrollbar-hide"
+            >
               <ProcessInsightsTab
                 processId={selectedProcessId!}
                 completedConversationCount={completedProcessConversationCount}
@@ -1682,7 +1859,8 @@ export function ProcessWorkbench() {
       try {
         const result = await generateFunctionSummary({
           functionId: mobilePreview.id,
-          forceRefresh: !!selectedFunction?.summary && !selectedFunction?.summaryStale,
+          forceRefresh:
+            !!selectedFunction?.summary && !selectedFunction?.summaryStale,
         });
         if (!result.summary && result.message) {
           setFuncSummaryError(result.message);
@@ -1701,7 +1879,8 @@ export function ProcessWorkbench() {
       try {
         const result = await generateDepartmentSummary({
           departmentId: mobilePreview.id,
-          forceRefresh: !!selectedDepartment?.summary && !selectedDepartment?.summaryStale,
+          forceRefresh:
+            !!selectedDepartment?.summary && !selectedDepartment?.summaryStale,
         });
         if (!result.summary && result.message) {
           setDeptSummaryError(result.message);
@@ -1736,203 +1915,203 @@ export function ProcessWorkbench() {
 
   return (
     <TooltipProvider>
-    <div className="h-full bg-background">
-      <ProcessAppShell onSearch={() => setPaletteOpen(true)}>
-        {/* Desktop: nested process tree + current workbench/detail surface */}
-        <div className="hidden min-w-0 flex-1 overflow-hidden md:flex">
-          <ProcessTreeNavigator
-            tree={hierarchyTree}
-            canEdit={canEdit}
-            selectedFunctionId={selectedFunctionId}
-            selectedDepartmentId={selectedDepartmentId}
-            selectedProcessId={selectedProcessId}
-            onSelectFunction={handleTreeSelectFunction}
-            onSelectDepartment={handleTreeSelectDepartment}
-            onSelectProcess={handleTreeSelectProcess}
-            onCreateFunction={() => openCrud("create", "Function")}
-            onCreateDepartment={handleTreeCreateDepartment}
-            onCreateProcess={handleTreeCreateProcess}
-            onEditFunction={handleTreeEditFunction}
-            onDeleteFunction={handleTreeDeleteFunction}
-            onEditDepartment={handleTreeEditDepartment}
-            onDeleteDepartment={handleTreeDeleteDepartment}
-            onEditProcess={handleTreeEditProcess}
-            onDeleteProcess={handleTreeDeleteProcess}
-          />
-          <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
-            {detailPanel()}
+      <div className="h-full bg-background">
+        <ProcessAppShell onSearch={() => setPaletteOpen(true)}>
+          {/* Desktop: nested process tree + current workbench/detail surface */}
+          <div className="hidden min-w-0 flex-1 overflow-hidden md:flex">
+            <ProcessTreeNavigator
+              tree={hierarchyTree}
+              canEdit={canEdit}
+              selectedFunctionId={selectedFunctionId}
+              selectedDepartmentId={selectedDepartmentId}
+              selectedProcessId={selectedProcessId}
+              onSelectFunction={handleTreeSelectFunction}
+              onSelectDepartment={handleTreeSelectDepartment}
+              onSelectProcess={handleTreeSelectProcess}
+              onCreateFunction={() => openCrud("create", "Function")}
+              onCreateDepartment={handleTreeCreateDepartment}
+              onCreateProcess={handleTreeCreateProcess}
+              onEditFunction={handleTreeEditFunction}
+              onDeleteFunction={handleTreeDeleteFunction}
+              onEditDepartment={handleTreeEditDepartment}
+              onDeleteDepartment={handleTreeDeleteDepartment}
+              onEditProcess={handleTreeEditProcess}
+              onDeleteProcess={handleTreeDeleteProcess}
+            />
+            <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
+              {detailPanel()}
+            </div>
           </div>
-        </div>
 
-        {/* Mobile: stacked single column */}
-        <div className="flex min-w-0 flex-1 flex-col overflow-hidden md:hidden">
-          {mobileLevel === 1 && functionsColumn(true)}
-          {mobileLevel === 2 && departmentsColumn(true)}
-          {mobileLevel === 3 && processesColumn(true)}
-          {mobileLevel === 4 && detailPanel(true)}
-        </div>
-      </ProcessAppShell>
+          {/* Mobile: stacked single column */}
+          <div className="flex min-w-0 flex-1 flex-col overflow-hidden md:hidden">
+            {mobileLevel === 1 && functionsColumn(true)}
+            {mobileLevel === 2 && departmentsColumn(true)}
+            {mobileLevel === 3 && processesColumn(true)}
+            {mobileLevel === 4 && detailPanel(true)}
+          </div>
+        </ProcessAppShell>
 
-      <Sheet
-        open={!!mobilePreview}
-        onOpenChange={(open) => {
-          if (!open) setMobilePreview(null);
-        }}
-      >
-        <SheetContent
-          side="bottom"
-          className="max-h-[82dvh] gap-0 overflow-hidden rounded-t-2xl p-0"
+        <Sheet
+          open={!!mobilePreview}
+          onOpenChange={(open) => {
+            if (!open) setMobilePreview(null);
+          }}
         >
-          <SheetHeader className="border-b p-5 pr-14">
-            <div className="flex items-center gap-3">
-              <div className="flex size-10 shrink-0 items-center justify-center rounded-xl bg-org-accent-subtle text-org-accent">
-                {mobilePreview?.type === "function" ? (
-                  <Building2 className="h-5 w-5" />
-                ) : mobilePreview?.type === "department" ? (
-                  <Layers className="h-5 w-5" />
-                ) : (
-                  <Cog className="h-5 w-5" />
+          <SheetContent
+            side="bottom"
+            className="max-h-[82dvh] gap-0 overflow-hidden rounded-t-2xl p-0"
+          >
+            <SheetHeader className="border-b p-5 pr-14">
+              <div className="flex items-center gap-3">
+                <div className="flex size-10 shrink-0 items-center justify-center rounded-xl bg-org-accent-subtle text-org-accent">
+                  {mobilePreview?.type === "function" ? (
+                    <Building2 className="h-5 w-5" />
+                  ) : mobilePreview?.type === "department" ? (
+                    <Layers className="h-5 w-5" />
+                  ) : (
+                    <Cog className="h-5 w-5" />
+                  )}
+                </div>
+                <div className="min-w-0 flex-1">
+                  <SheetTitle className="truncate text-base">
+                    {mobilePreview?.name}
+                  </SheetTitle>
+                  <SheetDescription className="truncate text-xs">
+                    {mobilePreviewTitle}
+                  </SheetDescription>
+                </div>
+              </div>
+            </SheetHeader>
+
+            <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4">
+              <div className="mb-4 flex items-center justify-between gap-3">
+                <p className="text-sm text-muted-foreground">
+                  {mobilePreviewDescription}
+                </p>
+                {mobilePreviewStale && mobilePreviewSummary && (
+                  <span className="shrink-0 rounded-full bg-amber-100 px-2 py-1 text-[10px] font-medium text-amber-700">
+                    New data
+                  </span>
                 )}
               </div>
-              <div className="min-w-0 flex-1">
-                <SheetTitle className="truncate text-base">
-                  {mobilePreview?.name}
-                </SheetTitle>
-                <SheetDescription className="truncate text-xs">
-                  {mobilePreviewTitle}
-                </SheetDescription>
-              </div>
-            </div>
-          </SheetHeader>
 
-          <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4">
-            <div className="mb-4 flex items-center justify-between gap-3">
-              <p className="text-sm text-muted-foreground">
-                {mobilePreviewDescription}
-              </p>
-              {mobilePreviewStale && mobilePreviewSummary && (
-                <span className="shrink-0 rounded-full bg-amber-100 px-2 py-1 text-[10px] font-medium text-amber-700">
-                  New data
-                </span>
+              {mobilePreviewLoading && !mobilePreviewSummary ? (
+                <LoadingSpinner />
+              ) : mobilePreviewSummary ? (
+                <div className="relative rounded-xl border bg-background p-4">
+                  {mobilePreviewLoading && (
+                    <div className="absolute inset-0 z-10 flex items-center justify-center rounded-xl bg-background/70">
+                      <Loader2 className="h-6 w-6 animate-spin text-org-accent" />
+                    </div>
+                  )}
+                  <MarkdownSummary content={mobilePreviewSummary} />
+                </div>
+              ) : (
+                <div className="rounded-xl border border-dashed bg-muted/30 p-4 text-sm leading-6 text-muted-foreground">
+                  {mobilePreview?.type === "process"
+                    ? "No process summary yet. Open the process details to record or review conversations."
+                    : "No summary has been generated yet."}
+                </div>
+              )}
+
+              {mobilePreviewUpdatedAt && (
+                <div className="mt-3 flex items-center gap-1 text-[11px] text-muted-foreground/70">
+                  <Clock className="h-3 w-3" />
+                  Last refreshed: {formatTimeAgo(mobilePreviewUpdatedAt)}
+                </div>
+              )}
+
+              {mobilePreviewError && (
+                <div className="mt-3 flex items-center gap-2 text-sm text-muted-foreground">
+                  <AlertCircle className="h-4 w-4 shrink-0 text-amber-500" />
+                  {mobilePreviewError}
+                </div>
               )}
             </div>
 
-            {mobilePreviewLoading && !mobilePreviewSummary ? (
-              <LoadingSpinner />
-            ) : mobilePreviewSummary ? (
-              <div className="relative rounded-xl border bg-background p-4">
-                {mobilePreviewLoading && (
-                  <div className="absolute inset-0 z-10 flex items-center justify-center rounded-xl bg-background/70">
-                        <Loader2 className="h-6 w-6 animate-spin text-org-accent" />
-                  </div>
-                )}
-                <MarkdownSummary content={mobilePreviewSummary} />
-              </div>
-            ) : (
-              <div className="rounded-xl border border-dashed bg-muted/30 p-4 text-sm leading-6 text-muted-foreground">
-                {mobilePreview?.type === "process"
-                  ? "No process summary yet. Open the process details to record or review conversations."
-                  : "No summary has been generated yet."}
-              </div>
-            )}
-
-            {mobilePreviewUpdatedAt && (
-              <div className="mt-3 flex items-center gap-1 text-[11px] text-muted-foreground/70">
-                <Clock className="h-3 w-3" />
-                Last refreshed: {formatTimeAgo(mobilePreviewUpdatedAt)}
-              </div>
-            )}
-
-            {mobilePreviewError && (
-              <div className="mt-3 flex items-center gap-2 text-sm text-muted-foreground">
-                <AlertCircle className="h-4 w-4 shrink-0 text-amber-500" />
-                {mobilePreviewError}
-              </div>
-            )}
-          </div>
-
-          <SheetFooter className="border-t p-4">
-            {canGenerateMobilePreviewSummary && (
+            <SheetFooter className="border-t p-4">
+              {canGenerateMobilePreviewSummary && (
+                <Button
+                  variant={
+                    !mobilePreviewSummary || mobilePreviewStale
+                      ? "default"
+                      : "outline"
+                  }
+                  size="lg"
+                  className="min-h-11 w-full gap-2 rounded-xl"
+                  disabled={mobilePreviewLoading}
+                  onClick={handleGenerateMobilePreviewSummary}
+                >
+                  {mobilePreviewLoading ? (
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                  ) : (
+                    <Sparkles className="h-4 w-4" />
+                  )}
+                  {mobilePreviewGenerateLabel}
+                </Button>
+              )}
               <Button
-                variant={
-                  !mobilePreviewSummary || mobilePreviewStale
-                    ? "default"
-                    : "outline"
-                }
+                variant="outline"
                 size="lg"
-                className="min-h-11 w-full gap-2 rounded-xl"
-                disabled={mobilePreviewLoading}
-                onClick={handleGenerateMobilePreviewSummary}
+                className="min-h-12 w-full justify-between rounded-xl"
+                onClick={handleMobilePreviewNavigate}
               >
-                {mobilePreviewLoading ? (
-                  <Loader2 className="h-4 w-4 animate-spin" />
-                ) : (
-                  <Sparkles className="h-4 w-4" />
-                )}
-                {mobilePreviewGenerateLabel}
+                {mobilePreviewNavigateLabel}
+                <ChevronRight className="h-4 w-4" />
               </Button>
-            )}
-            <Button
-              variant="outline"
-              size="lg"
-              className="min-h-12 w-full justify-between rounded-xl"
-              onClick={handleMobilePreviewNavigate}
-            >
-              {mobilePreviewNavigateLabel}
-              <ChevronRight className="h-4 w-4" />
-            </Button>
-          </SheetFooter>
-        </SheetContent>
-      </Sheet>
+            </SheetFooter>
+          </SheetContent>
+        </Sheet>
 
-      {/* CRUD Dialog */}
-      {crudOpen && (
-        <CrudDialog
-          open={crudOpen}
-          onOpenChange={setCrudOpen}
-          mode={crudMode}
-          entityType={crudEntity}
-          currentName={crudTargetName}
-          currentDescription={crudTargetDescription}
-          currentLocationId={crudCurrentLocationId ?? undefined}
-          locationOptions={
-            crudMode === "edit" && crudEntity === "Department"
-              ? departmentLocationOptions
-              : crudMode === "edit" && crudEntity === "Process"
-                ? processLocationOptions
+        {/* CRUD Dialog */}
+        {crudOpen && (
+          <CrudDialog
+            open={crudOpen}
+            onOpenChange={setCrudOpen}
+            mode={crudMode}
+            entityType={crudEntity}
+            currentName={crudTargetName}
+            currentDescription={crudTargetDescription}
+            currentLocationId={crudCurrentLocationId ?? undefined}
+            locationOptions={
+              crudMode === "edit" && crudEntity === "Department"
+                ? departmentLocationOptions
+                : crudMode === "edit" && crudEntity === "Process"
+                  ? processLocationOptions
+                  : undefined
+            }
+            locationLabel={
+              crudEntity === "Department"
+                ? "Function"
+                : crudEntity === "Process"
+                  ? "Department"
+                  : undefined
+            }
+            deleteEligibility={
+              crudMode === "delete" ? deleteEligibility : undefined
+            }
+            onCleanupChildren={
+              crudMode === "delete" && crudEntity === "Process"
+                ? handleOpenDeleteCleanup
                 : undefined
-          }
-          locationLabel={
-            crudEntity === "Department"
-              ? "Function"
-              : crudEntity === "Process"
-                ? "Department"
-                : undefined
-          }
-          deleteEligibility={
-            crudMode === "delete" ? deleteEligibility : undefined
-          }
-          onCleanupChildren={
-            crudMode === "delete" && crudEntity === "Process"
-              ? handleOpenDeleteCleanup
-              : undefined
-          }
-          onConfirm={handleCrudConfirm}
+            }
+            onConfirm={handleCrudConfirm}
+          />
+        )}
+
+        {/* ⌘K command palette — jump to any function/department/process */}
+        <CommandPalette
+          open={paletteOpen}
+          onOpenChange={setPaletteOpen}
+          functions={functions ?? []}
+          departments={allDepartments ?? []}
+          processes={allProcesses ?? []}
+          onJumpFunction={handleSelectFunction}
+          onJumpDepartment={jumpToDepartment}
+          onJumpProcess={jumpToProcess}
         />
-      )}
-
-      {/* ⌘K command palette — jump to any function/department/process */}
-      <CommandPalette
-        open={paletteOpen}
-        onOpenChange={setPaletteOpen}
-        functions={functions ?? []}
-        departments={allDepartments ?? []}
-        processes={allProcesses ?? []}
-        onJumpFunction={handleSelectFunction}
-        onJumpDepartment={jumpToDepartment}
-        onJumpProcess={jumpToProcess}
-      />
-    </div>
+      </div>
     </TooltipProvider>
   );
 }

@@ -41,6 +41,20 @@ function LoadingSummaryPanel() {
   );
 }
 
+function RebuildingText({ hasSummary }: { hasSummary: boolean }) {
+  return (
+    <div>
+      <p className="text-sm font-medium">
+        {hasSummary ? "Rebuilding summary" : "Building summary"}
+      </p>
+      <p className="text-muted-foreground mt-1 text-xs">
+        Each conversation is re-read before the summary is merged, so this can
+        take a few minutes. You can leave this page.
+      </p>
+    </div>
+  );
+}
+
 export function ProcessSummaryPanel({
   summary,
   isLoading,
@@ -125,15 +139,28 @@ export function ProcessSummaryPanel({
 
       <div className="min-h-0 flex-1 overflow-y-auto">
         {hasSummary ? (
-          <div className="relative min-h-full">
+          <div className="min-h-full">
+            {isRefreshing && (
+              // Sticky rather than an overlay centred on the content: a long
+              // summary put the middle of the scroll area well below the fold,
+              // so the message only appeared if you scrolled to find it. This
+              // stays at the top of the visible area however far down you are.
+              <div className="bg-background/95 sticky top-0 z-10 mb-3 flex items-start gap-3 rounded-lg border px-4 py-3 backdrop-blur-sm">
+                <Loader2 className="text-org-accent mt-0.5 size-4 shrink-0 animate-spin" />
+                <RebuildingText hasSummary />
+              </div>
+            )}
             <div className={cn("pb-2", isRefreshing && "opacity-50")}>
               <MarkdownSummary content={summaryText} />
             </div>
-            {isRefreshing && (
-              <div className="absolute inset-0 flex items-center justify-center rounded-lg bg-background/60">
-                <Loader2 className="size-6 animate-spin text-org-accent" />
-              </div>
-            )}
+          </div>
+        ) : isRefreshing ? (
+          // A first summary is generated the same way, so the panel must say
+          // so rather than claim there is nothing here. Centred is right here:
+          // there is no content to scroll past.
+          <div className="flex h-full min-h-64 flex-col items-center justify-center gap-3 px-6 text-center">
+            <Loader2 className="text-org-accent size-6 animate-spin" />
+            <RebuildingText hasSummary={false} />
           </div>
         ) : (
           <EmptyState

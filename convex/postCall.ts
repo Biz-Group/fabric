@@ -5,6 +5,7 @@ import {
   internalMutation,
   internalQuery,
   query,
+  type ActionCtx,
 } from "./_generated/server";
 import { internal } from "./_generated/api";
 import { Id } from "./_generated/dataModel";
@@ -14,6 +15,7 @@ import {
   resolveOrgForAction,
 } from "./lib/orgAuth";
 import {
+  assertCompletionNotTruncated,
   generateAICompletion,
   isAIConfigured,
 } from "./lib/aiProvider";
@@ -22,19 +24,26 @@ import {
   sanitizeContributorName,
 } from "./lib/contributorAttribution";
 import { summaryTitleFromAnalysis } from "./lib/conversationTitle";
+import { hashTranscript } from "./lib/transcriptHash";
 
 // Normalize ElevenLabs transcript to the shape our UI expects:
 // ElevenLabs returns { role: "agent"|"user", message: string, time_in_call_secs: number }
 // Our UI expects { role: "ai"|"user", content: string, time_in_call_secs: number }
 function normalizeTranscript(
-  raw: Array<{ role: string; message?: string; time_in_call_secs?: number }> | null,
-): Array<{
-  role: string;
-  content: string;
-  time_in_call_secs: number;
-  speakerId?: string;
-  speakerName?: string;
-}> | undefined {
+  raw: Array<{
+    role: string;
+    message?: string;
+    time_in_call_secs?: number;
+  }> | null,
+):
+  | Array<{
+      role: string;
+      content: string;
+      time_in_call_secs: number;
+      speakerId?: string;
+      speakerName?: string;
+    }>
+  | undefined {
   if (!raw || !Array.isArray(raw)) return undefined;
   return raw.map((msg) => ({
     role: msg.role === "agent" ? "ai" : msg.role,
@@ -183,10 +192,7 @@ export const insertConversation = internalMutation({
     audioStorageId: v.optional(v.id("_storage")),
     audioMimeType: v.optional(v.string()),
     transcriptionProvider: v.optional(
-      v.union(
-        v.literal("elevenlabs-convai"),
-        v.literal("elevenlabs-scribe"),
-      ),
+      v.union(v.literal("elevenlabs-convai"), v.literal("elevenlabs-scribe")),
     ),
     analysisProvider: v.optional(
       v.union(
@@ -244,8 +250,7 @@ export const insertConversation = internalMutation({
       inputMode: args.inputMode ?? "agent",
       audioStorageId: args.audioStorageId,
       audioMimeType: args.audioMimeType,
-      transcriptionProvider:
-        args.transcriptionProvider ?? "elevenlabs-convai",
+      transcriptionProvider: args.transcriptionProvider ?? "elevenlabs-convai",
       analysisProvider: args.analysisProvider ?? "elevenlabs-convai",
       transcript: args.transcript,
       speakerLabels: args.speakerLabels,
@@ -258,27 +263,37 @@ export const insertConversation = internalMutation({
   },
 });
 
-export const getConversationSummaries = internalQuery({
+/**
+ * Cap on how many conversations any one process-summary read will touch.
+ * Keep in step with MAX_CONVERSATIONS_PER_FLOW in processFlows.ts.
+ */
+const MAX_CONVERSATIONS_PER_SUMMARY = 50;
+
+/**
+ * The number of completed conversations on a process, capped.
+ *
+ * The incremental summary path needs only this — the ordinal for its
+ * `[Name, Conv. N]` citations — and used to get it from a query that returned
+ * every transcript, shipping all of them across the action boundary to read
+ * `.length`. Convex has no count operator, so this still reads rows, but it
+ * reads only `done` ones and returns an integer.
+ */
+export const countDoneConversations = internalQuery({
   args: {
     processId: v.id("processes"),
     clerkOrgId: v.string(),
   },
   handler: async (ctx, args) => {
-    const conversations = await ctx.db
+    const rows = await ctx.db
       .query("conversations")
-      .withIndex("by_clerkOrgId_and_processId", (q) =>
-        q.eq("clerkOrgId", args.clerkOrgId).eq("processId", args.processId),
+      .withIndex("by_clerkOrgId_and_processId_and_status", (q) =>
+        q
+          .eq("clerkOrgId", args.clerkOrgId)
+          .eq("processId", args.processId)
+          .eq("status", "done"),
       )
-      .order("asc")
-      .collect();
-    return conversations
-      .filter((c) => c.status === "done" && c.summary)
-      .map((c) => ({
-        contributorName: c.contributorName,
-        summary: c.summary!,
-        transcript: c.transcript ?? null,
-        creationTime: c._creationTime,
-      }));
+      .take(MAX_CONVERSATIONS_PER_SUMMARY);
+    return rows.length;
   },
 });
 
@@ -460,27 +475,36 @@ export const fetchConversation = action({
         const analysis = data.analysis ?? null;
         const durationSeconds = data.metadata?.call_duration_secs ?? undefined;
 
-        await ctx.runMutation(internal.postCall.insertConversation, {
-          processId: args.processId,
-          clerkOrgId: orgId,
-          elevenlabsConversationId: args.elevenlabsConversationId,
-          ...attributionFields,
-          transcript,
-          summary,
-          title,
-          analysis,
-          durationSeconds,
-          inputMode: "agent",
-          transcriptionProvider: "elevenlabs-convai",
-          analysisProvider: "elevenlabs-convai",
-          status: "done",
-        });
+        const conversationId = await ctx.runMutation(
+          internal.postCall.insertConversation,
+          {
+            processId: args.processId,
+            clerkOrgId: orgId,
+            elevenlabsConversationId: args.elevenlabsConversationId,
+            ...attributionFields,
+            transcript,
+            summary,
+            title,
+            analysis,
+            durationSeconds,
+            inputMode: "agent",
+            transcriptionProvider: "elevenlabs-convai",
+            analysisProvider: "elevenlabs-convai",
+            status: "done",
+          },
+        );
 
+        // Build this conversation's map record now, so a later rebuild is a
+        // single reduce instead of a backfill chain.
         await ctx.scheduler.runAfter(
           0,
-          internal.postCall.regenerateProcessSummary,
-          { processId: args.processId, clerkOrgId: orgId },
+          internal.postCall.generateConversationSummaryInput,
+          { conversationId, clerkOrgId: orgId },
         );
+        await ctx.runMutation(internal.postCall.requestProcessSummaryRegen, {
+          processId: args.processId,
+          clerkOrgId: orgId,
+        });
 
         return { status: "done" as const };
       }
@@ -702,9 +726,7 @@ export const listUnimported = internalAction({
       startTime: string | null;
       durationSeconds: number | null;
     }> = allConversations
-      .filter(
-        (c) => !importedSet.has(c.conversation_id) && c.status === "done",
-      )
+      .filter((c) => !importedSet.has(c.conversation_id) && c.status === "done")
       .map((c) => ({
         conversationId: c.conversation_id,
         startTime: c.start_time_unix_secs
@@ -751,27 +773,34 @@ export const importConversation = internalAction({
     const analysis = data.analysis ?? null;
     const durationSeconds = data.metadata?.call_duration_secs ?? undefined;
 
-    await ctx.runMutation(internal.postCall.insertConversation, {
-      processId: args.processId,
-      clerkOrgId: args.clerkOrgId,
-      elevenlabsConversationId: args.elevenlabsConversationId,
-      contributorName: args.contributorName,
-      transcript,
-      summary,
-      title,
-      analysis,
-      durationSeconds,
-      inputMode: "agent",
-      transcriptionProvider: "elevenlabs-convai",
-      analysisProvider: "elevenlabs-convai",
-      status: "done",
-    });
+    const conversationId = await ctx.runMutation(
+      internal.postCall.insertConversation,
+      {
+        processId: args.processId,
+        clerkOrgId: args.clerkOrgId,
+        elevenlabsConversationId: args.elevenlabsConversationId,
+        contributorName: args.contributorName,
+        transcript,
+        summary,
+        title,
+        analysis,
+        durationSeconds,
+        inputMode: "agent",
+        transcriptionProvider: "elevenlabs-convai",
+        analysisProvider: "elevenlabs-convai",
+        status: "done",
+      },
+    );
 
     await ctx.scheduler.runAfter(
       0,
-      internal.postCall.regenerateProcessSummary,
-      { processId: args.processId, clerkOrgId: args.clerkOrgId },
+      internal.postCall.generateConversationSummaryInput,
+      { conversationId, clerkOrgId: args.clerkOrgId },
     );
+    await ctx.runMutation(internal.postCall.requestProcessSummaryRegen, {
+      processId: args.processId,
+      clerkOrgId: args.clerkOrgId,
+    });
 
     return { status: "done" as const, summary };
   },
@@ -808,11 +837,13 @@ export const refreshConversationAnalysis = internalAction({
     }
 
     const data = await response.json();
-    const transcript = normalizeTranscript(data.transcript) ?? existing.transcript;
+    const transcript =
+      normalizeTranscript(data.transcript) ?? existing.transcript;
     const summary = data.analysis?.transcript_summary ?? existing.summary;
     const title = summaryTitleFromAnalysis(data.analysis) ?? existing.title;
     const analysis = data.analysis ?? existing.analysis;
-    const durationSeconds = data.metadata?.call_duration_secs ?? existing.durationSeconds;
+    const durationSeconds =
+      data.metadata?.call_duration_secs ?? existing.durationSeconds;
 
     await ctx.runMutation(internal.postCall.updateConversationAnalysis, {
       conversationId: existing._id,
@@ -823,6 +854,15 @@ export const refreshConversationAnalysis = internalAction({
       analysis,
       durationSeconds,
     });
+
+    // A refreshed transcript invalidates the cached map record. The action
+    // hashes the transcript and no-ops when nothing actually changed, so this
+    // is safe to fire on every refresh.
+    await ctx.scheduler.runAfter(
+      0,
+      internal.postCall.generateConversationSummaryInput,
+      { conversationId: existing._id, clerkOrgId: args.clerkOrgId },
+    );
 
     console.log(`Refreshed analysis for ${args.elevenlabsConversationId}`);
     return { status: "updated" as const };
@@ -889,6 +929,8 @@ export const updateConversationAnalysis = internalMutation({
 // forceRefresh: rebuilds from ALL transcripts (higher token cost).
 // ---------------------------------------------------------------------------
 
+const PROCESS_SUMMARY_MAX_TOKENS = 8192;
+
 const PROCESS_SUMMARY_SYSTEM_PROMPT = `You are an analyst synthesizing employee accounts of a single business process into a structured brief. Your output must use the following markdown format exactly:
 
 ## Overview
@@ -913,7 +955,14 @@ Rules:
 - When integrating new information into an existing summary, preserve existing citations and add new ones. Update sections as needed — move items from Notable Details to Consensus if a new contributor confirms them, or add new tensions if accounts conflict.
 - Output ONLY the markdown sections above, nothing else.`;
 
-const PROCESS_SUMMARY_SYSTEM_PROMPT_FULL_REBUILD = `You are an analyst synthesizing multiple employee accounts of a single business process into a structured brief. You are given the full transcripts of all conversations. Your output must use the following markdown format exactly:
+// The reduce output is a fixed five-section brief, so it does not grow with
+// the number of conversations the way the old concatenate-everything rebuild
+// did. 4,096 tokens at a 150 s timeout satisfies the budget rule (ceiling
+// 4,745), and truncation is caught rather than saved.
+const PROCESS_SUMMARY_REDUCE_MAX_TOKENS = 4096;
+const PROCESS_SUMMARY_REDUCE_TIMEOUT_MS = 150_000;
+
+const PROCESS_SUMMARY_REDUCE_SYSTEM_PROMPT = `You are an analyst merging structured records of individual employee accounts of a single business process into one brief. Each record was extracted from one contributor's interview and reports only what that contributor said. Your job is the cross-contributor work none of them could do: find agreement, find conflict, find gaps. Your output must use the following markdown format exactly:
 
 ## Overview
 2-3 sentence executive summary of the process.
@@ -933,7 +982,47 @@ Unique insights mentioned by only one contributor that seem important enough to 
 Rules:
 - Always cite contributors using [Name, Conv. N] format.
 - Write in clear, concise prose within each section.
+- A point belongs in Consensus only if more than one record supports it. One record saying it is Notable Details.
+- Treat each record's "Uncertainties" as evidence for Tensions & Gaps, not as fact.
+- Do not add steps, actors, or tools that appear in no record. A gap is a finding; filling it is an error.
 - Output ONLY the markdown sections above, nothing else.`;
+
+/**
+ * Every path that lands a new rolling summary does the same three things:
+ * save it, mark the flow stale, mark the department summary stale. Keeping
+ * that in one place stops the cascade from being half-applied by one caller.
+ */
+async function saveRollingSummary(
+  ctx: ActionCtx,
+  processId: Id<"processes">,
+  clerkOrgId: string,
+  rollingSummary: string,
+): Promise<void> {
+  await ctx.runMutation(internal.postCall.updateRollingSummary, {
+    processId,
+    clerkOrgId,
+    rollingSummary,
+  });
+  await ctx.runMutation(internal.processFlows.markFlowStale, {
+    processId,
+    clerkOrgId,
+    // Only flags if the conversation set actually changed — a rebuild over the
+    // same conversations must not mark a freshly generated flow stale.
+    trigger: "summaryRebuilt",
+  });
+  const departmentId: Id<"departments"> | null = await ctx.runQuery(
+    internal.postCall.getProcessDepartmentId,
+    { processId, clerkOrgId },
+  );
+  if (departmentId) {
+    await ctx.runMutation(
+      internal.summariesHelpers.markDepartmentSummaryStale,
+      {
+        departmentId,
+      },
+    );
+  }
+}
 
 function formatTranscript(
   transcript: Array<{
@@ -954,154 +1043,515 @@ function formatTranscript(
   return `[Conversation ${conversationNumber} — ${contributorName}]\n${lines.join("\n")}`;
 }
 
-export const regenerateProcessSummary = internalAction({
+// ---------------------------------------------------------------------------
+// Map step — one Fabric-owned structured record per conversation.
+//
+// The rebuild exists to recover fidelity the incremental path loses, so its
+// inputs have to be faithful. The vendor `summary` field is ElevenLabs' and can
+// change depth or shape without notice, which makes it unfit to be the
+// foundation of anything; it stays display-only. These records are ours.
+// ---------------------------------------------------------------------------
+
+const CONVERSATION_MAP_MAX_TOKENS = 1024;
+const CONVERSATION_MAP_TIMEOUT_MS = 120_000;
+
+const CONVERSATION_MAP_SYSTEM_PROMPT = `You are extracting ONE employee's account of a business process into a compact structured record. This record will later be merged with other employees' records to build a single process brief, so it must be faithful to this account alone — never generalize, never invent steps to fill gaps, never smooth over uncertainty.
+
+Your output must use the following markdown format exactly:
+
+## Steps
+Numbered, in the order this contributor described them. One line each: what happens and who does it. If the contributor was unsure about ordering, say so on that line.
+
+## Actors
+Roles, teams, or named people this contributor says are involved, each with what they do.
+
+## Tools
+Systems, forms, or documents this contributor named, each with what it is used for.
+
+## Pain Points
+Friction this contributor described: delays, rework, manual workarounds, things that break.
+
+## Uncertainties
+Anything this contributor was unsure of, contradicted themselves on, or explicitly did not know. If none, write "None stated."
+
+Rules:
+- Report only what this contributor said. No inference beyond their words.
+- Be terse. This is an intermediate record, not prose for a reader.
+- Keep every section even when it is empty — write "None stated." rather than dropping it.
+- Do not compare this account to anyone else's; you cannot see them.
+- Output ONLY the markdown sections above, nothing else.`;
+
+export const getConversationForSummaryInput = internalQuery({
+  args: {
+    conversationId: v.id("conversations"),
+    clerkOrgId: v.string(),
+  },
+  handler: async (ctx, args) => {
+    const conv = await ctx.db.get(args.conversationId);
+    if (!conv || conv.clerkOrgId !== args.clerkOrgId) return null;
+    return {
+      contributorName: conv.contributorName,
+      transcript: conv.transcript ?? null,
+      processSummaryInputHash: conv.processSummaryInputHash ?? null,
+      status: conv.status,
+    };
+  },
+});
+
+export const saveConversationSummaryInput = internalMutation({
+  args: {
+    conversationId: v.id("conversations"),
+    clerkOrgId: v.string(),
+    processSummaryInput: v.string(),
+    processSummaryInputHash: v.string(),
+  },
+  handler: async (ctx, args) => {
+    const conv = await ctx.db.get(args.conversationId);
+    if (!conv || conv.clerkOrgId !== args.clerkOrgId) {
+      throw new Error("Conversation not found in this organization");
+    }
+    await ctx.db.patch(args.conversationId, {
+      processSummaryInput: args.processSummaryInput,
+      processSummaryInputHash: args.processSummaryInputHash,
+    });
+  },
+});
+
+/**
+ * Shared by the single-conversation action and the backfill chain — one LLM
+ * call, one conversation, per the plan's "one call per scheduled action" rule.
+ * No-ops when the cached record already matches the current transcript.
+ */
+async function generateSummaryInputForConversation(
+  ctx: ActionCtx,
+  conversationId: Id<"conversations">,
+  clerkOrgId: string,
+): Promise<void> {
+  const conv = await ctx.runQuery(
+    internal.postCall.getConversationForSummaryInput,
+    { conversationId, clerkOrgId },
+  );
+  if (!conv || conv.status !== "done") return;
+
+  const transcriptHash = hashTranscript(conv.transcript);
+  if (conv.processSummaryInputHash === transcriptHash) return;
+
+  const completion = await generateAICompletion({
+    capability: "synthesis",
+    operation: "conversation-summary-input",
+    system: CONVERSATION_MAP_SYSTEM_PROMPT,
+    user: formatTranscript(conv.transcript, conv.contributorName, 1),
+    maxTokens: CONVERSATION_MAP_MAX_TOKENS,
+    timeoutMs: CONVERSATION_MAP_TIMEOUT_MS,
+  });
+  assertCompletionNotTruncated(
+    completion,
+    "conversation-summary-input",
+    CONVERSATION_MAP_MAX_TOKENS,
+  );
+
+  const processSummaryInput = completion.text;
+  if (!processSummaryInput) return;
+
+  await ctx.runMutation(internal.postCall.saveConversationSummaryInput, {
+    conversationId,
+    clerkOrgId,
+    processSummaryInput,
+    processSummaryInputHash: transcriptHash,
+  });
+}
+
+export const generateConversationSummaryInput = internalAction({
+  args: {
+    conversationId: v.id("conversations"),
+    clerkOrgId: v.string(),
+  },
+  handler: async (ctx, args): Promise<void> => {
+    if (!isAIConfigured("synthesis")) return;
+    await generateSummaryInputForConversation(
+      ctx,
+      args.conversationId,
+      args.clerkOrgId,
+    );
+  },
+});
+
+/**
+ * Walks a fixed list of conversations one per action, generating the map
+ * record for each, then hands back to the reduce.
+ *
+ * The list is computed once and shrinks with every step, so the chain always
+ * terminates. A conversation whose map step fails is logged and skipped rather
+ * than retried forever — the reduce then runs with the records that do exist,
+ * which is why it hands back with `skipBackfill`.
+ */
+export const backfillProcessSummaryInputs = internalAction({
+  args: {
+    processId: v.id("processes"),
+    clerkOrgId: v.string(),
+    conversationIds: v.array(v.id("conversations")),
+  },
+  handler: async (ctx, args): Promise<void> => {
+    const [next, ...rest] = args.conversationIds;
+
+    if (next === undefined) {
+      await ctx.scheduler.runAfter(
+        0,
+        internal.postCall.regenerateProcessSummary,
+        {
+          processId: args.processId,
+          clerkOrgId: args.clerkOrgId,
+          forceRefresh: true,
+          skipBackfill: true,
+        },
+      );
+      return;
+    }
+
+    try {
+      await generateSummaryInputForConversation(ctx, next, args.clerkOrgId);
+    } catch (error) {
+      console.error("Conversation map step failed; skipping it", {
+        conversationId: next,
+        errorType: error instanceof Error ? error.name : "UnknownError",
+      });
+    }
+
+    // Keep the coalescing gate alive: a long backfill must not look stalled.
+    await ctx.runMutation(internal.postCall.touchProcessSummaryRegen, {
+      processId: args.processId,
+      clerkOrgId: args.clerkOrgId,
+    });
+
+    await ctx.scheduler.runAfter(
+      0,
+      internal.postCall.backfillProcessSummaryInputs,
+      {
+        processId: args.processId,
+        clerkOrgId: args.clerkOrgId,
+        conversationIds: rest,
+      },
+    );
+  },
+});
+
+export const getProcessSummaryInputs = internalQuery({
+  args: {
+    processId: v.id("processes"),
+    clerkOrgId: v.string(),
+  },
+  handler: async (ctx, args) => {
+    const rows = await ctx.db
+      .query("conversations")
+      .withIndex("by_clerkOrgId_and_processId_and_status", (q) =>
+        q
+          .eq("clerkOrgId", args.clerkOrgId)
+          .eq("processId", args.processId)
+          .eq("status", "done"),
+      )
+      .order("asc")
+      .take(MAX_CONVERSATIONS_PER_SUMMARY);
+
+    const ready: Array<{
+      conversationNumber: number;
+      contributorName: string;
+      input: string;
+    }> = [];
+    const missingIds: Array<Id<"conversations">> = [];
+
+    rows.forEach((row, index) => {
+      if (row.processSummaryInput) {
+        ready.push({
+          conversationNumber: index + 1,
+          contributorName: row.contributorName,
+          input: row.processSummaryInput,
+        });
+      } else {
+        missingIds.push(row._id);
+      }
+    });
+
+    return { ready, missingIds };
+  },
+});
+
+// ---------------------------------------------------------------------------
+// Coalescing gate for rolling-summary regeneration.
+//
+// Several conversations finishing at once used to each schedule their own
+// regen, and concurrent runs raced on "the latest conversation" — dropping or
+// double-integrating a transcript. Requests now collapse onto one in-flight
+// run; anything that arrives while it is running raises a flag that schedules
+// exactly one more pass. Nothing is dropped, and nothing runs twice over.
+// ---------------------------------------------------------------------------
+
+const SUMMARY_REGEN_STALE_MS = 120_000;
+
+export const requestProcessSummaryRegen = internalMutation({
   args: {
     processId: v.id("processes"),
     clerkOrgId: v.string(),
     forceRefresh: v.optional(v.boolean()),
   },
   handler: async (ctx, args) => {
-    if (!isAIConfigured("synthesis")) {
-      console.error("AI synthesis is not configured — skipping summary regeneration");
+    const process = await ctx.db.get(args.processId);
+    if (!process || process.clerkOrgId !== args.clerkOrgId) {
+      throw new Error("Process not found in this organization");
+    }
+
+    const now = Date.now();
+    const inFlight =
+      process.summaryRegenScheduledAt !== undefined &&
+      now - process.summaryRegenScheduledAt < SUMMARY_REGEN_STALE_MS;
+
+    if (inFlight) {
+      await ctx.db.patch(args.processId, { summaryRegenRequestedAgain: true });
+      return { scheduled: false as const };
+    }
+
+    await ctx.db.patch(args.processId, {
+      summaryRegenScheduledAt: now,
+      summaryRegenRequestedAgain: false,
+    });
+    await ctx.scheduler.runAfter(
+      0,
+      internal.postCall.regenerateProcessSummary,
+      {
+        processId: args.processId,
+        clerkOrgId: args.clerkOrgId,
+        forceRefresh: args.forceRefresh,
+      },
+    );
+    return { scheduled: true as const };
+  },
+});
+
+/** Heartbeat so a long backfill is not mistaken for a wedged run. */
+export const touchProcessSummaryRegen = internalMutation({
+  args: {
+    processId: v.id("processes"),
+    clerkOrgId: v.string(),
+  },
+  handler: async (ctx, args) => {
+    const process = await ctx.db.get(args.processId);
+    if (!process || process.clerkOrgId !== args.clerkOrgId) return;
+    if (process.summaryRegenScheduledAt === undefined) return;
+    await ctx.db.patch(args.processId, {
+      summaryRegenScheduledAt: Date.now(),
+    });
+  },
+});
+
+export const finishProcessSummaryRegen = internalMutation({
+  args: {
+    processId: v.id("processes"),
+    clerkOrgId: v.string(),
+  },
+  handler: async (ctx, args) => {
+    const process = await ctx.db.get(args.processId);
+    if (!process || process.clerkOrgId !== args.clerkOrgId) return;
+
+    if (process.summaryRegenRequestedAgain) {
+      // Something arrived mid-run. The trailing pass is always a full rebuild:
+      // it subsumes whatever the queued requests each wanted, and the reduce
+      // is idempotent over the cached records anyway.
+      await ctx.db.patch(args.processId, {
+        summaryRegenScheduledAt: Date.now(),
+        summaryRegenRequestedAgain: false,
+      });
+      await ctx.scheduler.runAfter(
+        0,
+        internal.postCall.regenerateProcessSummary,
+        {
+          processId: args.processId,
+          clerkOrgId: args.clerkOrgId,
+          forceRefresh: true,
+        },
+      );
       return;
     }
 
-    if (args.forceRefresh) {
-      const allConversations: Array<{
+    await ctx.db.patch(args.processId, {
+      summaryRegenScheduledAt: undefined,
+      summaryRegenRequestedAgain: undefined,
+    });
+  },
+});
+
+export const regenerateProcessSummary = internalAction({
+  args: {
+    processId: v.id("processes"),
+    clerkOrgId: v.string(),
+    forceRefresh: v.optional(v.boolean()),
+    skipBackfill: v.optional(v.boolean()),
+  },
+  handler: async (ctx, args) => {
+    let handedOff = false;
+    try {
+      if (!isAIConfigured("synthesis")) {
+        console.error(
+          "AI synthesis is not configured — skipping summary regeneration",
+        );
+        return;
+      }
+
+      if (args.forceRefresh) {
+        const { ready, missingIds } = await ctx.runQuery(
+          internal.postCall.getProcessSummaryInputs,
+          { processId: args.processId, clerkOrgId: args.clerkOrgId },
+        );
+
+        if (ready.length === 0 && missingIds.length === 0) return;
+
+        // Map before reduce. Conversations recorded since this pipeline shipped
+        // already have their record, so the chain is normally empty — it exists
+        // for the backlog, and for anything whose map step failed earlier.
+        if (missingIds.length > 0 && !args.skipBackfill) {
+          await ctx.scheduler.runAfter(
+            0,
+            internal.postCall.backfillProcessSummaryInputs,
+            {
+              processId: args.processId,
+              clerkOrgId: args.clerkOrgId,
+              conversationIds: missingIds,
+            },
+          );
+          handedOff = true;
+          return;
+        }
+
+        if (ready.length === 0) {
+          console.error("Process summary rebuild has no usable records", {
+            processId: args.processId,
+            missing: missingIds.length,
+          });
+          return;
+        }
+
+        if (missingIds.length > 0) {
+          // Reached only via skipBackfill, i.e. the chain already tried and
+          // failed on these. Better a summary of what we have than none, but it
+          // must not look complete.
+          console.warn(
+            "Rebuilding a process summary without every conversation",
+            {
+              processId: args.processId,
+              used: ready.length,
+              missing: missingIds.length,
+            },
+          );
+        }
+
+        const recordBlock = ready
+          .map(
+            (r) =>
+              `[Conversation ${r.conversationNumber} — ${r.contributorName}]\n${r.input}`,
+          )
+          .join("\n\n---\n\n");
+
+        const completion = await generateAICompletion({
+          capability: "synthesis",
+          operation: "process-summary-reduce",
+          system: PROCESS_SUMMARY_REDUCE_SYSTEM_PROMPT,
+          user: `Here are the structured records for the ${ready.length} conversations recorded for this process:\n\n${recordBlock}`,
+          maxTokens: PROCESS_SUMMARY_REDUCE_MAX_TOKENS,
+          timeoutMs: PROCESS_SUMMARY_REDUCE_TIMEOUT_MS,
+        });
+        assertCompletionNotTruncated(
+          completion,
+          "process-summary-reduce",
+          PROCESS_SUMMARY_REDUCE_MAX_TOKENS,
+        );
+
+        if (completion.text) {
+          await saveRollingSummary(
+            ctx,
+            args.processId,
+            args.clerkOrgId,
+            completion.text,
+          );
+        }
+        return;
+      }
+
+      // Incremental path: existing summary + latest conversation transcript
+      const existingSummary: string | null = await ctx.runQuery(
+        internal.postCall.getProcessRollingSummary,
+        { processId: args.processId, clerkOrgId: args.clerkOrgId },
+      );
+
+      const latestConversation: {
         contributorName: string;
-        summary: string;
+        summary: string | null;
         transcript: unknown;
         creationTime: number;
-      }> = await ctx.runQuery(internal.postCall.getConversationSummaries, {
+      } | null = await ctx.runQuery(internal.postCall.getLatestConversation, {
         processId: args.processId,
         clerkOrgId: args.clerkOrgId,
       });
 
-      if (allConversations.length === 0) return;
+      if (!latestConversation) return;
 
-      const transcriptBlock = allConversations
-        .map((c, i) =>
-          formatTranscript(
-            c.transcript as Array<{
-              role: string;
-              content: string;
-              speakerName?: string;
-            }> | null,
-            c.contributorName,
-            i + 1,
-          ),
-        )
-        .join("\n\n---\n\n");
+      const conversationCount: number = await ctx.runQuery(
+        internal.postCall.countDoneConversations,
+        { processId: args.processId, clerkOrgId: args.clerkOrgId },
+      );
+      if (conversationCount === 0) return;
+
+      const latestTranscript = formatTranscript(
+        latestConversation.transcript as Array<{
+          role: string;
+          content: string;
+          speakerName?: string;
+        }> | null,
+        latestConversation.contributorName,
+        conversationCount,
+      );
+
+      let userContent: string;
+
+      if (!existingSummary || conversationCount === 1) {
+        userContent = `This is the first conversation recorded for this process. Generate the initial structured summary from this transcript:\n\n${latestTranscript}`;
+      } else {
+        userContent = `Here is the existing process summary:\n\n${existingSummary}\n\n---\n\nA new conversation has been recorded. Integrate the information from this transcript into the existing summary, updating all sections as needed:\n\n${latestTranscript}`;
+      }
 
       const completion = await generateAICompletion({
         capability: "synthesis",
-        operation: "process-summary-full-rebuild",
-        system: PROCESS_SUMMARY_SYSTEM_PROMPT_FULL_REBUILD,
-        user: `Here are the full transcripts of all ${allConversations.length} conversations for this process:\n\n${transcriptBlock}`,
-        maxTokens: 8192,
+        operation: "process-summary-incremental",
+        system: PROCESS_SUMMARY_SYSTEM_PROMPT,
+        user: userContent,
+        maxTokens: PROCESS_SUMMARY_MAX_TOKENS,
       });
-      const rollingSummary = completion.text;
-      if (rollingSummary) {
-        await ctx.runMutation(internal.postCall.updateRollingSummary, {
-          processId: args.processId,
-          clerkOrgId: args.clerkOrgId,
-          rollingSummary,
-        });
-        await ctx.runMutation(internal.processFlows.markFlowStale, {
-          processId: args.processId,
-          clerkOrgId: args.clerkOrgId,
-        });
-        const departmentId: Id<"departments"> | null = await ctx.runQuery(
-          internal.postCall.getProcessDepartmentId,
-          { processId: args.processId, clerkOrgId: args.clerkOrgId },
-        );
-        if (departmentId) {
-          await ctx.runMutation(
-            internal.summariesHelpers.markDepartmentSummaryStale,
-            { departmentId },
-          );
-        }
-      }
-      return;
-    }
-
-    // Incremental path: existing summary + latest conversation transcript
-    const existingSummary: string | null = await ctx.runQuery(
-      internal.postCall.getProcessRollingSummary,
-      { processId: args.processId, clerkOrgId: args.clerkOrgId },
-    );
-
-    const latestConversation: {
-      contributorName: string;
-      summary: string | null;
-      transcript: unknown;
-      creationTime: number;
-    } | null = await ctx.runQuery(internal.postCall.getLatestConversation, {
-      processId: args.processId,
-      clerkOrgId: args.clerkOrgId,
-    });
-
-    if (!latestConversation) return;
-
-    const allConversations: Array<{
-      contributorName: string;
-      summary: string;
-      transcript: unknown;
-      creationTime: number;
-    }> = await ctx.runQuery(internal.postCall.getConversationSummaries, {
-      processId: args.processId,
-      clerkOrgId: args.clerkOrgId,
-    });
-
-    const conversationCount = allConversations.length;
-    if (conversationCount === 0) return;
-
-    const latestTranscript = formatTranscript(
-      latestConversation.transcript as Array<{
-        role: string;
-        content: string;
-        speakerName?: string;
-      }> | null,
-      latestConversation.contributorName,
-      conversationCount,
-    );
-
-    let userContent: string;
-
-    if (!existingSummary || conversationCount === 1) {
-      userContent = `This is the first conversation recorded for this process. Generate the initial structured summary from this transcript:\n\n${latestTranscript}`;
-    } else {
-      userContent = `Here is the existing process summary:\n\n${existingSummary}\n\n---\n\nA new conversation has been recorded. Integrate the information from this transcript into the existing summary, updating all sections as needed:\n\n${latestTranscript}`;
-    }
-
-    const completion = await generateAICompletion({
-      capability: "synthesis",
-      operation: "process-summary-incremental",
-      system: PROCESS_SUMMARY_SYSTEM_PROMPT,
-      user: userContent,
-      maxTokens: 8192,
-    });
-    const rollingSummary = completion.text;
-
-    if (rollingSummary) {
-      await ctx.runMutation(internal.postCall.updateRollingSummary, {
-        processId: args.processId,
-        clerkOrgId: args.clerkOrgId,
-        rollingSummary,
-      });
-      await ctx.runMutation(internal.processFlows.markFlowStale, {
-        processId: args.processId,
-        clerkOrgId: args.clerkOrgId,
-      });
-      const departmentId: Id<"departments"> | null = await ctx.runQuery(
-        internal.postCall.getProcessDepartmentId,
-        { processId: args.processId, clerkOrgId: args.clerkOrgId },
+      // Throwing here leaves the previous rolling summary intact. Saving a
+      // truncated one would be worse than saving nothing: the incremental path
+      // feeds itself, so a half-written summary becomes the base every later
+      // conversation is merged into.
+      assertCompletionNotTruncated(
+        completion,
+        "process-summary-incremental",
+        PROCESS_SUMMARY_MAX_TOKENS,
       );
-      if (departmentId) {
-        await ctx.runMutation(
-          internal.summariesHelpers.markDepartmentSummaryStale,
-          { departmentId },
+      const rollingSummary = completion.text;
+
+      if (rollingSummary) {
+        await saveRollingSummary(
+          ctx,
+          args.processId,
+          args.clerkOrgId,
+          rollingSummary,
         );
+      }
+    } finally {
+      // The gate is released here, not at each exit, so a thrown truncation
+      // or provider error cannot wedge a process out of ever regenerating.
+      // Skipped only when the backfill chain took over: it owns the gate now
+      // and hands it back through its own reduce pass.
+      if (!handedOff) {
+        await ctx.runMutation(internal.postCall.finishProcessSummaryRegen, {
+          processId: args.processId,
+          clerkOrgId: args.clerkOrgId,
+        });
       }
     }
   },

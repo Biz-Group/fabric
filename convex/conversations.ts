@@ -159,9 +159,7 @@ export const listAllForOrg = query({
         ? ctx.db
             .query("conversations")
             .withIndex("by_clerkOrgId_and_processId", (q) =>
-              q
-                .eq("clerkOrgId", caller.orgId)
-                .eq("processId", args.processId!),
+              q.eq("clerkOrgId", caller.orgId).eq("processId", args.processId!),
             )
         : args.status !== undefined
           ? ctx.db
@@ -186,7 +184,10 @@ export const listAllForOrg = query({
 
     // Join each conversation with its process/department/function names.
     const processCache = new Map<Id<"processes">, Doc<"processes"> | null>();
-    const departmentCache = new Map<Id<"departments">, Doc<"departments"> | null>();
+    const departmentCache = new Map<
+      Id<"departments">,
+      Doc<"departments"> | null
+    >();
     const functionCache = new Map<Id<"functions">, Doc<"functions"> | null>();
 
     const joined: ConversationRow[] = await Promise.all(
@@ -330,6 +331,9 @@ export const deleteForAdmin = mutation({
       await ctx.runMutation(internal.processFlows.markFlowStale, {
         processId,
         clerkOrgId: caller.orgId,
+        // Unconditional: the flow may cite the interview that just went away,
+        // and a count check could miss it if another was added meanwhile.
+        trigger: "evidenceChanged",
       });
       const process = await ctx.db.get(processId);
       if (process && process.clerkOrgId === caller.orgId) {
@@ -340,16 +344,14 @@ export const deleteForAdmin = mutation({
       }
       // Rebuild the parent process summary from scratch — the deleted
       // conversation may have contributed citations/content to the incremental
-      // summary, so a full rebuild is the safe option.
-      await ctx.scheduler.runAfter(
-        0,
-        internal.postCall.regenerateProcessSummary,
-        {
-          processId,
-          clerkOrgId: caller.orgId,
-          forceRefresh: true,
-        },
-      );
+      // summary, so a full rebuild is the safe option. The rebuild reduces
+      // over the surviving conversations' cached records, and this row's went
+      // with it, so nothing has to un-say what it contributed.
+      await ctx.runMutation(internal.postCall.requestProcessSummaryRegen, {
+        processId,
+        clerkOrgId: caller.orgId,
+        forceRefresh: true,
+      });
       return;
     }
 
@@ -375,18 +377,24 @@ export const deleteForAdmin = mutation({
       .take(1000);
     const hasSummaries = siblingProcesses.some((p) => p.rollingSummary);
     if (hasSummaries) {
-      await ctx.runMutation(internal.summariesHelpers.markDepartmentSummaryStale, {
-        departmentId: process.departmentId,
-      });
+      await ctx.runMutation(
+        internal.summariesHelpers.markDepartmentSummaryStale,
+        {
+          departmentId: process.departmentId,
+        },
+      );
     } else {
       await ctx.db.patch(process.departmentId, {
         summary: undefined,
         summaryUpdatedAt: undefined,
         summaryStale: undefined,
       });
-      await ctx.runMutation(internal.summariesHelpers.markFunctionSummaryStale, {
-        functionId: department.functionId,
-      });
+      await ctx.runMutation(
+        internal.summariesHelpers.markFunctionSummaryStale,
+        {
+          functionId: department.functionId,
+        },
+      );
     }
   },
 });
@@ -423,7 +431,10 @@ export const getFailedForRetry = internalQuery({
     if (conv.status !== "failed") {
       throw new Error("Only failed conversations can be retried");
     }
-    if ((conv.inputMode ?? "agent") !== "agent" || !conv.elevenlabsConversationId) {
+    if (
+      (conv.inputMode ?? "agent") !== "agent" ||
+      !conv.elevenlabsConversationId
+    ) {
       throw new Error("Only failed AI interview conversations can be retried");
     }
 

@@ -84,7 +84,8 @@ function applyDescriptionUpdate(
 
   patch.description = descriptionUpdate.description;
   patch.descriptionSafetyStatus = descriptionUpdate.descriptionSafetyStatus;
-  patch.descriptionSafetyCheckedAt = descriptionUpdate.descriptionSafetyCheckedAt;
+  patch.descriptionSafetyCheckedAt =
+    descriptionUpdate.descriptionSafetyCheckedAt;
   patch.descriptionSafetyModel = descriptionUpdate.descriptionSafetyModel;
   patch.descriptionSafetyPromptVersion =
     descriptionUpdate.descriptionSafetyPromptVersion;
@@ -94,7 +95,10 @@ function applyDescriptionUpdate(
 
 async function buildDescriptionUpdate(
   description: string | undefined,
-  current: Pick<Doc<"processes">, "description" | "descriptionSafetyStatus"> | null,
+  current: Pick<
+    Doc<"processes">,
+    "description" | "descriptionSafetyStatus"
+  > | null,
 ): Promise<DescriptionUpdate> {
   if (description === undefined) return { kind: "unchanged" };
 
@@ -108,10 +112,11 @@ async function buildDescriptionUpdate(
     return { kind: "unchanged" };
   }
 
-  const decision = await classifyDescriptionSafety(
-    normalized.value,
-  );
-  return { kind: "set", ...buildSafeDescriptionFields(normalized.value, decision) };
+  const decision = await classifyDescriptionSafety(normalized.value);
+  return {
+    kind: "set",
+    ...buildSafeDescriptionFields(normalized.value, decision),
+  };
 }
 
 export const listByDepartment = query({
@@ -123,9 +128,7 @@ export const listByDepartment = query({
     const docs = await ctx.db
       .query("processes")
       .withIndex("by_clerkOrgId_and_departmentId", (q) =>
-        q
-          .eq("clerkOrgId", caller.orgId)
-          .eq("departmentId", args.departmentId),
+        q.eq("clerkOrgId", caller.orgId).eq("departmentId", args.departmentId),
       )
       .order("asc")
       .collect();
@@ -169,7 +172,7 @@ export const listAll = query({
           departmentName: dept?.name ?? "Unknown",
           functionId,
           functionName: functionId
-            ? fnMap.get(functionId) ?? "Unknown"
+            ? (fnMap.get(functionId) ?? "Unknown")
             : "Unknown",
         };
       })
@@ -234,7 +237,9 @@ export const getWorkbench = query({
     // showing the submitter's photo beside someone else's name would misattribute.
     const latestContributorAccountId =
       latestConversation?.subjectUserId ??
-      (latestConversation?.submittedByName ? null : latestConversation?.userId) ??
+      (latestConversation?.submittedByName
+        ? null
+        : latestConversation?.userId) ??
       null;
     const latestContributorUser =
       latestContributorAccountId != null
@@ -258,6 +263,15 @@ export const getWorkbench = query({
         description: process.description ?? null,
         descriptionSafetyStatus: process.descriptionSafetyStatus ?? null,
         rollingSummary: process.rollingSummary ?? null,
+        // When a summary regeneration is in flight, so the UI can show it is
+        // working. A rebuild schedules background work and returns
+        // immediately, and on a process whose conversations predate the map
+        // step it runs one call per conversation before the summary changes —
+        // without this the panel looks idle for minutes. Null once the run
+        // releases the gate. Clients must treat a timestamp older than
+        // SUMMARY_REGEN_STALE_MS (convex/postCall.ts) as finished: a run that
+        // died mid-flight never clears it.
+        summaryRegenStartedAt: process.summaryRegenScheduledAt ?? null,
       },
       department: {
         _id: department._id,
@@ -309,7 +323,10 @@ export const create = action({
       { departmentId: args.departmentId, clerkOrgId: orgId },
     );
     if (!parentExists) throw new Error("Not found");
-    const descriptionUpdate = await buildDescriptionUpdate(args.description, null);
+    const descriptionUpdate = await buildDescriptionUpdate(
+      args.description,
+      null,
+    );
     return await ctx.runMutation(internal.processes.createInternal, {
       departmentId: args.departmentId,
       name: args.name,
@@ -364,7 +381,8 @@ export const createInternal = internalMutation({
               args.descriptionUpdate.descriptionSafetyStatus,
             descriptionSafetyCheckedAt:
               args.descriptionUpdate.descriptionSafetyCheckedAt,
-            descriptionSafetyModel: args.descriptionUpdate.descriptionSafetyModel,
+            descriptionSafetyModel:
+              args.descriptionUpdate.descriptionSafetyModel,
             descriptionSafetyPromptVersion:
               args.descriptionUpdate.descriptionSafetyPromptVersion,
             descriptionSafetyRisk: args.descriptionUpdate.descriptionSafetyRisk,
@@ -377,9 +395,12 @@ export const createInternal = internalMutation({
       ...descriptionFields,
     });
     // Mark department summary as stale (cascades to function)
-    await ctx.runMutation(internal.summariesHelpers.markDepartmentSummaryStale, {
-      departmentId: args.departmentId,
-    });
+    await ctx.runMutation(
+      internal.summariesHelpers.markDepartmentSummaryStale,
+      {
+        departmentId: args.departmentId,
+      },
+    );
     return id;
   },
 });
@@ -446,7 +467,10 @@ export const updateInternal = internalMutation({
 
     if (isMoving) {
       const targetDepartment = await ctx.db.get(args.departmentId!);
-      if (!targetDepartment || targetDepartment.clerkOrgId !== args.clerkOrgId) {
+      if (
+        !targetDepartment ||
+        targetDepartment.clerkOrgId !== args.clerkOrgId
+      ) {
         throw new Error("Not found");
       }
       const existing = await ctx.db
@@ -494,9 +518,12 @@ export const updateInternal = internalMutation({
         );
       }
       // Mark new parent department stale
-      await ctx.runMutation(internal.summariesHelpers.markDepartmentSummaryStale, {
-        departmentId: args.departmentId!,
-      });
+      await ctx.runMutation(
+        internal.summariesHelpers.markDepartmentSummaryStale,
+        {
+          departmentId: args.departmentId!,
+        },
+      );
     }
   },
 });
@@ -598,13 +625,19 @@ export const remove = mutation({
         summaryUpdatedAt: undefined,
         summaryStale: undefined,
       });
-      await ctx.runMutation(internal.summariesHelpers.markFunctionSummaryStale, {
-        functionId: department.functionId,
-      });
+      await ctx.runMutation(
+        internal.summariesHelpers.markFunctionSummaryStale,
+        {
+          functionId: department.functionId,
+        },
+      );
     } else if (department) {
-      await ctx.runMutation(internal.summariesHelpers.markDepartmentSummaryStale, {
-        departmentId,
-      });
+      await ctx.runMutation(
+        internal.summariesHelpers.markDepartmentSummaryStale,
+        {
+          departmentId,
+        },
+      );
     }
   },
 });

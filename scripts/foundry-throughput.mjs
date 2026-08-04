@@ -16,9 +16,13 @@
 //   $env:FOUNDRY_ENDPOINT = "https://<account>.services.ai.azure.com"
 //   $env:FOUNDRY_API_KEY = "<key>"
 //   $env:FOUNDRY_CLAUDE_DEPLOYMENT = "fabric-claude-haiku-4-5"
-//   node scripts/foundry-throughput.mjs            # defaults: 4000 tokens, 3 runs
-//   node scripts/foundry-throughput.mjs 8000 5     # 8000 max tokens, 5 runs
+//   node scripts/foundry-throughput.mjs            # defaults: 4000 tokens, 3 runs, 1 concurrent
+//   node scripts/foundry-throughput.mjs 8000 5     # 8000 max tokens, 5 sequential runs
+//   node scripts/foundry-throughput.mjs 1500 1 4   # one wave of 4 CONCURRENT probes
 //
+// Concurrency > 1 approximates several teams generating at once — use it to
+// measure how much per-request throughput degrades under load (the WORST
+// observed gen rate is what call budgets must be sized against).
 // Run it before and after a capacity change to compare.
 
 import AnthropicFoundry from "@anthropic-ai/foundry-sdk";
@@ -38,6 +42,7 @@ const claudeDeployment = required("FOUNDRY_CLAUDE_DEPLOYMENT");
 
 const maxTokens = Number(process.argv[2] ?? 4000);
 const runs = Number(process.argv[3] ?? 3);
+const concurrency = Number(process.argv[4] ?? 1);
 
 // A representative flow-generation call requests up to 32768 output tokens.
 const FLOW_GENERATION_MAX_TOKENS = 32768;
@@ -59,7 +64,7 @@ const user =
   "points, risks, and automation opportunities. Be exhaustive and verbose; " +
   "keep writing until you have produced a very long document.";
 
-async function probe(runIndex) {
+async function probe(label) {
   const startedAt = Date.now();
   let firstTokenAt = null;
 
@@ -90,7 +95,7 @@ async function probe(runIndex) {
   const overallRate = outputTokens / ((finishedAt - startedAt) / 1000);
 
   console.log(
-    `run ${runIndex + 1}/${runs}: ` +
+    `${label}: ` +
       `${outputTokens} out tok, ` +
       `TTFT ${ttftMs} ms, ` +
       `gen ${genMs} ms (${genRate.toFixed(1)} tok/s), ` +
@@ -102,19 +107,28 @@ async function probe(runIndex) {
 }
 
 console.log(
-  `Probing ${claudeDeployment} @ ${endpoint} — ${maxTokens} max tokens, ${runs} run(s)\n`,
+  `Probing ${claudeDeployment} @ ${endpoint} — ` +
+    `${maxTokens} max tokens, ${runs} wave(s) x ${concurrency} concurrent\n`,
 );
 
 const results = [];
-for (let i = 0; i < runs; i++) {
-  try {
-    results.push(await probe(i));
-  } catch (error) {
-    console.error(`run ${i + 1}/${runs}: FAILED`, {
-      name: error?.name,
-      status: error?.status,
-      message: error?.message,
-    });
+for (let wave = 0; wave < runs; wave++) {
+  const settled = await Promise.allSettled(
+    Array.from({ length: concurrency }, (_, i) =>
+      probe(`wave ${wave + 1}/${runs} req ${i + 1}/${concurrency}`),
+    ),
+  );
+  for (const [i, outcome] of settled.entries()) {
+    if (outcome.status === "fulfilled") {
+      results.push(outcome.value);
+    } else {
+      const error = outcome.reason;
+      console.error(`wave ${wave + 1}/${runs} req ${i + 1}: FAILED`, {
+        name: error?.name,
+        status: error?.status,
+        message: error?.message,
+      });
+    }
   }
 }
 
@@ -123,20 +137,29 @@ if (results.length > 0) {
     results.reduce((sum, r) => sum + r[key], 0) / results.length;
   const avgTtft = avg("ttftMs");
   const avgGenRate = avg("genRate");
+  const worstTtft = Math.max(...results.map((r) => r.ttftMs));
+  const worstGenRate = Math.min(...results.map((r) => r.genRate));
 
   console.log("\n--- summary ---");
-  console.log(`avg TTFT:      ${avgTtft.toFixed(0)} ms`);
-  console.log(`avg gen rate:  ${avgGenRate.toFixed(1)} tok/s (after first token)`);
-  console.log(`avg overall:   ${avg("overallRate").toFixed(1)} tok/s`);
+  console.log(`avg TTFT:        ${avgTtft.toFixed(0)} ms (worst ${worstTtft} ms)`);
+  console.log(
+    `avg gen rate:    ${avgGenRate.toFixed(1)} tok/s (worst ${worstGenRate.toFixed(1)} tok/s)`,
+  );
+  console.log(`avg overall:     ${avg("overallRate").toFixed(1)} tok/s`);
 
-  // Project a worst-case full flow response against our 450 s single attempt.
-  if (avgGenRate > 0) {
-    const projectedMs = avgTtft + (FLOW_GENERATION_MAX_TOKENS / avgGenRate) * 1000;
+  // Budgets must be sized against the WORST observed rate/TTFT, not the average.
+  if (worstGenRate > 0) {
+    const projectedMs =
+      worstTtft + (FLOW_GENERATION_MAX_TOKENS / worstGenRate) * 1000;
     console.log(
-      `\nProjected worst-case flow response (${FLOW_GENERATION_MAX_TOKENS} tok): ` +
+      `\nProjected worst-case flow response (${FLOW_GENERATION_MAX_TOKENS} tok @ worst rate): ` +
         `~${(projectedMs / 1000).toFixed(0)} s ` +
         `(${projectedMs <= FLOW_TIMEOUT_MS ? "fits" : "EXCEEDS"} the ` +
         `${FLOW_TIMEOUT_MS / 1000} s flow-gen timeout).`,
+    );
+    console.log(
+      `Budget rule input: maxTokens <= (timeoutMs - ${worstTtft} TTFT) / 1000 * ` +
+        `${worstGenRate.toFixed(1)} tok/s * 0.5 safety.`,
     );
     console.log(
       "Interpretation: high TTFT + healthy gen rate => capacity queuing " +

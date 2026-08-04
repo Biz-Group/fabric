@@ -16,6 +16,7 @@ import {
   type ToolUsage,
   type HeavyArea,
 } from "@/features/insights/insights-derivations";
+import { isFlowRenderable } from "@/lib/flow-status";
 
 // Node dimensions / layout params mirror use-process-flow-layout.ts so the PDF
 // diagram matches what users see in the app.
@@ -139,8 +140,11 @@ function computeNodeOrder(nodes: FlowNode[], edges: FlowEdge[]): NodeBox[] {
 
 export function buildProcessPdfData(input: ProcessPdfInput): ProcessPdfData {
   const { flow } = input;
-  const hasFlow =
-    !!flow && flow.status === "ready" && flow.nodes.length > 0;
+  // `isFlowRenderable` rather than `status === "ready"`: the graph lands minutes
+  // before the step details, and exporting in that window would produce a
+  // document whose steps have no descriptions, actors, or tools — the parts a
+  // reader of the PDF is actually there for.
+  const hasFlow = !!flow && isFlowRenderable(flow) && flow.nodes.length > 0;
 
   const base: Omit<
     ProcessPdfData,
@@ -227,7 +231,9 @@ export function buildProcessPdfData(input: ProcessPdfInput): ProcessPdfData {
   const toolUsage = deriveToolUsage(flow.nodes);
   const heavyAreas = deriveHeavyAreas(flow.nodes, handoffs);
   const bottlenecks = deriveBottlenecks(flow).map(numberOf);
-  const automationCandidates = deriveAutomationCandidates(flow.nodes).map(numberOf);
+  const automationCandidates = deriveAutomationCandidates(flow.nodes).map(
+    numberOf,
+  );
   const tribalKnowledge = flow.nodes
     .filter((n) => n.isTribalKnowledge)
     .map(numberOf);

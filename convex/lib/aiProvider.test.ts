@@ -1,10 +1,16 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import {
+  AITruncationError,
   FOUNDRY_CLAUDE_MODEL,
   FOUNDRY_SAFETY_MODEL,
+  MEASURED_THROUGHPUT,
   OPENROUTER_CLAUDE_MODEL,
+  assertCompletionNotTruncated,
   generateAICompletion,
   getPersistedAIProvider,
+  isWithinTimeBudget,
+  maxTokensForTimeout,
+  minTimeoutMsForMaxTokens,
 } from "./aiProvider";
 
 const AI_ENV_NAMES = [
@@ -36,11 +42,40 @@ async function observeRequest(
   };
 }
 
+function useOpenRouter(): void {
+  process.env.AI_PROVIDER = "openrouter";
+  process.env.OPENROUTER_API_KEY = "openrouter-test-key";
+}
+
+function openRouterResponse(options?: { completionTokens?: number }): Response {
+  return new Response(
+    JSON.stringify({
+      id: "or_test",
+      choices: [{ finish_reason: "stop", message: { content: "Summary" } }],
+      usage: {
+        prompt_tokens: 8,
+        completion_tokens: options?.completionTokens ?? 3,
+      },
+    }),
+    { status: 200, headers: { "content-type": "application/json" } },
+  );
+}
+
+/** The structured payload logged with a given console.warn message, if any. */
+function warnPayload(
+  warn: { mock: { calls: unknown[][] } },
+  message: string,
+): Record<string, unknown> | undefined {
+  const call = warn.mock.calls.find((args) => args[0] === message);
+  return call?.[1] as Record<string, unknown> | undefined;
+}
+
 describe("AI provider adapter", () => {
   beforeEach(() => {
     for (const name of AI_ENV_NAMES) delete process.env[name];
     vi.spyOn(console, "info").mockImplementation(() => undefined);
     vi.spyOn(console, "error").mockImplementation(() => undefined);
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
   });
 
   afterEach(() => {
@@ -274,5 +309,197 @@ describe("AI provider adapter", () => {
 
     // Default would attempt 3 times; the override must make it exactly one.
     expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  test("warns when a request asks for more output than its timeout covers", async () => {
+    useOpenRouter();
+    vi.stubGlobal("fetch", vi.fn(async () => openRouterResponse()));
+    const warn = vi.spyOn(console, "warn");
+
+    // 8,192 tokens needs ~256 s at the worst measured rate; this call gets the
+    // default 120 s, whose ceiling is 3,770.
+    await generateAICompletion({
+      capability: "synthesis",
+      operation: "adapter-test-over-budget",
+      system: "System prompt",
+      user: "User prompt",
+      maxTokens: 8192,
+    });
+
+    expect(warnPayload(warn, "AI request exceeds its time budget")).toMatchObject({
+      operation: "adapter-test-over-budget",
+      maxTokens: 8192,
+      timeoutMs: 120_000,
+      maxTokensAtThisTimeout: 3770,
+      minTimeoutMsForTheseTokens: 256_062,
+    });
+  });
+
+  test("stays quiet when the request fits its time budget", async () => {
+    useOpenRouter();
+    vi.stubGlobal("fetch", vi.fn(async () => openRouterResponse()));
+    const warn = vi.spyOn(console, "warn");
+
+    await generateAICompletion({
+      capability: "synthesis",
+      operation: "adapter-test-within-budget",
+      system: "System prompt",
+      user: "User prompt",
+      maxTokens: 3770,
+    });
+
+    expect(
+      warnPayload(warn, "AI request exceeds its time budget"),
+    ).toBeUndefined();
+  });
+
+  test("logs a near miss when latency eats most of the timeout", async () => {
+    useOpenRouter();
+    let nowMs = 1_700_000_000_000;
+    vi.spyOn(Date, "now").mockImplementation(() => nowMs);
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => {
+        nowMs += 90_000;
+        return openRouterResponse({ completionTokens: 9000 });
+      }),
+    );
+    const warn = vi.spyOn(console, "warn");
+
+    await generateAICompletion({
+      capability: "synthesis",
+      operation: "adapter-test-near-miss",
+      system: "System prompt",
+      user: "User prompt",
+      maxTokens: 3770,
+      timeoutMs: 120_000,
+    });
+
+    // 90 s of a 120 s budget — succeeded, but throughput has drifted.
+    expect(
+      warnPayload(warn, "AI request latency neared its timeout"),
+    ).toMatchObject({
+      operation: "adapter-test-near-miss",
+      latencyMs: 90_000,
+      timeoutMs: 120_000,
+      usedShareOfTimeout: 0.75,
+      outputTokens: 9000,
+      observedOverallTokensPerSecond: 100,
+    });
+  });
+
+  test("does not log a near miss for a comfortably fast call", async () => {
+    useOpenRouter();
+    let nowMs = 1_700_000_000_000;
+    vi.spyOn(Date, "now").mockImplementation(() => nowMs);
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => {
+        nowMs += 20_000;
+        return openRouterResponse();
+      }),
+    );
+    const warn = vi.spyOn(console, "warn");
+
+    await generateAICompletion({
+      capability: "synthesis",
+      operation: "adapter-test-fast",
+      system: "System prompt",
+      user: "User prompt",
+      maxTokens: 3770,
+      timeoutMs: 120_000,
+    });
+
+    expect(
+      warnPayload(warn, "AI request latency neared its timeout"),
+    ).toBeUndefined();
+  });
+});
+
+describe("AI time budget (P1)", () => {
+  test("derives the ceilings the v3 plan documents", () => {
+    expect(maxTokensForTimeout(210_000)).toBe(6695);
+    expect(maxTokensForTimeout(150_000)).toBe(4745);
+    expect(maxTokensForTimeout(120_000)).toBe(3770);
+  });
+
+  test("every planned flow-stage budget satisfies the rule", () => {
+    // Mirrors the per-call budgets table in
+    // docs/process-flow-generation-v3-plan.md. If MEASURED_THROUGHPUT is
+    // refreshed and a stage stops fitting, this fails here rather than in
+    // production. Add each stage's real request builder as step 4 lands it.
+    const stageBudgets = [
+      { stage: "graph pass", maxTokens: 6_144, timeoutMs: 210_000 },
+      { stage: "detail batch", maxTokens: 4_096, timeoutMs: 150_000 },
+    ];
+
+    for (const budget of stageBudgets) {
+      expect({
+        stage: budget.stage,
+        fits: isWithinTimeBudget(budget.maxTokens, budget.timeoutMs),
+      }).toEqual({ stage: budget.stage, fits: true });
+    }
+  });
+
+  test("flags the call sites that are over budget today", () => {
+    // The 450 s flow-generation stopgap (retired in step 4) and the
+    // 8,192-token synthesis calls left on the default timeout (step 2).
+    // Asserting the detector sees them keeps the known debt visible.
+    expect(isWithinTimeBudget(32_768, 450_000)).toBe(false);
+    expect(isWithinTimeBudget(8_192, 120_000)).toBe(false);
+    expect(isWithinTimeBudget(16_384, 120_000)).toBe(false);
+  });
+
+  test("round-trips against minTimeoutMsForMaxTokens", () => {
+    for (const timeoutMs of [60_000, 120_000, 210_000, 450_000]) {
+      const ceiling = maxTokensForTimeout(timeoutMs);
+      expect(isWithinTimeBudget(ceiling, timeoutMs)).toBe(true);
+      expect(isWithinTimeBudget(ceiling + 1, timeoutMs)).toBe(false);
+      expect(minTimeoutMsForMaxTokens(ceiling)).toBeLessThanOrEqual(timeoutMs);
+    }
+  });
+
+  test("gives no budget to a timeout shorter than time-to-first-token", () => {
+    expect(maxTokensForTimeout(MEASURED_THROUGHPUT.worstTtftMs)).toBe(0);
+    expect(maxTokensForTimeout(0)).toBe(0);
+    expect(isWithinTimeBudget(1, 1_000)).toBe(false);
+  });
+});
+
+describe("completion truncation guard", () => {
+  test("throws AITruncationError when output hit the token cap", () => {
+    expect(() =>
+      assertCompletionNotTruncated(
+        { finishReason: "length" },
+        "process summary rebuild",
+        8192,
+      ),
+    ).toThrow(AITruncationError);
+
+    let caught: unknown;
+    try {
+      assertCompletionNotTruncated(
+        { finishReason: "max_tokens" },
+        "process summary rebuild",
+        8192,
+      );
+    } catch (error) {
+      caught = error;
+    }
+
+    expect(caught).toBeInstanceOf(AITruncationError);
+    const truncation = caught as AITruncationError;
+    expect(truncation.operation).toBe("process summary rebuild");
+    expect(truncation.finishReason).toBe("max_tokens");
+    expect(truncation.maxTokens).toBe(8192);
+    expect(truncation.message).toContain("was not saved");
+  });
+
+  test("passes through completions that finished normally", () => {
+    for (const finishReason of ["end_turn", "stop", "tool_calls", null]) {
+      expect(() =>
+        assertCompletionNotTruncated({ finishReason }, "process summary"),
+      ).not.toThrow();
+    }
   });
 });

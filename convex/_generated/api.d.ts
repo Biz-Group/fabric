@@ -10,6 +10,7 @@
 
 import type * as cleanup from "../cleanup.js";
 import type * as conversations from "../conversations.js";
+import type * as crons from "../crons.js";
 import type * as departments from "../departments.js";
 import type * as descriptionSafety from "../descriptionSafety.js";
 import type * as functions from "../functions.js";
@@ -20,8 +21,11 @@ import type * as lib_aiProvider from "../lib/aiProvider.js";
 import type * as lib_clerkApi from "../lib/clerkApi.js";
 import type * as lib_contributorAttribution from "../lib/contributorAttribution.js";
 import type * as lib_conversationTitle from "../lib/conversationTitle.js";
+import type * as lib_flowQuality from "../lib/flowQuality.js";
+import type * as lib_flowStages from "../lib/flowStages.js";
 import type * as lib_orgAuth from "../lib/orgAuth.js";
 import type * as lib_slugs from "../lib/slugs.js";
+import type * as lib_transcriptHash from "../lib/transcriptHash.js";
 import type * as migrations from "../migrations.js";
 import type * as orgIntegrity from "../orgIntegrity.js";
 import type * as orgThemes from "../orgThemes.js";
@@ -47,6 +51,7 @@ import type {
 declare const fullApi: ApiFromModules<{
   cleanup: typeof cleanup;
   conversations: typeof conversations;
+  crons: typeof crons;
   departments: typeof departments;
   descriptionSafety: typeof descriptionSafety;
   functions: typeof functions;
@@ -57,8 +62,11 @@ declare const fullApi: ApiFromModules<{
   "lib/clerkApi": typeof lib_clerkApi;
   "lib/contributorAttribution": typeof lib_contributorAttribution;
   "lib/conversationTitle": typeof lib_conversationTitle;
+  "lib/flowQuality": typeof lib_flowQuality;
+  "lib/flowStages": typeof lib_flowStages;
   "lib/orgAuth": typeof lib_orgAuth;
   "lib/slugs": typeof lib_slugs;
+  "lib/transcriptHash": typeof lib_transcriptHash;
   migrations: typeof migrations;
   orgIntegrity: typeof orgIntegrity;
   orgThemes: typeof orgThemes;

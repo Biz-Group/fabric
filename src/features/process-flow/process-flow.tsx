@@ -28,6 +28,11 @@ import {
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
+import {
+  flowDetailProgress,
+  flowStage,
+  hasRetainedPreviousFlow,
+} from "@/lib/flow-status";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { Sheet, SheetContent, SheetTitle } from "@/components/ui/sheet";
 import { api } from "../../../convex/_generated/api";
@@ -45,6 +50,8 @@ function ProcessFlowInner({ processId, conversationCount }: ProcessFlowProps) {
   const isMobile = useIsMobile();
   const flow = useQuery(api.processFlows.getProcessFlow, { processId });
   const generateFlow = useAction(api.processFlows.generateProcessFlow);
+  const retryNodeDetail = useAction(api.processFlows.retryNodeDetail);
+  const [retryingNodeId, setRetryingNodeId] = useState<string | null>(null);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const { nodes, edges } = useProcessFlowLayout(flow, selectedNodeId);
   const { fitView, setCenter } = useReactFlow();
@@ -54,7 +61,7 @@ function ProcessFlowInner({ processId, conversationCount }: ProcessFlowProps) {
   const [actionError, setActionError] = useState<string | null>(null);
 
   const selectedNode = selectedNodeId
-    ? flow?.nodes.find((n) => n.id === selectedNodeId) ?? null
+    ? (flow?.nodes.find((n) => n.id === selectedNodeId) ?? null)
     : null;
 
   const handleGenerate = useCallback(async () => {
@@ -69,27 +76,54 @@ function ProcessFlowInner({ processId, conversationCount }: ProcessFlowProps) {
     }
   }, [generateFlow, processId]);
 
-  const handleNodeClick = useCallback((_event: React.MouseEvent, node: { id: string }) => {
-    setSelectedNodeId((prev) => (prev === node.id ? null : node.id));
-  }, []);
+  const handleRetryNodeDetail = useCallback(
+    async (nodeId: string) => {
+      setRetryingNodeId(nodeId);
+      setActionError(null);
+      try {
+        await retryNodeDetail({ processId, nodeId });
+      } catch {
+        setActionError("Could not retry this step. Please try again.");
+      } finally {
+        // The node's own status carries the spinner from here; this only covers
+        // the round trip that queues the work.
+        setRetryingNodeId(null);
+      }
+    },
+    [processId, retryNodeDetail],
+  );
+
+  const handleNodeClick = useCallback(
+    (_event: React.MouseEvent, node: { id: string }) => {
+      setSelectedNodeId((prev) => (prev === node.id ? null : node.id));
+    },
+    [],
+  );
 
   const handlePaneClick = useCallback(() => {
     setSelectedNodeId(null);
   }, []);
 
-  const handleNavigateToNode = useCallback((nodeId: string) => {
-    setSelectedNodeId(nodeId);
-    const targetNode = nodes.find((n) => n.id === nodeId);
-    if (targetNode) {
-      setCenter(targetNode.position.x + 140, targetNode.position.y + 60, { zoom: 1, duration: 400 });
-    }
-  }, [nodes, setCenter]);
+  const handleNavigateToNode = useCallback(
+    (nodeId: string) => {
+      setSelectedNodeId(nodeId);
+      const targetNode = nodes.find((n) => n.id === nodeId);
+      if (targetNode) {
+        setCenter(targetNode.position.x + 140, targetNode.position.y + 60, {
+          zoom: 1,
+          duration: 400,
+        });
+      }
+    },
+    [nodes, setCenter],
+  );
 
   const isStale = flow?.status === "ready" && flow.stale;
-  const hasNewerConversations = flow?.status === "ready" && conversationCount > flow.conversationCount;
+  const hasNewerConversations =
+    flow?.status === "ready" && conversationCount > flow.conversationCount;
 
   useEffect(() => {
-    if (flow?.status !== "ready" || nodes.length === 0) return;
+    if (nodes.length === 0) return;
     const timeout = window.setTimeout(() => {
       void fitView({ padding: 0.15, duration: 250 });
     }, 0);
@@ -116,18 +150,22 @@ function ProcessFlowInner({ processId, conversationCount }: ProcessFlowProps) {
     );
   }
 
-  // Generating state
-  if (flow.status === "generating") {
+  // Only the graph stage blocks. Once the topology exists there is a diagram
+  // worth looking at, and each node reports its own progress — so the wait
+  // happens with the process on screen instead of behind a spinner.
+  const stage = flowStage(flow);
+  const detailProgress = flowDetailProgress(flow);
+  if (stage === "graph") {
     return (
       <div className="flex flex-1 flex-col items-center justify-center gap-4 p-8">
         <div className="flex flex-col items-center gap-3">
           <div className="relative">
             <GitBranch className="h-10 w-10 text-muted-foreground/40" />
-            <Loader2 className="absolute -bottom-1 -right-1 h-5 w-5 animate-spin text-org-accent" />
+            <Loader2 className="text-org-accent absolute -right-1 -bottom-1 h-5 w-5 animate-spin" />
           </div>
           <div className="text-center">
             <p className="text-sm font-medium">Generating process flow...</p>
-            <p className="mt-1 text-xs text-muted-foreground">
+            <p className="text-muted-foreground mt-1 text-xs">
               Analyzing conversations and mapping the process structure
             </p>
           </div>
@@ -136,8 +174,11 @@ function ProcessFlowInner({ processId, conversationCount }: ProcessFlowProps) {
     );
   }
 
-  // Failed state
-  if (flow.status === "failed") {
+  // A failed refresh keeps whatever flow was there before, so fall through and
+  // render it with a banner. Only a first-ever generation that fails has nothing
+  // underneath, and that is the one case that gets the error page.
+  const showingRetained = hasRetainedPreviousFlow(flow, flow.nodes.length);
+  if (stage === "failed" && !showingRetained) {
     return (
       <div className="flex flex-1 flex-col items-center justify-center gap-4 p-8">
         <div className="flex flex-col items-center gap-3">
@@ -149,12 +190,24 @@ function ProcessFlowInner({ processId, conversationCount }: ProcessFlowProps) {
             </p>
           </div>
           {actionError && (
-            <p className="max-w-sm text-center text-xs text-destructive" role="alert">
+            <p
+              className="max-w-sm text-center text-xs text-destructive"
+              role="alert"
+            >
               {actionError}
             </p>
           )}
-          <Button size="sm" onClick={handleGenerate} disabled={isGenerating} className="gap-2">
-            {isGenerating ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
+          <Button
+            size="sm"
+            onClick={handleGenerate}
+            disabled={isGenerating}
+            className="gap-2"
+          >
+            {isGenerating ? (
+              <Loader2 className="h-4 w-4 animate-spin" />
+            ) : (
+              <RefreshCw className="h-4 w-4" />
+            )}
             Try Again
           </Button>
         </div>
@@ -168,11 +221,32 @@ function ProcessFlowInner({ processId, conversationCount }: ProcessFlowProps) {
   return (
     <Wrapper>
       <div className="relative flex min-h-0 min-w-0 flex-1 overflow-hidden">
-        {/* Staleness banner */}
-        {(isStale || hasNewerConversations) && (
-          <div className="absolute left-3 right-12 top-3 z-10 md:right-auto">
+        {/* Detail progress. Non-blocking by design: the diagram is usable while
+            the descriptions land, and this says how much is still coming so an
+            unfinished step reads as unfinished rather than empty. */}
+        {stage === "details" && (
+          <div className="absolute top-3 left-3 right-12 z-10 md:right-auto">
+            <div className="border-border bg-card/90 flex max-w-full flex-wrap items-center gap-2 rounded-lg border px-3 py-1.5 text-xs backdrop-blur-sm">
+              <Loader2 className="text-org-accent h-3 w-3 animate-spin" />
+              <span className="text-muted-foreground">
+                {detailProgress
+                  ? `Describing steps — ${detailProgress.completed} of ${detailProgress.total}`
+                  : "Describing steps"}
+              </span>
+            </div>
+          </div>
+        )}
+
+        {/* A refresh that failed. Louder than the staleness banner because the
+            user asked for something and did not get it — but the flow below is
+            their real previous version, not a broken one. */}
+        {showingRetained && (
+          <div className="absolute top-3 left-3 right-12 z-10 md:right-auto">
             <div className="flex max-w-full flex-wrap items-center gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-1.5 text-xs dark:border-amber-800 dark:bg-amber-950">
-              <span className="text-amber-700 dark:text-amber-400">New data available</span>
+              <AlertCircle className="h-3 w-3 shrink-0 text-amber-700 dark:text-amber-400" />
+              <span className="text-amber-700 dark:text-amber-400">
+                Couldn&apos;t refresh — showing the previous version
+              </span>
               <Button
                 variant="ghost"
                 size="sm"
@@ -180,12 +254,43 @@ function ProcessFlowInner({ processId, conversationCount }: ProcessFlowProps) {
                 onClick={handleGenerate}
                 disabled={isGenerating}
               >
-                {isGenerating ? <Loader2 className="h-3 w-3 animate-spin" /> : <RefreshCw className="h-3 w-3" />}
-                Refresh
+                {isGenerating ? (
+                  <Loader2 className="h-3 w-3 animate-spin" />
+                ) : (
+                  <RefreshCw className="h-3 w-3" />
+                )}
+                Try Again
               </Button>
             </div>
           </div>
         )}
+
+        {/* Staleness banner */}
+        {stage !== "details" &&
+          !showingRetained &&
+          (isStale || hasNewerConversations) && (
+            <div className="absolute left-3 right-12 top-3 z-10 md:right-auto">
+              <div className="flex max-w-full flex-wrap items-center gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-1.5 text-xs dark:border-amber-800 dark:bg-amber-950">
+                <span className="text-amber-700 dark:text-amber-400">
+                  New data available
+                </span>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-6 gap-1 px-2 text-xs"
+                  onClick={handleGenerate}
+                  disabled={isGenerating}
+                >
+                  {isGenerating ? (
+                    <Loader2 className="h-3 w-3 animate-spin" />
+                  ) : (
+                    <RefreshCw className="h-3 w-3" />
+                  )}
+                  Refresh
+                </Button>
+              </div>
+            </div>
+          )}
 
         {/* Fullscreen toggle */}
         <div className="absolute right-3 top-3 z-10">
@@ -196,7 +301,11 @@ function ProcessFlowInner({ processId, conversationCount }: ProcessFlowProps) {
             onClick={() => setIsFullscreen(!isFullscreen)}
             aria-label={isFullscreen ? "Exit fullscreen" : "Enter fullscreen"}
           >
-            {isFullscreen ? <Minimize2 className="h-3.5 w-3.5" /> : <Maximize2 className="h-3.5 w-3.5" />}
+            {isFullscreen ? (
+              <Minimize2 className="h-3.5 w-3.5" />
+            ) : (
+              <Maximize2 className="h-3.5 w-3.5" />
+            )}
           </Button>
         </div>
 
@@ -210,7 +319,12 @@ function ProcessFlowInner({ processId, conversationCount }: ProcessFlowProps) {
         )}
 
         {/* React Flow canvas */}
-        <div className={cn("h-full min-h-0 min-w-0 flex-1", selectedNode && !isMobile && "mr-[320px]")}>
+        <div
+          className={cn(
+            "h-full min-h-0 min-w-0 flex-1",
+            selectedNode && !isMobile && "mr-[320px]",
+          )}
+        >
           <ReactFlow
             nodes={nodes}
             edges={edges}
@@ -263,14 +377,25 @@ function ProcessFlowInner({ processId, conversationCount }: ProcessFlowProps) {
               allNodes={flow.nodes}
               onClose={() => setSelectedNodeId(null)}
               onNavigate={handleNavigateToNode}
+              onRetryDetail={() => handleRetryNodeDetail(selectedNode.id)}
+              isRetryingDetail={retryingNodeId === selectedNode.id}
             />
           </div>
         )}
 
         {/* Detail panel (mobile — bottom Sheet) */}
         {isMobile && (
-          <Sheet open={!!selectedNode} onOpenChange={(open) => { if (!open) setSelectedNodeId(null); }}>
-            <SheetContent side="bottom" className="h-[60vh] p-0" showCloseButton={false}>
+          <Sheet
+            open={!!selectedNode}
+            onOpenChange={(open) => {
+              if (!open) setSelectedNodeId(null);
+            }}
+          >
+            <SheetContent
+              side="bottom"
+              className="h-[60vh] p-0"
+              showCloseButton={false}
+            >
               <SheetTitle className="sr-only">Node details</SheetTitle>
               {selectedNode && (
                 <ProcessFlowDetailPanel
@@ -279,6 +404,8 @@ function ProcessFlowInner({ processId, conversationCount }: ProcessFlowProps) {
                   allNodes={flow.nodes}
                   onClose={() => setSelectedNodeId(null)}
                   onNavigate={handleNavigateToNode}
+                  onRetryDetail={() => handleRetryNodeDetail(selectedNode.id)}
+                  isRetryingDetail={retryingNodeId === selectedNode.id}
                 />
               )}
             </SheetContent>
@@ -380,7 +507,8 @@ function InsightsBar({
         )}
         <span className="flex items-center gap-1">
           <ArrowRightLeft className="h-3 w-3" />
-          {insights.handoffCount} handoff{insights.handoffCount !== 1 ? "s" : ""}
+          {insights.handoffCount} handoff
+          {insights.handoffCount !== 1 ? "s" : ""}
         </span>
         <span className="flex items-center gap-1">
           <Wrench className="h-3 w-3" />
@@ -389,13 +517,15 @@ function InsightsBar({
         {insights.topBottlenecks.length > 0 && (
           <span className="flex items-center gap-1 text-red-600 dark:text-red-400">
             <AlertTriangle className="h-3 w-3" />
-            {insights.topBottlenecks.length} bottleneck{insights.topBottlenecks.length !== 1 ? "s" : ""}
+            {insights.topBottlenecks.length} bottleneck
+            {insights.topBottlenecks.length !== 1 ? "s" : ""}
           </span>
         )}
         {insights.automationOpportunities.length > 0 && (
           <span className="flex items-center gap-1 text-green-600 dark:text-green-400">
             <Bot className="h-3 w-3" />
-            {insights.automationOpportunities.length} automation opportunit{insights.automationOpportunities.length !== 1 ? "ies" : "y"}
+            {insights.automationOpportunities.length} automation opportunit
+            {insights.automationOpportunities.length !== 1 ? "ies" : "y"}
           </span>
         )}
       </div>
@@ -403,11 +533,7 @@ function InsightsBar({
   );
 }
 
-function FullscreenWrapper({
-  children,
-}: {
-  children: React.ReactNode;
-}) {
+function FullscreenWrapper({ children }: { children: React.ReactNode }) {
   return (
     <div className="fixed inset-0 z-50 flex flex-col bg-background">
       {children}
@@ -416,7 +542,11 @@ function FullscreenWrapper({
 }
 
 function PassthroughWrapper({ children }: { children: React.ReactNode }) {
-  return <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">{children}</div>;
+  return (
+    <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
+      {children}
+    </div>
+  );
 }
 
 // ---------------------------------------------------------------------------

@@ -19,6 +19,80 @@ const OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions";
 const DEFAULT_TIMEOUT_MS = 120_000;
 const DEFAULT_MAX_RETRIES = 2;
 
+/**
+ * Measured Foundry throughput for the synthesis deployment. Every call's
+ * output budget is sized by TIME against these numbers, because output volume
+ * — not capacity — is what has taken production down twice: once by hitting
+ * the token cap (truncation), once by hitting the clock (timeout).
+ *
+ * These are the WORST observed values, not averages. Throughput varied ~1.5x
+ * (65-99 tok/s) within a single afternoon, and four concurrent requests cost
+ * another 15-20% while leaving TTFT flat.
+ *
+ * Re-measure on any model or deployment change, and paste the new worst-case
+ * numbers here with a fresh `measuredOn`:
+ *   npm run foundry:throughput -- 1500 1 4   # maxTokens, waves, concurrency
+ */
+export const MEASURED_THROUGHPUT = {
+  measuredOn: "2026-07-17",
+  deployment: "fabric-claude-haiku-4-5",
+  /** Slowest post-first-token generation rate seen, under 4x concurrency. */
+  worstGenRateTokensPerSecond: 65,
+  /** Slowest time-to-first-token seen. */
+  worstTtftMs: 4_000,
+} as const;
+
+/**
+ * Halves the worst-case projection so a call still lands when conditions are
+ * worse than anything measured. That is ~2x headroom, not a guarantee — the
+ * backstops are retries and the near-miss telemetry in `logSuccess`.
+ */
+const BUDGET_SAFETY_FACTOR = 0.5;
+
+/** Latency past this share of the timeout is logged as a near miss. */
+const NEAR_MISS_TIMEOUT_FRACTION = 0.6;
+
+/**
+ * The largest `maxTokens` a request may ask for and still be expected to
+ * finish inside `timeoutMs` at the worst measured throughput.
+ *
+ * This is the budget rule every AI call is meant to satisfy:
+ *   maxTokens <= (timeoutMs - worstTtft) / 1000 * worstRate * safetyFactor
+ */
+export function maxTokensForTimeout(timeoutMs: number): number {
+  const generatingMs = timeoutMs - MEASURED_THROUGHPUT.worstTtftMs;
+  if (generatingMs <= 0) return 0;
+  return Math.floor(
+    (generatingMs / 1000) *
+      MEASURED_THROUGHPUT.worstGenRateTokensPerSecond *
+      BUDGET_SAFETY_FACTOR,
+  );
+}
+
+/**
+ * Inverse of `maxTokensForTimeout`: the smallest timeout that makes a given
+ * `maxTokens` compliant. Use it to pick a timeout from a token count rather
+ * than guessing one.
+ *
+ * Remember that the timeout is per attempt: `(1 + maxRetries) * timeoutMs`
+ * must still fit inside the 10-minute Convex action ceiling.
+ */
+export function minTimeoutMsForMaxTokens(maxTokens: number): number {
+  const tokensPerSecond =
+    MEASURED_THROUGHPUT.worstGenRateTokensPerSecond * BUDGET_SAFETY_FACTOR;
+  return Math.ceil(
+    MEASURED_THROUGHPUT.worstTtftMs + (maxTokens / tokensPerSecond) * 1000,
+  );
+}
+
+/** Whether a request's token ask fits its timeout at the worst measured rate. */
+export function isWithinTimeBudget(
+  maxTokens: number,
+  timeoutMs: number,
+): boolean {
+  return maxTokens <= maxTokensForTimeout(timeoutMs);
+}
+
 export type AIJsonSchema = Readonly<Record<string, unknown>> & {
   readonly type: "object";
 };
@@ -111,6 +185,35 @@ export class AIRequestError extends Error {
     this.provider = details.provider;
     this.status = details.status;
     this.requestId = details.requestId ?? null;
+  }
+}
+
+/**
+ * Thrown when a completion stopped because it ran out of output tokens.
+ * Distinct from `AIRequestError`: the call succeeded, the content is just
+ * incomplete — and incomplete content must never be persisted as if it were
+ * whole.
+ */
+export class AITruncationError extends Error {
+  readonly operation: string;
+  readonly finishReason: string | null;
+  readonly maxTokens: number | undefined;
+
+  constructor(
+    operation: string,
+    finishReason: string | null,
+    maxTokens?: number,
+  ) {
+    super(
+      `${operation} hit the AI response token limit ` +
+        `(finish_reason: ${finishReason}` +
+        `${maxTokens === undefined ? "" : `, maxTokens: ${maxTokens}`}). ` +
+        `The response was truncated and was not saved.`,
+    );
+    this.name = "AITruncationError";
+    this.operation = operation;
+    this.finishReason = finishReason;
+    this.maxTokens = maxTokens;
   }
 }
 
@@ -246,22 +349,64 @@ function requestIdFrom(value: unknown): string | null {
   );
 }
 
+/**
+ * Warns when a request asks for more output than its timeout can cover at the
+ * worst measured rate. Deliberately a warning, not a throw: several call sites
+ * are over budget today and work fine in practice, and failing them closed
+ * would take down working features to enforce a projection.
+ */
+function warnIfOverTimeBudget(request: AIRequest, timeoutMs: number): void {
+  if (isWithinTimeBudget(request.maxTokens, timeoutMs)) return;
+  console.warn("AI request exceeds its time budget", {
+    operation: request.operation,
+    maxTokens: request.maxTokens,
+    timeoutMs,
+    maxTokensAtThisTimeout: maxTokensForTimeout(timeoutMs),
+    minTimeoutMsForTheseTokens: minTimeoutMsForMaxTokens(request.maxTokens),
+    measuredOn: MEASURED_THROUGHPUT.measuredOn,
+  });
+}
+
 function logSuccess(
   request: AIRequest,
   completion: AICompletion,
   startedAt: number,
 ): void {
+  const latencyMs = Date.now() - startedAt;
+  const timeoutMs = request.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+
   console.info("AI request completed", {
     operation: request.operation,
     provider: completion.provider,
     model: completion.model,
     deployment: completion.deployment,
-    latencyMs: Date.now() - startedAt,
+    latencyMs,
     finishReason: completion.finishReason,
     inputTokens: completion.usage?.inputTokens,
     outputTokens: completion.usage?.outputTokens,
     requestId: completion.requestId,
   });
+
+  // Near-miss telemetry: a call that succeeded but spent most of its timeout
+  // is the early warning that throughput has drifted. It is the difference
+  // between noticing a problem in the logs and noticing it in an incident.
+  if (latencyMs > timeoutMs * NEAR_MISS_TIMEOUT_FRACTION) {
+    const outputTokens = completion.usage?.outputTokens;
+    console.warn("AI request latency neared its timeout", {
+      operation: request.operation,
+      latencyMs,
+      timeoutMs,
+      usedShareOfTimeout: Number((latencyMs / timeoutMs).toFixed(2)),
+      outputTokens,
+      observedOverallTokensPerSecond:
+        outputTokens === undefined || latencyMs <= 0
+          ? undefined
+          : Number((outputTokens / (latencyMs / 1000)).toFixed(1)),
+      worstMeasuredTokensPerSecond:
+        MEASURED_THROUGHPUT.worstGenRateTokensPerSecond,
+      requestId: completion.requestId,
+    });
+  }
 }
 
 function errorStatus(error: unknown): number | undefined {
@@ -577,6 +722,7 @@ export async function generateAICompletion(
 ): Promise<AICompletion> {
   const backend = resolveBackend(request.capability);
   const startedAt = Date.now();
+  warnIfOverTimeBudget(request, request.timeoutMs ?? DEFAULT_TIMEOUT_MS);
 
   try {
     const completion =
@@ -608,4 +754,20 @@ export function isTokenLimitFinishReason(reason: string | null): boolean {
     normalized.includes("max_token") ||
     normalized.includes("token_limit")
   );
+}
+
+/**
+ * Throws `AITruncationError` if the completion was cut off at the token limit.
+ *
+ * Every synthesis call should run its completion through this before saving.
+ * Truncated output is the failure mode that reads as success: valid-looking
+ * prose or half a JSON document, persisted silently, discovered later.
+ */
+export function assertCompletionNotTruncated(
+  completion: Pick<AICompletion, "finishReason">,
+  operation: string,
+  maxTokens?: number,
+): void {
+  if (!isTokenLimitFinishReason(completion.finishReason)) return;
+  throw new AITruncationError(operation, completion.finishReason, maxTokens);
 }

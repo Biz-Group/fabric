@@ -49,6 +49,86 @@ const conversationStatusValidator = v.union(
   v.literal("failed"),
 );
 
+export const flowNodeCategoryValidator = v.union(
+  v.literal("start"),
+  v.literal("end"),
+  v.literal("action"),
+  v.literal("decision"),
+  v.literal("handoff"),
+  v.literal("wait"),
+);
+
+const automationPotentialValidator = v.union(
+  v.literal("none"),
+  v.literal("low"),
+  v.literal("medium"),
+  v.literal("high"),
+);
+
+const confidenceValidator = v.union(
+  v.literal("high"),
+  v.literal("medium"),
+  v.literal("low"),
+);
+
+export const flowEdgeFields = {
+  id: v.string(),
+  source: v.string(),
+  target: v.string(),
+  type: v.union(
+    v.literal("sequential"),
+    v.literal("conditional"),
+    v.literal("parallel"),
+    v.literal("fallback"),
+  ),
+  label: v.optional(v.string()),
+  isHappyPath: v.boolean(),
+};
+
+/**
+ * An automation opportunity identified across the whole enriched graph.
+ *
+ * Structured rather than prose because it is meant to be built from: an
+ * opportunity spanning three approval handoffs is one thing to build, and
+ * downstream tooling needs to know which steps it covers and what kind of
+ * automation it is, not just read a sentence about it.
+ */
+export const automationOpportunityValidator = v.object({
+  title: v.string(),
+  kind: v.union(
+    v.literal("agent"),
+    v.literal("workflow"),
+    v.literal("integration"),
+    v.literal("other"),
+  ),
+  /** Graph node ids this would replace or assist. */
+  nodeIds: v.array(v.string()),
+  rationale: v.string(),
+  expectedBenefit: v.optional(v.string()),
+  prerequisites: v.array(v.string()),
+  confidence: v.union(v.literal("high"), v.literal("medium"), v.literal("low")),
+});
+
+/**
+ * The enrichable half of a flow node — everything the graph pass does *not*
+ * produce. Shared between the aggregate row (where a legacy single-call
+ * generation wrote it inline) and `processFlowNodeDetails` (where a staged
+ * generation writes it one batch at a time), so the two can never drift.
+ */
+export const flowNodeDetailFields = {
+  description: v.string(),
+  actors: v.array(v.string()),
+  tools: v.array(v.string()),
+  estimatedDuration: v.optional(v.string()),
+  painPoints: v.array(v.string()),
+  automationPotential: automationPotentialValidator,
+  confidence: confidenceValidator,
+  isBottleneck: v.boolean(),
+  isTribalKnowledge: v.boolean(),
+  riskIndicators: v.array(v.string()),
+  sources: v.array(v.string()),
+};
+
 const roleValidator = v.union(
   v.literal("admin"),
   v.literal("contributor"),
@@ -130,7 +210,10 @@ export default defineSchema({
     platformRole: v.optional(v.literal("superAdmin")),
     searchText: v.optional(v.string()),
   })
-    .index("by_tokenIdentifier_and_clerkOrgId", ["tokenIdentifier", "clerkOrgId"])
+    .index("by_tokenIdentifier_and_clerkOrgId", [
+      "tokenIdentifier",
+      "clerkOrgId",
+    ])
     .index("by_clerkOrgId", ["clerkOrgId"])
     .index("by_clerkOrgId_and_role", ["clerkOrgId", "role"])
     .index("by_clerkOrgId_and_emailLower", ["clerkOrgId", "emailLower"])
@@ -311,6 +394,14 @@ export default defineSchema({
     descriptionSafetyReason: v.optional(v.string()),
     sortOrder: v.number(),
     rollingSummary: v.optional(v.string()),
+    // Coalescing gate for rolling-summary regeneration. Several conversations
+    // finishing at once must not each start their own regen: the first sets
+    // `summaryRegenScheduledAt`, later ones just raise
+    // `summaryRegenRequestedAgain`, and the in-flight run schedules exactly
+    // one more pass when it sees that flag. Requests are never dropped — see
+    // requestProcessSummaryRegen in postCall.ts.
+    summaryRegenScheduledAt: v.optional(v.number()),
+    summaryRegenRequestedAgain: v.optional(v.boolean()),
     clerkOrgId: v.string(),
   }).index("by_clerkOrgId_and_departmentId", ["clerkOrgId", "departmentId"]),
 
@@ -342,10 +433,7 @@ export default defineSchema({
     audioStorageId: v.optional(v.id("_storage")),
     audioMimeType: v.optional(v.string()),
     transcriptionProvider: v.optional(
-      v.union(
-        v.literal("elevenlabs-convai"),
-        v.literal("elevenlabs-scribe"),
-      ),
+      v.union(v.literal("elevenlabs-convai"), v.literal("elevenlabs-scribe")),
     ),
     analysisProvider: v.optional(
       v.union(
@@ -354,13 +442,18 @@ export default defineSchema({
         v.literal("fabric-foundry"),
       ),
     ),
-    transcript: v.optional(
-      v.array(
-        transcriptMessageValidator,
-      ),
-    ),
+    transcript: v.optional(v.array(transcriptMessageValidator)),
     speakerLabels: v.optional(v.array(speakerLabelValidator)),
     summary: v.optional(v.string()),
+    // Fabric-owned structured summary of this conversation, written once when
+    // the conversation completes and reused as the map input to the rolling
+    // summary's reduce pass. Deliberately NOT the vendor `summary` above:
+    // that one is ElevenLabs', its depth and shape can change without notice,
+    // and it is display-only. `processSummaryInputHash` fingerprints the
+    // transcript this was derived from, so a re-transcribed conversation
+    // regenerates it and an unchanged one never pays for it twice.
+    processSummaryInput: v.optional(v.string()),
+    processSummaryInputHash: v.optional(v.string()),
     // One-line headline for the conversation, denormalized out of
     // `analysis.call_summary_title` so list surfaces can label rows without
     // loading the analysis blob. Absent until analysis completes, and on rows
@@ -403,54 +496,25 @@ export default defineSchema({
       v.object({
         id: v.string(),
         label: v.string(),
-        description: v.string(),
-        category: v.union(
-          v.literal("start"),
-          v.literal("end"),
-          v.literal("action"),
-          v.literal("decision"),
-          v.literal("handoff"),
-          v.literal("wait"),
-        ),
-        actors: v.array(v.string()),
-        tools: v.array(v.string()),
-        estimatedDuration: v.optional(v.string()),
-        painPoints: v.array(v.string()),
-        automationPotential: v.union(
-          v.literal("none"),
-          v.literal("low"),
-          v.literal("medium"),
-          v.literal("high"),
-        ),
-        confidence: v.union(
-          v.literal("high"),
-          v.literal("medium"),
-          v.literal("low"),
-        ),
-        isBottleneck: v.boolean(),
-        isTribalKnowledge: v.boolean(),
-        riskIndicators: v.array(v.string()),
-        sources: v.array(v.string()),
+        category: flowNodeCategoryValidator,
+        ...flowNodeDetailFields,
       }),
     ),
 
-    edges: v.array(
-      v.object({
-        id: v.string(),
-        source: v.string(),
-        target: v.string(),
-        type: v.union(
-          v.literal("sequential"),
-          v.literal("conditional"),
-          v.literal("parallel"),
-          v.literal("fallback"),
-        ),
-        label: v.optional(v.string()),
-        isHappyPath: v.boolean(),
-      }),
-    ),
+    edges: v.array(v.object(flowEdgeFields)),
 
     insights: v.object({
+      // The analysed opportunities, and the one-line form the Insights tab
+      // renders. `automationOpportunitiesSource` says which you are looking at:
+      // "derived" means the insights stage failed and these are placeholders
+      // pointing at automatable-looking steps, which downstream tooling must
+      // not treat as analysed opportunities.
+      automationOpportunityDetails: v.optional(
+        v.array(automationOpportunityValidator),
+      ),
+      automationOpportunitiesSource: v.optional(
+        v.union(v.literal("ai"), v.literal("derived")),
+      ),
       totalEstimatedDuration: v.optional(v.string()),
       criticalPath: v.array(v.string()),
       handoffCount: v.number(),
@@ -459,6 +523,89 @@ export default defineSchema({
       topBottlenecks: v.array(v.string()),
     }),
 
+    // --- Staged-generation metadata (absent on legacy single-call rows) ---
+    // `generationVersion` is the discriminator: absent means this flow was
+    // produced by one big call and its `nodes` are already fully detailed, so
+    // reads treat every node as ready. Rows convert to "v3" only when
+    // regenerated — no migration needed.
+    generationVersion: v.optional(v.literal("v3")),
+    // Stamped fresh on every run and copied onto each child row, so a write
+    // from a superseded run can be recognised and dropped instead of
+    // corrupting the current one.
+    generationId: v.optional(v.string()),
+    detailsStatus: v.optional(
+      v.union(
+        v.literal("pending"),
+        v.literal("generating"),
+        v.literal("ready"),
+        // Graph is usable but some node details never landed. Deliberately
+        // distinct from "failed": the flow is still worth showing.
+        v.literal("partial"),
+        v.literal("failed"),
+      ),
+    ),
+    detailNodeCount: v.optional(v.number()),
+    detailCompletedCount: v.optional(v.number()),
+    detailFailedCount: v.optional(v.number()),
+    detailsGeneratedAt: v.optional(v.number()),
+    detailErrorMessage: v.optional(v.string()),
+    // Heartbeat for the watchdog. Every pipeline mutation bumps it; the reaper
+    // finds rows stuck in `generating` with a stale value. A staged pipeline
+    // has N+2 scheduled actions instead of one, so an action killed between
+    // "write batch" and "schedule next" is a real failure mode, not a
+    // hypothetical.
+    lastProgressAt: v.optional(v.number()),
+    resumeAttempts: v.optional(v.number()),
+
     clerkOrgId: v.string(),
-  }).index("by_clerkOrgId_and_processId", ["clerkOrgId", "processId"]),
+  })
+    .index("by_clerkOrgId_and_processId", ["clerkOrgId", "processId"])
+    // Reaper indexes. Not org-scoped: the watchdog is a system cron sweeping
+    // every tenant, so scoping by org would force a scan per org.
+    .index("by_status_and_lastProgressAt", ["status", "lastProgressAt"])
+    .index("by_detailsStatus_and_lastProgressAt", [
+      "detailsStatus",
+      "lastProgressAt",
+    ]),
+
+  // One row per node per generation. A child table rather than a bigger
+  // aggregate document because node details are the part that grows without
+  // bound — the aggregate row has a 1 MB ceiling, and every batch save would
+  // otherwise rewrite the whole document and contend with every read of it.
+  processFlowNodeDetails: defineTable({
+    clerkOrgId: v.string(),
+    processId: v.id("processes"),
+    processFlowId: v.id("processFlows"),
+    generationId: v.string(),
+    nodeId: v.string(),
+    status: v.union(
+      v.literal("pending"),
+      v.literal("generating"),
+      v.literal("ready"),
+      v.literal("failed"),
+    ),
+    errorMessage: v.optional(v.string()),
+    generatedAt: v.optional(v.number()),
+    // Nested and optional as a unit: a row that has not been enriched yet has
+    // no detail at all, and there is no such thing as half a detail. Flat
+    // optional fields would make "pending" and "enriched but empty"
+    // indistinguishable.
+    detail: v.optional(v.object(flowNodeDetailFields)),
+  })
+    // Covers per-node lookups, and by prefix every row of one generation —
+    // which is what reads, cleanup of superseded generations, and cascade
+    // deletes all need.
+    .index("by_clerkOrgId_and_processFlowId_and_generationId_and_nodeId", [
+      "clerkOrgId",
+      "processFlowId",
+      "generationId",
+      "nodeId",
+    ])
+    // Finding the next batch to enrich, and counting what failed.
+    .index("by_clerkOrgId_and_processFlowId_and_generationId_and_status", [
+      "clerkOrgId",
+      "processFlowId",
+      "generationId",
+      "status",
+    ]),
 });

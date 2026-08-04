@@ -12,20 +12,39 @@ type FlowDoc = Doc<"processFlows">;
 type FlowNode = FlowDoc["nodes"][number];
 type FlowEdge = FlowDoc["edges"][number];
 
-export type ProcessFlowNodeData = FlowNode & { dimmed: boolean };
+/**
+ * Per-node enrichment state, added by `getProcessFlow` rather than stored.
+ * Absent on a legacy flow, whose nodes were always fully detailed.
+ */
+export type NodeDetailStatus = "pending" | "generating" | "ready" | "failed";
+
+/** A node as the read path returns it: graph fields plus its detail state. */
+export type ReadFlowNode = FlowNode & {
+  detailStatus?: NodeDetailStatus;
+  detailErrorMessage?: string;
+};
+
+type ReadFlow = Omit<FlowDoc, "nodes"> & { nodes: ReadFlowNode[] };
+
+export type ProcessFlowNodeData = ReadFlowNode & { dimmed: boolean };
 export type ProcessFlowNode = Node<ProcessFlowNodeData>;
-export type ProcessFlowEdge = Edge<{ flowType: FlowEdge["type"]; isHappyPath: boolean }>;
+export type ProcessFlowEdge = Edge<{
+  flowType: FlowEdge["type"];
+  isHappyPath: boolean;
+}>;
 
 /**
  * Converts Convex processFlows data into positioned React Flow nodes/edges
  * using dagre for automatic top-to-bottom layout.
  */
 export function useProcessFlowLayout(
-  flow: FlowDoc | null | undefined,
+  flow: ReadFlow | null | undefined,
   selectedNodeId: string | null = null,
 ) {
   return useMemo(() => {
-    if (!flow || flow.status !== "ready" || flow.nodes.length === 0) {
+    // Keyed on there being nodes, not on status: a failed refresh retains the
+    // previous flow's nodes, and the caller decides whether to show them.
+    if (!flow || flow.nodes.length === 0) {
       return { nodes: [] as ProcessFlowNode[], edges: [] as ProcessFlowEdge[] };
     }
 
@@ -41,7 +60,8 @@ export function useProcessFlowLayout(
 
     // Add nodes to dagre graph
     for (const node of flow.nodes) {
-      const height = node.category === "decision" ? NODE_HEIGHT_DECISION : NODE_HEIGHT_BASE;
+      const height =
+        node.category === "decision" ? NODE_HEIGHT_DECISION : NODE_HEIGHT_BASE;
       g.setNode(node.id, { width: NODE_WIDTH, height });
     }
 
@@ -62,9 +82,17 @@ export function useProcessFlowLayout(
         zIndex: isSelected(node.id) ? 10 : 0,
         position: {
           x: (pos?.x ?? 0) - NODE_WIDTH / 2,
-          y: (pos?.y ?? 0) - (node.category === "decision" ? NODE_HEIGHT_DECISION : NODE_HEIGHT_BASE) / 2,
+          y:
+            (pos?.y ?? 0) -
+            (node.category === "decision"
+              ? NODE_HEIGHT_DECISION
+              : NODE_HEIGHT_BASE) /
+              2,
         },
-        data: { ...node, dimmed: selectedNodeId !== null && !isSelected(node.id) },
+        data: {
+          ...node,
+          dimmed: selectedNodeId !== null && !isSelected(node.id),
+        },
       };
     });
 
@@ -72,42 +100,49 @@ export function useProcessFlowLayout(
     const connectedEdgeIds = selectedNodeId
       ? new Set(
           flow.edges
-            .filter((e) => e.source === selectedNodeId || e.target === selectedNodeId)
+            .filter(
+              (e) => e.source === selectedNodeId || e.target === selectedNodeId,
+            )
             .map((e) => e.id),
         )
       : null;
 
     const edges: ProcessFlowEdge[] = flow.edges.map((edge) => {
-      const isConnected = connectedEdgeIds === null || connectedEdgeIds.has(edge.id);
+      const isConnected =
+        connectedEdgeIds === null || connectedEdgeIds.has(edge.id);
       const dimEdge = connectedEdgeIds !== null && !isConnected;
 
       return {
-      id: edge.id,
-      source: edge.source,
-      target: edge.target,
-      type: "smoothstep",
-      animated: false,
-      label: edge.label ?? undefined,
-      markerEnd: {
-        type: "arrowclosed" as const,
-        width: 16,
-        height: 16,
-        color: edge.isHappyPath ? "var(--color-foreground)" : "var(--color-muted-foreground)",
-      },
-      style: {
-        strokeWidth: edge.isHappyPath ? 2 : 1.5,
-        stroke: edge.isHappyPath ? "var(--color-foreground)" : "var(--color-muted-foreground)",
-        opacity: dimEdge ? 0.1 : (edge.isHappyPath ? 0.5 : 0.3),
-        strokeDasharray: edge.isHappyPath ? undefined : "6 4",
-      },
-      pathOptions: {
-        offset: 15,
-      },
-      data: {
-        flowType: edge.type,
-        isHappyPath: edge.isHappyPath,
-      },
-    };
+        id: edge.id,
+        source: edge.source,
+        target: edge.target,
+        type: "smoothstep",
+        animated: false,
+        label: edge.label ?? undefined,
+        markerEnd: {
+          type: "arrowclosed" as const,
+          width: 16,
+          height: 16,
+          color: edge.isHappyPath
+            ? "var(--color-foreground)"
+            : "var(--color-muted-foreground)",
+        },
+        style: {
+          strokeWidth: edge.isHappyPath ? 2 : 1.5,
+          stroke: edge.isHappyPath
+            ? "var(--color-foreground)"
+            : "var(--color-muted-foreground)",
+          opacity: dimEdge ? 0.1 : edge.isHappyPath ? 0.5 : 0.3,
+          strokeDasharray: edge.isHappyPath ? undefined : "6 4",
+        },
+        pathOptions: {
+          offset: 15,
+        },
+        data: {
+          flowType: edge.type,
+          isHappyPath: edge.isHappyPath,
+        },
+      };
     });
 
     return { nodes, edges };

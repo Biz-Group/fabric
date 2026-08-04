@@ -30,6 +30,12 @@ import { EmptyState } from "@/components/ui/empty-state";
 import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
 import {
+  flowDetailProgress,
+  flowHasIncompleteDetails,
+  flowStage,
+  hasRetainedPreviousFlow,
+} from "@/lib/flow-status";
+import {
   type FlowNode,
   type FlowEdge,
   type Confidence,
@@ -159,7 +165,9 @@ function MetricTile({
         {value}
       </p>
       {detail && (
-        <p className="mt-1 break-words text-xs leading-5 text-muted-foreground">{detail}</p>
+        <p className="mt-1 break-words text-xs leading-5 text-muted-foreground">
+          {detail}
+        </p>
       )}
     </div>
   );
@@ -359,10 +367,7 @@ function HandoffsSection({
       ) : (
         <div className="space-y-3">
           {items.map((item) => (
-            <div
-              key={item.id}
-              className="rounded-lg border bg-muted/10 p-3"
-            >
+            <div key={item.id} className="rounded-lg border bg-muted/10 p-3">
               <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] md:items-start">
                 <div className="min-w-0">
                   <p className="text-xs font-medium uppercase text-muted-foreground">
@@ -406,7 +411,10 @@ function HandoffsSection({
                     Target node {item.target.id}
                   </Badge>
                   {item.edge?.label && (
-                    <Badge variant="outline" className="h-auto whitespace-normal">
+                    <Badge
+                      variant="outline"
+                      className="h-auto whitespace-normal"
+                    >
                       {item.edge.label}
                     </Badge>
                   )}
@@ -441,7 +449,10 @@ function ToolsSection({
         ) : (
           <div className="space-y-3">
             {tools.map((tool) => (
-              <div key={tool.name} className="border-b pb-3 last:border-b-0 last:pb-0">
+              <div
+                key={tool.name}
+                className="border-b pb-3 last:border-b-0 last:pb-0"
+              >
                 <div className="flex flex-wrap items-center gap-2">
                   <p className="break-words text-sm font-medium">{tool.name}</p>
                   <Badge variant="secondary">
@@ -584,9 +595,12 @@ function AutomationSection({
                   </p>
                   <Badge
                     variant="outline"
-                    className={AUTOMATION_LABELS[node.automationPotential].className}
+                    className={
+                      AUTOMATION_LABELS[node.automationPotential].className
+                    }
                   >
-                    {AUTOMATION_LABELS[node.automationPotential].label} potential
+                    {AUTOMATION_LABELS[node.automationPotential].label}{" "}
+                    potential
                   </Badge>
                 </div>
                 <p className="mt-2 break-words text-sm text-muted-foreground">
@@ -955,17 +969,33 @@ export function ProcessInsightsTab({
     );
   }
 
-  if (flow.status === "generating") {
+  // Both stages, not just `status`. Insights are computed from step details —
+  // tools, bottlenecks, automation opportunities — none of which exist until the
+  // detail batches and the automation pass have run, so rendering when the graph
+  // lands would show a tab full of zeroes.
+  const stage = flowStage(flow);
+  if (stage === "graph" || stage === "details") {
+    const progress = flowDetailProgress(flow);
     return (
       <FlowPendingState
         icon={Loader2}
         title="Generating process insights"
-        description="The flow is being generated from completed conversations. Insights will appear once the flow is ready."
+        description={
+          stage === "graph"
+            ? "The flow is being generated from completed conversations. Insights will appear once the flow is ready."
+            : progress
+              ? `Describing each step and identifying automation opportunities — ${progress.completed} of ${progress.total} steps done.`
+              : "Describing each step and identifying automation opportunities."
+        }
       />
     );
   }
 
-  if (flow.status === "failed") {
+  // A failed refresh keeps the previous flow, and its insights are a complete
+  // earlier generation rather than a half-built one — so fall through and render
+  // them under a banner. Only a first-ever failure has nothing to show.
+  const showingRetained = hasRetainedPreviousFlow(flow, flow.nodes.length);
+  if (stage === "failed" && !showingRetained) {
     return (
       <div className="space-y-4 p-4 md:p-6">
         <EmptyState
@@ -1052,7 +1082,10 @@ export function ProcessInsightsTab({
           <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
             <div className="min-w-0">
               <div className="flex flex-wrap items-center gap-2">
-                <BarChart3 className="size-4 text-muted-foreground" aria-hidden />
+                <BarChart3
+                  className="size-4 text-muted-foreground"
+                  aria-hidden
+                />
                 <h2 className="text-base font-semibold">Process Insights</h2>
                 <Badge variant="outline" className="capitalize">
                   {flow.status}
@@ -1096,6 +1129,57 @@ export function ProcessInsightsTab({
           </div>
         </header>
 
+        {showingRetained && (
+          <InlineNotice
+            icon={AlertCircle}
+            title="Couldn't refresh — showing the previous version"
+            action={
+              <GenerateFlowButton
+                canGenerate={canGenerate}
+                hasCompletedConversations={hasCompletedConversations}
+                isGenerating={isGenerating}
+                label="Try Again"
+                onGenerate={handleGenerate}
+                onOpenProcessFlow={onOpenProcessFlow}
+              />
+            }
+          >
+            {flow.errorMessage ?? "The last generation did not complete."} These
+            insights come from the previous generation, which covered{" "}
+            {flow.conversationCount} completed conversations.
+          </InlineNotice>
+        )}
+
+        {!showingRetained && flowHasIncompleteDetails(flow) && (
+          <InlineNotice
+            icon={FileWarning}
+            title="Some steps could not be described"
+            action={
+              <GenerateFlowButton
+                canGenerate={canGenerate}
+                hasCompletedConversations={hasCompletedConversations}
+                isGenerating={isGenerating}
+                label="Regenerate"
+                onGenerate={handleGenerate}
+                onOpenProcessFlow={onOpenProcessFlow}
+              />
+            }
+          >
+            {flow.detailErrorMessage ??
+              "Not every step in this flow has a description."}{" "}
+            The diagram and the metrics below cover only the steps that were
+            described, so treat the counts as a floor rather than a total.
+            {flow.insights.automationOpportunitiesSource === "derived" && (
+              <>
+                {" "}
+                Automation opportunities were not analysed for this run — what
+                is listed is the steps that looked automatable, not reviewed
+                opportunities.
+              </>
+            )}
+          </InlineNotice>
+        )}
+
         {isStale && (
           <InlineNotice
             icon={AlertCircle}
@@ -1111,10 +1195,12 @@ export function ProcessInsightsTab({
               />
             }
           >
-            The generated flow includes {flow.conversationCount} completed
-            conversations, while this process currently has{" "}
-            {completedConversationCount}. Refresh the flow before using these
-            insights for review.
+            {/* Two different reasons reach this notice, and asserting the
+                count one when the counts are equal reads as a bug. Say which
+                one it actually is. */}
+            {completedConversationCount === flow.conversationCount
+              ? "This process has been updated since the flow was generated. Refresh the flow before using these insights for review."
+              : `The generated flow includes ${flow.conversationCount} completed conversations, while this process currently has ${completedConversationCount}. Refresh the flow before using these insights for review.`}
           </InlineNotice>
         )}
 

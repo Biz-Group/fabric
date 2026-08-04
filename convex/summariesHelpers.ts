@@ -7,6 +7,8 @@ import {
 import { internal } from "./_generated/api";
 import { Doc } from "./_generated/dataModel";
 import {
+  AITruncationError,
+  assertCompletionNotTruncated,
   generateAICompletion,
   isAIConfigured,
 } from "./lib/aiProvider";
@@ -153,6 +155,10 @@ export const getFunction = internalQuery({
 // LLM prompts + internal action
 // ---------------------------------------------------------------------------
 
+// Mirrors ROLLUP_SUMMARY_MAX_TOKENS in summaries.ts — same prompt, same shape
+// of output, reached through the cascade rather than a direct request.
+const CASCADE_SUMMARY_MAX_TOKENS = 8192;
+
 const DEPARTMENT_SUMMARY_SYSTEM_PROMPT = `You are an analyst synthesizing process-level summaries for an organizational department into a structured brief. Your output must use the following markdown format exactly:
 
 ## Overview
@@ -224,10 +230,22 @@ export const generateDepartmentSummaryInternal = internalAction({
         operation: "department-summary-cascade",
         system: DEPARTMENT_SUMMARY_SYSTEM_PROMPT,
         user: `Here are the process summaries for this department:\n\n${summaryBlock}`,
-        maxTokens: 8192,
+        maxTokens: CASCADE_SUMMARY_MAX_TOKENS,
       });
+      assertCompletionNotTruncated(
+        completion,
+        "department-summary-cascade",
+        CASCADE_SUMMARY_MAX_TOKENS,
+      );
       generated = completion.text;
-    } catch {
+    } catch (error) {
+      if (error instanceof AITruncationError) {
+        console.error(error.message);
+        return {
+          summary: null,
+          message: "Too much content to summarize in one pass.",
+        };
+      }
       return { summary: null, message: "Failed to generate summary." };
     }
     if (!generated) {

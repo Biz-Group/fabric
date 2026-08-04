@@ -12,6 +12,8 @@ import {
   AlertTriangle,
   KeyRound,
   Bot,
+  Loader2,
+  AlertCircle,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { ProcessFlowNodeData } from "@/features/process-flow/use-process-flow-layout";
@@ -69,13 +71,28 @@ const AUTOMATION_COLORS = {
   none: "",
 } as const;
 
-function FlowNodeBase({ data, selected }: NodeProps & { data: ProcessFlowNodeData }) {
+function FlowNodeBase({
+  data,
+  selected,
+}: NodeProps & { data: ProcessFlowNodeData }) {
   const config = CATEGORY_CONFIG[data.category];
   const { Icon } = config;
 
+  // Absent means a legacy flow, whose nodes were detailed inline by the single
+  // call — so no status is the same as ready.
+  const detailStatus = data.detailStatus ?? "ready";
+  const isDetailed = detailStatus === "ready";
+  const detailPending =
+    detailStatus === "pending" || detailStatus === "generating";
+  const detailFailed = detailStatus === "failed";
+
   return (
     <>
-      <Handle type="target" position={Position.Left} className="!bg-border !h-2 !w-2" />
+      <Handle
+        type="target"
+        position={Position.Left}
+        className="!bg-border !h-2 !w-2"
+      />
       <div
         className={cn(
           "w-[280px] rounded-lg border border-border bg-card/80 backdrop-blur-sm text-card-foreground shadow-sm border-l-[3px] transition-all duration-200",
@@ -87,7 +104,12 @@ function FlowNodeBase({ data, selected }: NodeProps & { data: ProcessFlowNodeDat
       >
         {/* Header */}
         <div className="flex items-start gap-2 p-3 pb-1">
-          <div className={cn("flex h-6 w-6 shrink-0 items-center justify-center rounded-md", config.iconBg)}>
+          <div
+            className={cn(
+              "flex h-6 w-6 shrink-0 items-center justify-center rounded-md",
+              config.iconBg,
+            )}
+          >
             <Icon className="h-3.5 w-3.5" />
           </div>
           <div className="min-w-0 flex-1">
@@ -100,61 +122,122 @@ function FlowNodeBase({ data, selected }: NodeProps & { data: ProcessFlowNodeDat
           </div>
         </div>
 
-        {/* Badges row */}
+        {/* Badges row. Enriched judgements are withheld until the step has
+            actually been described — the placeholder values a pending node
+            carries would otherwise render as findings ("medium conf.", "low"
+            automation) that nobody assessed. */}
         <div className="flex flex-wrap items-center gap-1 px-3 pb-1">
-          <span className={cn("inline-flex items-center rounded-full px-1.5 py-0.5 text-[10px] font-medium", config.badgeClass)}>
+          <span
+            className={cn(
+              "inline-flex items-center rounded-full px-1.5 py-0.5 text-[10px] font-medium",
+              config.badgeClass,
+            )}
+          >
             {config.label}
           </span>
-          {data.confidence !== "high" && (
+          {isDetailed && data.confidence !== "high" && (
             <span className="inline-flex items-center rounded-full bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">
               {data.confidence} conf.
             </span>
           )}
-          {data.automationPotential !== "none" && (
-            <span className={cn("inline-flex items-center gap-0.5 rounded-full px-1.5 py-0.5 text-[10px] font-medium", AUTOMATION_COLORS[data.automationPotential])}>
+          {isDetailed && data.automationPotential !== "none" && (
+            <span
+              className={cn(
+                "inline-flex items-center gap-0.5 rounded-full px-1.5 py-0.5 text-[10px] font-medium",
+                AUTOMATION_COLORS[data.automationPotential],
+              )}
+            >
               <Bot className="h-2.5 w-2.5" />
               {data.automationPotential}
+            </span>
+          )}
+          {detailPending && (
+            <span className="inline-flex items-center gap-0.5 rounded-full bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">
+              <Loader2 className="h-2.5 w-2.5 animate-spin" />
+              describing
+            </span>
+          )}
+          {detailFailed && (
+            <span className="inline-flex items-center gap-0.5 rounded-full bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">
+              <AlertCircle className="h-2.5 w-2.5" />
+              no description
             </span>
           )}
         </div>
 
         {/* Description */}
         <div className="px-3 pb-2">
-          <p className="line-clamp-2 break-words text-xs leading-relaxed text-muted-foreground">
-            {data.description}
-          </p>
+          {isDetailed ? (
+            <p className="line-clamp-2 break-words text-xs leading-relaxed text-muted-foreground">
+              {data.description}
+            </p>
+          ) : (
+            // A shimmer rather than blank space: an empty card reads as a
+            // broken step, not an unfinished one.
+            <div className="space-y-1.5 py-0.5" aria-hidden>
+              <div
+                className={cn(
+                  "h-2 w-full rounded bg-muted",
+                  detailPending && "animate-pulse",
+                )}
+              />
+              <div
+                className={cn(
+                  "h-2 w-2/3 rounded bg-muted",
+                  detailPending && "animate-pulse",
+                )}
+              />
+            </div>
+          )}
         </div>
 
         {/* Indicator icons row */}
-        {(data.isBottleneck || data.isTribalKnowledge || data.estimatedDuration) && (
-          <div className="flex items-center gap-2 border-t border-border/50 px-3 py-1.5">
-            {data.isBottleneck && (
-              <span className="flex items-center gap-0.5 text-[10px] text-red-600 dark:text-red-400">
-                <AlertTriangle className="h-2.5 w-2.5" />
-                bottleneck
-              </span>
-            )}
-            {data.isTribalKnowledge && (
-              <span className="flex items-center gap-0.5 text-[10px] text-amber-600 dark:text-amber-400">
-                <KeyRound className="h-2.5 w-2.5" />
-                tribal
-              </span>
-            )}
-            {data.estimatedDuration && (
-              <span className="flex items-center gap-0.5 text-[10px] text-muted-foreground ml-auto">
-                <Clock className="h-2.5 w-2.5" />
-                {data.estimatedDuration}
-              </span>
-            )}
-          </div>
-        )}
+        {isDetailed &&
+          (data.isBottleneck ||
+            data.isTribalKnowledge ||
+            data.estimatedDuration) && (
+            <div className="flex items-center gap-2 border-t border-border/50 px-3 py-1.5">
+              {data.isBottleneck && (
+                <span className="flex items-center gap-0.5 text-[10px] text-red-600 dark:text-red-400">
+                  <AlertTriangle className="h-2.5 w-2.5" />
+                  bottleneck
+                </span>
+              )}
+              {data.isTribalKnowledge && (
+                <span className="flex items-center gap-0.5 text-[10px] text-amber-600 dark:text-amber-400">
+                  <KeyRound className="h-2.5 w-2.5" />
+                  tribal
+                </span>
+              )}
+              {data.estimatedDuration && (
+                <span className="flex items-center gap-0.5 text-[10px] text-muted-foreground ml-auto">
+                  <Clock className="h-2.5 w-2.5" />
+                  {data.estimatedDuration}
+                </span>
+              )}
+            </div>
+          )}
       </div>
-      <Handle type="source" position={Position.Right} className="!bg-border !h-2 !w-2" />
+      <Handle
+        type="source"
+        position={Position.Right}
+        className="!bg-border !h-2 !w-2"
+      />
       {/* Decision nodes get top/bottom handles for alternate conditional branches. */}
       {data.category === "decision" && (
         <>
-          <Handle type="source" position={Position.Top} id="top" className="!bg-border !h-2 !w-2" />
-          <Handle type="source" position={Position.Bottom} id="bottom" className="!bg-border !h-2 !w-2" />
+          <Handle
+            type="source"
+            position={Position.Top}
+            id="top"
+            className="!bg-border !h-2 !w-2"
+          />
+          <Handle
+            type="source"
+            position={Position.Bottom}
+            id="bottom"
+            className="!bg-border !h-2 !w-2"
+          />
         </>
       )}
     </>
@@ -163,22 +246,52 @@ function FlowNodeBase({ data, selected }: NodeProps & { data: ProcessFlowNodeDat
 
 // Create memoized node components for each category
 // React Flow requires stable nodeTypes — each registered type maps to a component
-const StartNode = memo((props: NodeProps) => <FlowNodeBase {...props} data={props.data as unknown as ProcessFlowNodeData} />);
+const StartNode = memo((props: NodeProps) => (
+  <FlowNodeBase
+    {...props}
+    data={props.data as unknown as ProcessFlowNodeData}
+  />
+));
 StartNode.displayName = "StartNode";
 
-const EndNode = memo((props: NodeProps) => <FlowNodeBase {...props} data={props.data as unknown as ProcessFlowNodeData} />);
+const EndNode = memo((props: NodeProps) => (
+  <FlowNodeBase
+    {...props}
+    data={props.data as unknown as ProcessFlowNodeData}
+  />
+));
 EndNode.displayName = "EndNode";
 
-const ActionNode = memo((props: NodeProps) => <FlowNodeBase {...props} data={props.data as unknown as ProcessFlowNodeData} />);
+const ActionNode = memo((props: NodeProps) => (
+  <FlowNodeBase
+    {...props}
+    data={props.data as unknown as ProcessFlowNodeData}
+  />
+));
 ActionNode.displayName = "ActionNode";
 
-const DecisionNode = memo((props: NodeProps) => <FlowNodeBase {...props} data={props.data as unknown as ProcessFlowNodeData} />);
+const DecisionNode = memo((props: NodeProps) => (
+  <FlowNodeBase
+    {...props}
+    data={props.data as unknown as ProcessFlowNodeData}
+  />
+));
 DecisionNode.displayName = "DecisionNode";
 
-const HandoffNode = memo((props: NodeProps) => <FlowNodeBase {...props} data={props.data as unknown as ProcessFlowNodeData} />);
+const HandoffNode = memo((props: NodeProps) => (
+  <FlowNodeBase
+    {...props}
+    data={props.data as unknown as ProcessFlowNodeData}
+  />
+));
 HandoffNode.displayName = "HandoffNode";
 
-const WaitNode = memo((props: NodeProps) => <FlowNodeBase {...props} data={props.data as unknown as ProcessFlowNodeData} />);
+const WaitNode = memo((props: NodeProps) => (
+  <FlowNodeBase
+    {...props}
+    data={props.data as unknown as ProcessFlowNodeData}
+  />
+));
 WaitNode.displayName = "WaitNode";
 
 /**

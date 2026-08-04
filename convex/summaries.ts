@@ -4,11 +4,18 @@ import { internal } from "./_generated/api";
 import { Doc, Id } from "./_generated/dataModel";
 import { resolveOrgForAction } from "./lib/orgAuth";
 import {
+  AITruncationError,
+  assertCompletionNotTruncated,
   generateAICompletion,
   isAIConfigured,
 } from "./lib/aiProvider";
 
 // --- Shared Prompt Constants ---
+
+// Rollup summaries are bounded markdown briefs, but their input grows with the
+// org, so the output can too. Truncated output is never saved — see the
+// AITruncationError branches below.
+const ROLLUP_SUMMARY_MAX_TOKENS = 8192;
 
 const DEPARTMENT_SUMMARY_SYSTEM_PROMPT = `You are an analyst synthesizing process-level summaries for an organizational department into a structured brief. Your output must use the following markdown format exactly:
 
@@ -116,10 +123,23 @@ export const generateDepartmentSummary = action({
         operation: "department-summary",
         system: DEPARTMENT_SUMMARY_SYSTEM_PROMPT,
         user: `Here are the process summaries for this department:\n\n${summaryBlock}`,
-        maxTokens: 8192,
+        maxTokens: ROLLUP_SUMMARY_MAX_TOKENS,
       });
+      assertCompletionNotTruncated(
+        completion,
+        "department-summary",
+        ROLLUP_SUMMARY_MAX_TOKENS,
+      );
       generated = completion.text;
-    } catch {
+    } catch (error) {
+      if (error instanceof AITruncationError) {
+        console.error(error.message);
+        return {
+          summary: null,
+          message:
+            "This department has too much content to summarize in one pass. Try again, or summarize fewer processes.",
+        };
+      }
       return {
         summary: null,
         message: "Failed to generate summary. Please try again.",
@@ -233,10 +253,23 @@ export const generateFunctionSummary = action({
         operation: "function-summary",
         system: FUNCTION_SUMMARY_SYSTEM_PROMPT,
         user: `Here are the department summaries for this function:\n\n${summaryBlock}`,
-        maxTokens: 8192,
+        maxTokens: ROLLUP_SUMMARY_MAX_TOKENS,
       });
+      assertCompletionNotTruncated(
+        completion,
+        "function-summary",
+        ROLLUP_SUMMARY_MAX_TOKENS,
+      );
       summary = completion.text;
-    } catch {
+    } catch (error) {
+      if (error instanceof AITruncationError) {
+        console.error(error.message);
+        return {
+          summary: null,
+          message:
+            "This function has too much content to summarize in one pass. Try again, or summarize fewer departments.",
+        };
+      }
       return {
         summary: null,
         message: "Failed to generate summary. Please try again.",
@@ -266,15 +299,14 @@ export const forceRefreshProcessSummary = action({
   handler: async (ctx, args): Promise<{ message: string | null }> => {
     const { orgId } = await resolveOrgForAction(ctx);
     await ctx.runQuery(internal.postCall.requireOrgContributorInternal, {});
-    await ctx.scheduler.runAfter(
-      0,
-      internal.postCall.regenerateProcessSummary,
-      {
-        processId: args.processId,
-        clerkOrgId: orgId,
-        forceRefresh: true,
-      },
-    );
+    // Through the gate, not straight to the action: a manual rebuild pressed
+    // while conversations are still landing should join the in-flight run
+    // rather than start a competing one.
+    await ctx.runMutation(internal.postCall.requestProcessSummaryRegen, {
+      processId: args.processId,
+      clerkOrgId: orgId,
+      forceRefresh: true,
+    });
     return { message: null };
   },
 });

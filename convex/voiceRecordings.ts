@@ -142,12 +142,14 @@ export function normalizeScribeTranscript(
   if (speechWords.length === 0) {
     const text = (data.text ?? "").trim();
     return text
-      ? [{
-          role: "user",
-          content: text,
-          time_in_call_secs: 0,
-          speakerId: "speaker_0",
-        }]
+      ? [
+          {
+            role: "user",
+            content: text,
+            time_in_call_secs: 0,
+            speakerId: "speaker_0",
+          },
+        ]
       : [];
   }
 
@@ -271,12 +273,14 @@ export function coerceAnalysisPayload(
   value: unknown,
   fallbackSummary: string,
 ): AnalysisPayload {
-  const root = value && typeof value === "object"
-    ? (value as Record<string, unknown>)
-    : {};
-  const dc = root.data_collection && typeof root.data_collection === "object"
-    ? (root.data_collection as Record<string, unknown>)
-    : {};
+  const root =
+    value && typeof value === "object"
+      ? (value as Record<string, unknown>)
+      : {};
+  const dc =
+    root.data_collection && typeof root.data_collection === "object"
+      ? (root.data_collection as Record<string, unknown>)
+      : {};
   const success =
     root.success_evaluation && typeof root.success_evaluation === "object"
       ? (root.success_evaluation as Record<string, unknown>)
@@ -284,8 +288,7 @@ export function coerceAnalysisPayload(
 
   return {
     call_summary_title: normalizeSummaryTitle(root.call_summary_title) ?? "",
-    transcript_summary:
-      stringValue(root.transcript_summary) || fallbackSummary,
+    transcript_summary: stringValue(root.transcript_summary) || fallbackSummary,
     data_collection: {
       process_steps: jsonArrayString(dc.process_steps),
       step_connections: jsonArrayString(dc.step_connections),
@@ -304,7 +307,9 @@ export function coerceAnalysisPayload(
   };
 }
 
-function fallbackSummaryFromTranscript(transcript: TranscriptMessage[]): string {
+function fallbackSummaryFromTranscript(
+  transcript: TranscriptMessage[],
+): string {
   const text = transcriptText(transcript).trim();
   if (!text) return "No transcript content was available for this recording.";
   return text.length > 800 ? `${text.slice(0, 797)}...` : text;
@@ -380,9 +385,7 @@ export function parseAnalysisResponse(
   return coerceAnalysisPayload(parsed, fallbackSummary);
 }
 
-async function analyzeTranscript(
-  transcript: TranscriptMessage[],
-): Promise<{
+async function analyzeTranscript(transcript: TranscriptMessage[]): Promise<{
   analysis: AnalysisPayload;
   analysisProvider: "fabric-openrouter" | "fabric-foundry";
 }> {
@@ -419,9 +422,7 @@ export const processVoiceRecording = action({
     storageId: v.id("_storage"),
     durationSeconds: v.optional(v.number()),
     mimeType: v.string(),
-    source: v.optional(
-      v.union(v.literal("record"), v.literal("upload")),
-    ),
+    source: v.optional(v.union(v.literal("record"), v.literal("upload"))),
     // Optional on-behalf-of attribution; omitted for ordinary self-recordings.
     contributorName: v.optional(v.string()),
     subjectUserId: v.optional(v.id("users")),
@@ -459,9 +460,7 @@ export const processVoiceRecording = action({
         userId: attribution.userId,
         subjectUserId: attribution.subjectUserId,
         submittedByName: attribution.submittedByName,
-        consentAttestedAt: attribution.submittedByName
-          ? Date.now()
-          : undefined,
+        consentAttestedAt: attribution.submittedByName ? Date.now() : undefined,
         inputMode: isUpload ? "audioUpload" : "voiceRecord",
         audioStorageId: args.storageId,
         audioMimeType: args.mimeType,
@@ -868,9 +867,16 @@ export const analyzeVoiceRecordingInternal = internalAction({
 
       await ctx.scheduler.runAfter(
         0,
-        internal.postCall.regenerateProcessSummary,
-        { processId: recording.processId, clerkOrgId: args.clerkOrgId },
+        internal.postCall.generateConversationSummaryInput,
+        {
+          conversationId: args.conversationId,
+          clerkOrgId: args.clerkOrgId,
+        },
       );
+      await ctx.runMutation(internal.postCall.requestProcessSummaryRegen, {
+        processId: recording.processId,
+        clerkOrgId: args.clerkOrgId,
+      });
 
       return { status: "done" as const };
     } catch (error) {
