@@ -63,6 +63,7 @@ function ConsoleHeader({ email }: { email: string }) {
 
   const navItems = [
     { href: "/", label: "Tenants", active: path === "/" || path.startsWith("/new") },
+    { href: "/usage", label: "Usage", active: path.startsWith("/usage") },
     { href: "/team", label: "Platform team", active: path.startsWith("/team") },
   ];
 

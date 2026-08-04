@@ -327,6 +327,85 @@ http.route({
   }),
 });
 
+/**
+ * Cross-deployment AI usage ingest (dev → prod).
+ *
+ * Authenticated with a shared bearer secret rather than a signature: both ends
+ * are our own deployments, the payload is not user-supplied, and the secret
+ * never leaves Convex env vars. The comparison is constant-time anyway, because
+ * a length-or-prefix-leaking compare on a long-lived shared secret is a free
+ * mistake to avoid.
+ */
+function timingSafeStringEqual(a: string, b: string): boolean {
+  // Compare a fixed number of bytes regardless of input, so neither the length
+  // nor the position of the first mismatch is observable from timing.
+  const encoder = new TextEncoder();
+  const left = encoder.encode(a);
+  const right = encoder.encode(b);
+  const length = Math.max(left.length, right.length);
+  let diff = left.length ^ right.length;
+  for (let i = 0; i < length; i++) {
+    diff |= (left[i] ?? 0) ^ (right[i] ?? 0);
+  }
+  return diff === 0;
+}
+
+http.route({
+  path: "/ai-usage/ingest",
+  method: "POST",
+  handler: httpAction(async (ctx, req) => {
+    const secret = process.env.USAGE_SINK_SECRET?.trim();
+    if (!secret) {
+      // Not configured as a sink — behave as if the route does not exist rather
+      // than advertising an unprotected endpoint.
+      return new Response("Not found", { status: 404 });
+    }
+
+    const authorization = req.headers.get("authorization") ?? "";
+    const presented = authorization.startsWith("Bearer ")
+      ? authorization.slice("Bearer ".length).trim()
+      : "";
+    if (!presented || !timingSafeStringEqual(presented, secret)) {
+      return new Response("Unauthorized", { status: 401 });
+    }
+
+    let body: unknown;
+    try {
+      body = await req.json();
+    } catch {
+      return new Response("Invalid JSON", { status: 400 });
+    }
+
+    const events = (body as { events?: unknown })?.events;
+    if (!Array.isArray(events)) {
+      return new Response("Expected { events: [...] }", { status: 400 });
+    }
+    if (events.length > 500) {
+      return new Response("Batch too large", { status: 413 });
+    }
+
+    const localDeployment =
+      process.env.USAGE_DEPLOYMENT_LABEL === "dev" ? "dev" : "prod";
+
+    try {
+      // The rows are checked by `ingestBatch`'s own argument validator — a
+      // malformed one rejects the whole batch, which the sender then retries.
+      const result = await ctx.runMutation(internal.aiUsage.ingestBatch, {
+        events,
+        localDeployment,
+      });
+      return Response.json(result);
+    } catch (error) {
+      console.error("AI usage ingest failed", {
+        count: events.length,
+        errorType: error instanceof Error ? error.name : "UnknownError",
+        message: error instanceof Error ? error.message : undefined,
+      });
+      return new Response("Invalid batch", { status: 400 });
+    }
+  }),
+});
+
 // CORS preflight for the audio endpoint
 http.route({
   pathPrefix: "/audio/",

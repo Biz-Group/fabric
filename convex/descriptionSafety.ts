@@ -1,8 +1,10 @@
 import { ConvexError, v } from "convex/values";
+import type { ActionCtx } from "./_generated/server";
+import { FOUNDRY_SAFETY_MODEL } from "./lib/aiProvider";
 import {
-  FOUNDRY_SAFETY_MODEL,
-  generateAICompletion,
-} from "./lib/aiProvider";
+  meteredCompletion,
+  type UsageAttribution,
+} from "./lib/aiUsageMeter";
 
 export const DESCRIPTION_MAX_LENGTH = 2000;
 const DESCRIPTION_SAFETY_MAX_TOKENS = 1000;
@@ -196,10 +198,14 @@ export function buildSafetyAIRequest(description: string) {
 }
 
 export async function classifyDescriptionSafety(
+  ctx: ActionCtx,
+  attribution: UsageAttribution,
   description: string,
 ): Promise<DescriptionSafetyDecision> {
   try {
-    const completion = await generateAICompletion(
+    const completion = await meteredCompletion(
+      ctx,
+      attribution,
       buildSafetyAIRequest(description),
     );
     if (completion.toolInput === null) {

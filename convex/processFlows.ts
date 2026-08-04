@@ -11,11 +11,11 @@ import { internal } from "./_generated/api";
 import type { Doc, Id } from "./_generated/dataModel";
 import { requireOrgMember, resolveOrgForAction } from "./lib/orgAuth";
 import {
-  generateAICompletion,
   isAIConfigured,
   isTokenLimitFinishReason,
   type AICompletion,
 } from "./lib/aiProvider";
+import { meteredCompletion } from "./lib/aiUsageMeter";
 import {
   buildFlowInsightsAIRequest,
   buildGraphAIRequest,
@@ -1513,7 +1513,18 @@ export const generateGraphInternal = internalAction({
 
     let completion: AICompletion;
     try {
-      completion = await generateAICompletion(buildGraphAIRequest(userContent));
+      completion = await meteredCompletion(
+        ctx,
+        {
+          clerkOrgId: args.clerkOrgId,
+          entityType: "process",
+          entityId: args.processId,
+          // Every stage of one generation shares this, so "what did this flow
+          // cost end to end" is a single query on by_runId.
+          runId: args.generationId,
+        },
+        buildGraphAIRequest(userContent),
+      );
     } catch (error) {
       console.error("AI process flow graph request failed", {
         errorType: error instanceof Error ? error.name : "UnknownError",
@@ -1707,7 +1718,14 @@ export const generateNodeDetailsBatchInternal = internalAction({
 
     let completion: AICompletion;
     try {
-      completion = await generateAICompletion(
+      completion = await meteredCompletion(
+        ctx,
+        {
+          clerkOrgId: args.clerkOrgId,
+          entityType: "process",
+          entityId: args.processId,
+          runId: args.generationId,
+        },
         buildNodeDetailsAIRequest(userContent),
       );
     } catch (error) {
@@ -1880,7 +1898,14 @@ export const generateFlowInsightsInternal = internalAction({
 
     let completion: AICompletion;
     try {
-      completion = await generateAICompletion(
+      completion = await meteredCompletion(
+        ctx,
+        {
+          clerkOrgId: args.clerkOrgId,
+          entityType: "process",
+          entityId: args.processId,
+          runId: args.generationId,
+        },
         buildFlowInsightsAIRequest(buildInsightsUserContent(flow)),
       );
     } catch (error) {
