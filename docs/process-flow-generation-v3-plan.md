@@ -419,6 +419,69 @@ Then, in prod, verify with `npx convex logs`:
 - no `Reaping a flow stuck in...` warnings, which would mean the pipeline is
   dying rather than completing.
 
+## Deferred cleanup — things to delete once v3 has settled
+
+**1. The retained-previous-flow fallback.** *(Added 2026-08-04, kept
+deliberately. Delete when v3 has run in prod long enough to trust.)*
+
+When a generation fails at the graph stage, the previous flow survives in the
+row and the UI renders it under a "Couldn't refresh — showing the previous
+version" banner instead of an error page. This exists because the single-call
+design used to *destroy* the previous flow on failure, and the 108-conversation
+process had already burned the user once.
+
+Once graph-stage failures are known-rare in practice, this is arguably worse
+than an honest error: a stale flow behind a banner is easy to misread as
+current. To remove it, delete:
+
+- `hasRetainedPreviousFlow` in `src/lib/flow-status.ts` (+ its tests)
+- the `showingRetained` branch and banner in
+  `src/features/process-flow/process-flow.tsx`
+- the `showingRetained` branch and `InlineNotice` in
+  `src/features/insights/process-insights-tab.tsx`
+- restore `useProcessFlowLayout`'s `status === "ready"` guard
+
+Keep, regardless of that decision: `startFlowGeneration` and
+`failFlowGeneration` not touching `nodes`/`edges`/`insights`/`conversationCount`
+on failure. Retaining the *data* costs nothing and is strictly better than the
+old `replace`-based save; only the *rendering* is the transitional part.
+
+## Known gaps and open work
+
+Not blocking, but real. Roughly in priority order:
+
+1. **P1 budgets on the five remaining synthesis call sites.** The incremental
+   process summary, both rollup summaries, the cascade (8,192 tokens each) and
+   voice analysis (16,384) still run on the default 120 s timeout, whose P1
+   ceiling is ~3,770. Truncation is caught at all of them, so a failure is
+   visible rather than silent — but the timeouts are undeclared. This is now
+   *decidable*: prod has been running with the near-miss telemetry from step 1,
+   so `npx convex logs` can say whether any of them actually approach their
+   limit. Each site needs a declared `timeoutMs` **and** a re-checked
+   `maxRetries`, since 3 attempts × a compliant 256 s breaks the 10-minute
+   action ceiling.
+2. **Re-transcribed conversations don't mark a flow stale.** `markFlowStale`'s
+   `summaryRebuilt` trigger compares conversation counts, so editing a
+   transcript in place changes nothing it can see. Needs a content fingerprint
+   on the flow, the way `processSummaryInputHash` does for summaries.
+3. **PDF export skips a retained flow.** `hasFlow` requires details ready, so a
+   failed refresh exports without the diagram rather than exporting the previous
+   version. Deliberate — a document that doesn't say which generation it came
+   from is worse — but it could carry the previous version plus a note.
+4. **No cancel on an in-flight generation.** The watchdog resolves a wedged run
+   within ~15 minutes, so this is convenience, not safety. Needs a mutation to
+   abandon a run.
+5. **Insights sections are not progressive.** v2's Phase 2 wanted graph-level
+   metrics immediately with detail-derived ones filling in; the tab waits for
+   details instead, because numbers that climb while you read them are worse
+   than a short wait. Revisit if the wait is felt now that the flow tab renders
+   early.
+6. **`vite/client` typecheck noise.** Nine convex-test files carry
+   `/// <reference types="vite/client" />` per the Convex guidelines, but the
+   types are not resolvable, so `npx tsc --noEmit` reports TS2688 for each.
+   Pre-existing and cosmetic — tests run fine — but it makes a clean typecheck
+   impossible to read at a glance.
+
 ## Alternatives considered and rejected
 
 - **Keep the single call; stream the response.** Fixes the timeout fragility

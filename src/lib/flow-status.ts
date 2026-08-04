@@ -100,6 +100,12 @@ export function flowHasIncompleteDetails(flow: FlowLike): boolean {
  * Only the graph stage can reach this. Once a new graph saves it has already
  * replaced the old one — but at that point there is a new graph to show, and a
  * detail-stage failure leaves it usable.
+ *
+ * ⚠️ TRANSITIONAL. This exists because the retired single-call design destroyed
+ * the previous flow on failure. Once graph-stage failures are known-rare, a
+ * stale flow behind a banner is arguably worse than an honest error — see
+ * "Deferred cleanup" in docs/process-flow-generation-v3-plan.md for exactly what
+ * to remove. Retaining the data is permanent; only this rendering is temporary.
  */
 export function hasRetainedPreviousFlow(
   flow: FlowLike,

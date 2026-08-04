@@ -955,7 +955,12 @@ Every Function/Department/Process **description** (a free-text field contributor
 | Function | Purpose |
 |---|---|
 | `getProcessFlow` | Real-time read of a process's generated flow. |
-| `generateProcessFlow` / `generateFlowInternal` | Auth-gated entry point sets status to `generating`; the internal action builds a Foundry Claude request through the shared adapter from the rolling summary + conversation analysis data, parses/normalizes nodes and edges, and saves the result. |
+| `generateProcessFlow` | Auth-gated entry point. Joins an in-flight run rather than starting a competing one, then schedules the staged pipeline below. |
+| `generateGraphInternal` | Stage 1: one bounded call producing the graph skeleton only (nodes, edges, critical path) from the rolling summary + conversation analysis. Saves it `ready` and seeds one pending `processFlowNodeDetails` row per node. |
+| `generateNodeDetailsBatchInternal` | Stage 2: enriches ~6 nodes per call, re-scheduling itself until none are pending. Halves the batch once if a response truncates. |
+| `generateFlowInsightsInternal` | Stage 3: one call over the whole enriched graph identifying automation opportunities (agent / workflow / integration), then finalizes the run. |
+| `retryNodeDetail` | Re-requests one step's description without regenerating the flow. |
+| `reapStuckFlowGenerations` | Cron-driven watchdog: fails a wedged graph stage, resumes or finalizes a wedged detail stage. |
 | `markFlowStale` / `deleteForProcess` | Internal — staleness propagation and flow cleanup on process/conversation deletion. |
 
 **Summaries (`summaries.ts`, `summariesHelpers.ts`):**

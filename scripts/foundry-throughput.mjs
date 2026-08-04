@@ -1,16 +1,18 @@
 // Foundry Claude throughput probe.
 //
-// Measures sustained generation throughput for the Claude synthesis deployment
-// so we can tell WHY process-flow generation times out and whether raising the
-// deployment's provisioned capacity fixes it.
+// Measures sustained generation throughput for the Claude synthesis deployment.
+// Originally written to diagnose why process-flow generation timed out; its
+// standing job now is to refresh MEASURED_THROUGHPUT in convex/lib/aiProvider.ts,
+// which is what every call's token budget is sized against. Re-run it on any
+// model or deployment change — the budgets are only as good as these numbers.
 //
 // It reports, per run:
 //   - TTFT (time to first token): mostly queue/scheduling wait. High TTFT with a
 //     healthy post-TTFT rate => capacity contention (raising capacity helps).
 //   - gen rate (tokens/sec after the first token): the model's actual streaming
-//     speed. If THIS is ~4 tok/s, more capacity will not help; the deployment
+//     speed. If THIS is low, more capacity will not help; the deployment
 //     tier/region is the constraint.
-//   - projected time for a full flow-generation-sized response.
+//   - projected time for the largest single stage (the graph pass).
 //
 // Usage (PowerShell), with the same env the smoke test uses:
 //   $env:FOUNDRY_ENDPOINT = "https://<account>.services.ai.azure.com"
@@ -44,10 +46,15 @@ const maxTokens = Number(process.argv[2] ?? 4000);
 const runs = Number(process.argv[3] ?? 3);
 const concurrency = Number(process.argv[4] ?? 1);
 
-// A representative flow-generation call requests up to 32768 output tokens.
-const FLOW_GENERATION_MAX_TOKENS = 32768;
-// The single-attempt window we set for flow generation (see processFlows.ts).
-const FLOW_TIMEOUT_MS = 450_000;
+// The largest single call the pipeline now makes: the graph pass, 6144 tokens in
+// 210 s (see GRAPH_MAX_TOKENS / GRAPH_TIMEOUT_MS in convex/lib/flowStages.ts).
+//
+// These were 32768 / 450_000 while flow generation was one giant call. Both are
+// gone: no stage asks for anywhere near the cap now, which is the point. Keeping
+// the projection pointed at the *current* largest stage is what makes it useful —
+// if that stage stops fitting, the budgets need re-sizing.
+const FLOW_GENERATION_MAX_TOKENS = 6144;
+const FLOW_TIMEOUT_MS = 210_000;
 
 const anthropic = new AnthropicFoundry({
   apiKey,
@@ -89,7 +96,9 @@ async function probe(label) {
   const finishedAt = Date.now();
 
   const outputTokens = finalMessage.usage?.output_tokens ?? 0;
-  const ttftMs = firstTokenAt ? firstTokenAt - startedAt : finishedAt - startedAt;
+  const ttftMs = firstTokenAt
+    ? firstTokenAt - startedAt
+    : finishedAt - startedAt;
   const genMs = firstTokenAt ? finishedAt - firstTokenAt : 0;
   const genRate = genMs > 0 ? outputTokens / (genMs / 1000) : 0;
   const overallRate = outputTokens / ((finishedAt - startedAt) / 1000);
@@ -141,7 +150,9 @@ if (results.length > 0) {
   const worstGenRate = Math.min(...results.map((r) => r.genRate));
 
   console.log("\n--- summary ---");
-  console.log(`avg TTFT:        ${avgTtft.toFixed(0)} ms (worst ${worstTtft} ms)`);
+  console.log(
+    `avg TTFT:        ${avgTtft.toFixed(0)} ms (worst ${worstTtft} ms)`,
+  );
   console.log(
     `avg gen rate:    ${avgGenRate.toFixed(1)} tok/s (worst ${worstGenRate.toFixed(1)} tok/s)`,
   );
@@ -152,10 +163,10 @@ if (results.length > 0) {
     const projectedMs =
       worstTtft + (FLOW_GENERATION_MAX_TOKENS / worstGenRate) * 1000;
     console.log(
-      `\nProjected worst-case flow response (${FLOW_GENERATION_MAX_TOKENS} tok @ worst rate): ` +
+      `\nProjected worst-case graph pass (${FLOW_GENERATION_MAX_TOKENS} tok @ worst rate): ` +
         `~${(projectedMs / 1000).toFixed(0)} s ` +
-        `(${projectedMs <= FLOW_TIMEOUT_MS ? "fits" : "EXCEEDS"} the ` +
-        `${FLOW_TIMEOUT_MS / 1000} s flow-gen timeout).`,
+        `(${projectedMs <= FLOW_TIMEOUT_MS ? "fits" : "EXCEEDS"} its ` +
+        `${FLOW_TIMEOUT_MS / 1000} s timeout).`,
     );
     console.log(
       `Budget rule input: maxTokens <= (timeoutMs - ${worstTtft} TTFT) / 1000 * ` +

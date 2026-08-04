@@ -7,6 +7,18 @@ Executor: Claude (Opus). Work through phases in order; each phase has a gate.
 
 ## Phase 0 findings (recorded 2026-07-17)
 
+> **Read this section as a dated record, not as current fact.** Two things in it
+> were later disproven or superseded:
+> 1. The "very low generation throughput (~4–10 tok/s)" inference below is
+>    **wrong**. Probing measured 65–99 tok/s; the low average was an artefact of
+>    counting tokens from calls the client aborted mid-stream. Root cause was
+>    output volume against the 120 s timeout, not throughput — see step 3 of the
+>    execution table.
+> 2. Every code reference below points at the pre-v3 single-call design, which
+>    **no longer exists**. `generateFlowInternal`, `saveProcessFlow` and the
+>    32,768-token request were deleted when the staged pipeline shipped
+>    (2026-08-03). Current design: `docs/process-flow-generation-v3-plan.md`.
+
 Diagnosis ran against prod (`lovable-wolf-596`) by re-running flow generation
 and watching `npx convex logs`. **The live failure is a client-side timeout,
 not output truncation and not a 429.** Evidence:
@@ -28,12 +40,14 @@ not output truncation and not a 429.** Evidence:
   the runbook's "prod stays on OpenRouter until cutover" is no longer current.
 - **`status: undefined` + `requestId: null`** = no HTTP error response ever
   arrived. This rules out 429/quota and token-limit truncation for this run.
-- **`latencyMs: 361351` ≈ 3 × 120 s**: the Anthropic SDK client is created with
-  `timeout: 120_000` and `maxRetries: 2` (`convex/lib/aiProvider.ts:322-327`);
-  the SDK retries timeouts, so 3 attempts × 120 s + backoff = ~361 s. The
-  flow-generation call site does not pass `timeoutMs`
-  (`convex/processFlows.ts:838-861`), so it gets the 120 s default while
-  requesting up to 32,768 output tokens non-streaming.
+- **`latencyMs: 361351` ≈ 3 × 120 s**: the Anthropic SDK client was created with
+  `timeout: 120_000` and `maxRetries: 2` (then `convex/lib/aiProvider.ts:322-327`,
+  now `callFoundryClaude` — the defaults are unchanged but per-request overrides
+  exist); the SDK retries timeouts, so 3 attempts × 120 s + backoff = ~361 s. The
+  flow-generation call site passed no `timeoutMs`, so it got the 120 s default
+  while requesting up to 32,768 output tokens non-streaming. That call site is
+  gone: generation is now three stages, each with a declared timeout sized
+  against measured throughput.
 - **Azure Foundry metrics for the window**: 8 requests, 20.99K input tokens
   (avg 2,624), 3.76K output tokens (avg 471). Two implications: (a) requests DO
   reach Foundry and input size is small — flow-gen input is the rolling summary
