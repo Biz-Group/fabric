@@ -26,6 +26,7 @@ import {
   type UsageAttribution,
 } from "./lib/aiUsageMeter";
 import { normalizeSummaryTitle } from "./lib/conversationTitle";
+import { startConversationPipelines } from "./lib/conversationPipelines";
 import type { ResolvedAttribution } from "./postCall";
 
 type TranscriptMessage = {
@@ -936,11 +937,13 @@ export const analyzeVoiceRecordingInternal = internalAction({
         durationSeconds: recording.durationSeconds,
       });
 
-      // Stale only — see markProcessSummaryStale.
-      await ctx.runMutation(internal.summaryEvidence.markProcessSummaryStale, {
-        processId: recording.processId,
-        clerkOrgId: args.clerkOrgId,
-      });
+      // The recording is committed as done; both pipelines start from here,
+      // independently of each other.
+      await startConversationPipelines(
+        ctx,
+        recording.processId,
+        args.clerkOrgId,
+      );
 
       return { status: "done" as const };
     } catch (error) {

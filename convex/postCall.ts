@@ -27,6 +27,7 @@ import {
   sanitizeContributorName,
 } from "./lib/contributorAttribution";
 import { summaryTitleFromAnalysis } from "./lib/conversationTitle";
+import { startConversationPipelines } from "./lib/conversationPipelines";
 import { hashTranscript } from "./lib/transcriptHash";
 
 // Normalize ElevenLabs transcript to the shape our UI expects:
@@ -519,15 +520,9 @@ export const fetchConversation = action({
           },
         );
 
-        // Marks the overview stale; it does not generate. Rebuild is a human
-        // action so a few seconds of test audio cannot spend tokens.
-        await ctx.runMutation(
-          internal.summaryEvidence.markProcessSummaryStale,
-          {
-            processId: args.processId,
-            clerkOrgId: orgId,
-          },
-        );
+        // The conversation is committed as done; both pipelines start from here,
+        // independently of each other.
+        await startConversationPipelines(ctx, args.processId, orgId);
 
         return { status: "done" as const };
       }
@@ -829,11 +824,7 @@ export const importConversation = internalAction({
       },
     );
 
-    // Stale only — see markProcessSummaryStale.
-    await ctx.runMutation(internal.summaryEvidence.markProcessSummaryStale, {
-      processId: args.processId,
-      clerkOrgId: args.clerkOrgId,
-    });
+    await startConversationPipelines(ctx, args.processId, args.clerkOrgId);
 
     return { status: "done" as const, summary };
   },

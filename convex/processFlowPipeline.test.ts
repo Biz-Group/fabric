@@ -1112,3 +1112,49 @@ describe("watchdog", () => {
     expect(flow?.resumeAttempts).toBe(0);
   });
 });
+
+describe("automatic flow generation when a conversation finishes", () => {
+  test("starts a run and schedules the graph stage", async () => {
+    const t = harness();
+    const processId = await t.run(seedOrg);
+
+    const result = await t.mutation(
+      internal.processFlows.requestFlowGeneration,
+      { processId, clerkOrgId: ORG },
+    );
+
+    expect(result.scheduled).toBe(true);
+    const flow = await t.run(async (ctx) =>
+      ctx.db
+        .query("processFlows")
+        .withIndex("by_clerkOrgId_and_processId", (q) =>
+          q.eq("clerkOrgId", ORG).eq("processId", processId),
+        )
+        .first(),
+    );
+    expect(flow?.status).toBe("generating");
+    expect(flow?.generationVersion).toBe("v3");
+    expect(flow?.generationId).toBe(result.generationId);
+  });
+
+  test("a second conversation landing joins the run in flight", async () => {
+    // Two contributors finishing together must not buy two pipelines. The graph
+    // stage reads every done conversation, so the run already in flight covers
+    // the second one.
+    const t = harness();
+    const processId = await t.run(seedOrg);
+
+    const first = await t.mutation(
+      internal.processFlows.requestFlowGeneration,
+      { processId, clerkOrgId: ORG },
+    );
+    const second = await t.mutation(
+      internal.processFlows.requestFlowGeneration,
+      { processId, clerkOrgId: ORG },
+    );
+
+    expect(first.scheduled).toBe(true);
+    expect(second.scheduled).toBe(false);
+    expect(second.generationId).toBe(first.generationId);
+  });
+});

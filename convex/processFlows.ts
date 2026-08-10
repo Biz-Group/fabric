@@ -5,6 +5,7 @@ import {
   internalMutation,
   internalQuery,
   query,
+  type MutationCtx,
   type QueryCtx,
 } from "./_generated/server";
 import { internal } from "./_generated/api";
@@ -16,6 +17,7 @@ import {
   type AICompletion,
 } from "./lib/aiProvider";
 import { meteredCompletion } from "./lib/aiUsageMeter";
+import { extractDataCollection } from "./lib/conversationAnalysis";
 import {
   buildFlowInsightsAIRequest,
   buildGraphAIRequest,
@@ -210,9 +212,10 @@ function formatConversationData(
   },
   index: number,
 ): string {
-  const dc = (
-    conv.analysis as { data_collection?: Record<string, unknown> } | null
-  )?.data_collection;
+  // Normalized rather than read directly: agent-mode conversations carry these
+  // fields inside ElevenLabs' envelopes, and reading `data_collection` meant
+  // every one of them reached this stage as "no structured data".
+  const dc = extractDataCollection(conv.analysis);
 
   if (!dc) {
     return `[Conversation ${index} — ${conv.contributorName}]\nNo structured data available.`;
@@ -637,91 +640,127 @@ function ownsGeneration(
   return flow !== null && flow.generationId === generationId;
 }
 
+async function startFlowGenerationForOrg(
+  ctx: MutationCtx,
+  args: { processId: Id<"processes">; clerkOrgId: string },
+): Promise<{
+  generationId: string;
+  processFlowId: Id<"processFlows">;
+  joined: boolean;
+}> {
+  const existing = await ctx.db
+    .query("processFlows")
+    .withIndex("by_clerkOrgId_and_processId", (q) =>
+      q.eq("clerkOrgId", args.clerkOrgId).eq("processId", args.processId),
+    )
+    .first();
+
+  const now = Date.now();
+
+  // Duplicate-trigger guard. `generationId` already stops stale *writes*, but
+  // two clicks would still burn two full pipelines of tokens, so the second
+  // joins the first. A run whose heartbeat has gone stale may be superseded —
+  // that is the escape hatch for a wedged generation.
+  if (
+    existing &&
+    existing.generationId !== undefined &&
+    (existing.status === "generating" ||
+      existing.detailsStatus === "generating") &&
+    now - (existing.lastProgressAt ?? 0) < FLOW_GENERATION_STALE_MS
+  ) {
+    return {
+      generationId: existing.generationId,
+      processFlowId: existing._id,
+      joined: true,
+    };
+  }
+
+  const generationId = crypto.randomUUID();
+
+  if (existing) {
+    // The previous graph is deliberately left in place: if this run fails,
+    // the user still has the flow they had before. Nothing renders it while
+    // `status` is "generating".
+    await ctx.db.patch(existing._id, {
+      status: "generating",
+      stale: false,
+      generationVersion: "v3",
+      generationId,
+      detailsStatus: "pending",
+      detailNodeCount: undefined,
+      detailCompletedCount: undefined,
+      detailFailedCount: undefined,
+      detailsGeneratedAt: undefined,
+      detailErrorMessage: undefined,
+      errorMessage: undefined,
+      lastProgressAt: now,
+      resumeAttempts: 0,
+    });
+    return { generationId, processFlowId: existing._id, joined: false };
+  }
+
+  const processFlowId = await ctx.db.insert("processFlows", {
+    processId: args.processId,
+    clerkOrgId: args.clerkOrgId,
+    status: "generating",
+    stale: false,
+    generatedAt: now,
+    conversationCount: 0,
+    nodes: [],
+    edges: [],
+    insights: {
+      criticalPath: [],
+      handoffCount: 0,
+      toolCount: 0,
+      automationOpportunities: [],
+      topBottlenecks: [],
+    },
+    generationVersion: "v3",
+    generationId,
+    detailsStatus: "pending",
+    lastProgressAt: now,
+    resumeAttempts: 0,
+  });
+
+  return { generationId, processFlowId, joined: false };
+}
+
 export const startFlowGeneration = internalMutation({
+  args: { processId: v.id("processes"), clerkOrgId: v.string() },
+  handler: startFlowGenerationForOrg,
+});
+
+/**
+ * Starts the staged pipeline with no authenticated caller, for the automatic
+ * trigger that fires when a conversation finishes recording.
+ *
+ * Same body as the public `generateProcessFlow` action minus the auth gate:
+ * the caller has already established which org the finished conversation
+ * belongs to, and there is no human to authorize. The duplicate-trigger guard
+ * inside `startFlowGenerationForOrg` still applies, so several conversations
+ * landing together join one run rather than buying one pipeline each.
+ */
+export const requestFlowGeneration = internalMutation({
   args: { processId: v.id("processes"), clerkOrgId: v.string() },
   handler: async (
     ctx,
     args,
-  ): Promise<{
-    generationId: string;
-    processFlowId: Id<"processFlows">;
-    joined: boolean;
-  }> => {
-    const existing = await ctx.db
-      .query("processFlows")
-      .withIndex("by_clerkOrgId_and_processId", (q) =>
-        q.eq("clerkOrgId", args.clerkOrgId).eq("processId", args.processId),
-      )
-      .first();
-
-    const now = Date.now();
-
-    // Duplicate-trigger guard. `generationId` already stops stale *writes*, but
-    // two clicks would still burn two full pipelines of tokens, so the second
-    // joins the first. A run whose heartbeat has gone stale may be superseded —
-    // that is the escape hatch for a wedged generation.
-    if (
-      existing &&
-      existing.generationId !== undefined &&
-      (existing.status === "generating" ||
-        existing.detailsStatus === "generating") &&
-      now - (existing.lastProgressAt ?? 0) < FLOW_GENERATION_STALE_MS
-    ) {
-      return {
-        generationId: existing.generationId,
-        processFlowId: existing._id,
-        joined: true,
-      };
+  ): Promise<{ scheduled: boolean; generationId: string }> => {
+    const started = await startFlowGenerationForOrg(ctx, args);
+    if (started.joined) {
+      return { scheduled: false, generationId: started.generationId };
     }
 
-    const generationId = crypto.randomUUID();
-
-    if (existing) {
-      // The previous graph is deliberately left in place: if this run fails,
-      // the user still has the flow they had before. Nothing renders it while
-      // `status` is "generating".
-      await ctx.db.patch(existing._id, {
-        status: "generating",
-        stale: false,
-        generationVersion: "v3",
-        generationId,
-        detailsStatus: "pending",
-        detailNodeCount: undefined,
-        detailCompletedCount: undefined,
-        detailFailedCount: undefined,
-        detailsGeneratedAt: undefined,
-        detailErrorMessage: undefined,
-        errorMessage: undefined,
-        lastProgressAt: now,
-        resumeAttempts: 0,
-      });
-      return { generationId, processFlowId: existing._id, joined: false };
-    }
-
-    const processFlowId = await ctx.db.insert("processFlows", {
-      processId: args.processId,
-      clerkOrgId: args.clerkOrgId,
-      status: "generating",
-      stale: false,
-      generatedAt: now,
-      conversationCount: 0,
-      nodes: [],
-      edges: [],
-      insights: {
-        criticalPath: [],
-        handoffCount: 0,
-        toolCount: 0,
-        automationOpportunities: [],
-        topBottlenecks: [],
+    await ctx.scheduler.runAfter(
+      0,
+      internal.processFlows.generateGraphInternal,
+      {
+        processId: args.processId,
+        clerkOrgId: args.clerkOrgId,
+        generationId: started.generationId,
       },
-      generationVersion: "v3",
-      generationId,
-      detailsStatus: "pending",
-      lastProgressAt: now,
-      resumeAttempts: 0,
-    });
-
-    return { generationId, processFlowId, joined: false };
+    );
+    return { scheduled: true, generationId: started.generationId };
   },
 });
 
@@ -2008,29 +2047,20 @@ export const generateProcessFlow = action({
       clerkOrgId: orgId,
     });
 
-    const started: { generationId: string; joined: boolean } =
-      await ctx.runMutation(internal.processFlows.startFlowGeneration, {
+    const started: { scheduled: boolean; generationId: string } =
+      await ctx.runMutation(internal.processFlows.requestFlowGeneration, {
         processId: args.processId,
         clerkOrgId: orgId,
       });
 
     // Two clicks must not buy two pipelines. The second joins the first rather
-    // than starting a competing run.
-    if (started.joined) {
+    // than starting a competing run — as does a click that lands while the
+    // automatic post-recording trigger is already running.
+    if (!started.scheduled) {
       return {
         message: "This process flow is already being generated.",
       };
     }
-
-    await ctx.scheduler.runAfter(
-      0,
-      internal.processFlows.generateGraphInternal,
-      {
-        processId: args.processId,
-        clerkOrgId: orgId,
-        generationId: started.generationId,
-      },
-    );
 
     return { message: null as string | null };
   },

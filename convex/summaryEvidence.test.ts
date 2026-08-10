@@ -459,3 +459,59 @@ describe("process evidence preparation gate", () => {
     expect(relabelled.candidateIds).toEqual([conversationId]);
   });
 });
+
+describe("automatic rebuild when a conversation finishes", () => {
+  test("raises stale and schedules the refresh in one step", async () => {
+    const t = convexTest(schema, modules);
+    const { processId } = await t.run((ctx) => seed(ctx));
+
+    const result = await t.mutation(
+      internal.summaryEvidence.requestProcessSummaryRebuild,
+      { processId, clerkOrgId: ORG },
+    );
+
+    expect(result.scheduled).toBe(true);
+    const process = await t.run((ctx) => ctx.db.get(processId));
+    // Stale until the run lands, so a failed rebuild leaves the Rebuild control
+    // showing rather than an overview that looks current.
+    expect(process?.summaryStale).toBe(true);
+    expect(process?.summaryEvidenceRefreshGenerationId).toBeDefined();
+    expect(process?.summaryEvidenceRevision).toBe(1);
+  });
+
+  test("a burst of completions collapses onto one run", async () => {
+    const t = convexTest(schema, modules);
+    const { processId } = await t.run((ctx) => seed(ctx));
+
+    const first = await t.mutation(
+      internal.summaryEvidence.requestProcessSummaryRebuild,
+      { processId, clerkOrgId: ORG },
+    );
+    const second = await t.mutation(
+      internal.summaryEvidence.requestProcessSummaryRebuild,
+      { processId, clerkOrgId: ORG },
+    );
+
+    expect(first.scheduled).toBe(true);
+    expect(second.scheduled).toBe(false);
+    const process = await t.run((ctx) => ctx.db.get(processId));
+    // Nothing is dropped: the second arrival flags a trailing pass instead of
+    // buying a competing one.
+    expect(process?.summaryEvidenceRefreshRequestedAgain).toBe(true);
+    expect(process?.summaryEvidenceForceRefreshRequested).toBe(true);
+  });
+
+  test("ignores a process belonging to another organization", async () => {
+    const t = convexTest(schema, modules);
+    const { processId } = await t.run((ctx) => seed(ctx));
+
+    const result = await t.mutation(
+      internal.summaryEvidence.requestProcessSummaryRebuild,
+      { processId, clerkOrgId: OTHER_ORG },
+    );
+
+    expect(result.scheduled).toBe(false);
+    const process = await t.run((ctx) => ctx.db.get(processId));
+    expect(process?.summaryStale).toBeUndefined();
+  });
+});

@@ -461,6 +461,68 @@ describe("staged flow generation, driven end to end", () => {
     expect(insightsPrompt).toContain("Automation potential: high");
   });
 
+  test("an agent conversation's ElevenLabs envelopes reach the graph pass as evidence", async () => {
+    // The regression this guards: agent-mode conversations store their
+    // extraction under `data_collection_results`, each field wrapped in an
+    // envelope with the payload at `.value`. Reading `data_collection` sent every
+    // one of them to the graph stage as "No structured data available." — a
+    // 909-second interview with 16 extracted steps produced a bare start → end
+    // graph, because that is all the model was given to work with.
+    const t = harness();
+    const processId = await t.run((ctx) => seedOrg(ctx));
+    await t.run(async (ctx) => {
+      await ctx.db.insert("conversations", {
+        processId,
+        contributorName: "Maryam",
+        status: "done",
+        clerkOrgId: ORG,
+        summary: "Maryam described succession planning",
+        analysis: {
+          data_collection_results: {
+            process_steps: {
+              data_collection_id: "process_steps",
+              rationale: "The contributor listed the steps.",
+              value: JSON.stringify([
+                { id: "identify-critical-roles", name: "Identify critical roles" },
+              ]),
+            },
+            frequency: {
+              data_collection_id: "frequency",
+              rationale: "Stated explicitly.",
+              value: "quarterly",
+            },
+            compliance_or_approvals: {
+              data_collection_id: "compliance_or_approvals",
+              rationale: "Nothing stated.",
+              value: "null",
+            },
+          },
+        },
+      });
+    });
+    const { sentPrompts } = stubClaude();
+
+    const { generationId } = await t.mutation(
+      internal.processFlows.startFlowGeneration,
+      { processId, clerkOrgId: ORG },
+    );
+    await t.action(internal.processFlows.generateGraphInternal, {
+      processId,
+      clerkOrgId: ORG,
+      generationId,
+    });
+
+    const graphPrompt = sentPrompts.return_process_graph;
+    expect(graphPrompt).toContain("identify-critical-roles");
+    expect(graphPrompt).toContain("Frequency: quarterly");
+    expect(graphPrompt).toContain("(structured)");
+    // Both input modes contribute; the flat one still works.
+    expect(graphPrompt).toContain("intake");
+    expect(graphPrompt).not.toContain("No structured data available");
+    // An unextracted field is omitted, not forwarded as the word "null".
+    expect(graphPrompt).not.toContain("Approvals: null");
+  });
+
   test("a truncated detail batch is halved, not failed wholesale", async () => {
     const t = harness();
     // Wrapped rather than passed by reference: `run` supplies a second

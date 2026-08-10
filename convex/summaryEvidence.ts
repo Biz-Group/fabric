@@ -424,6 +424,39 @@ export const markProcessSummaryStale = internalMutation({
   },
 });
 
+/**
+ * The automatic trigger for a finished conversation: flag the overview and
+ * rebuild it.
+ *
+ * `markProcessSummaryStale` remains the flag-only path for changes that should
+ * wait for a person. A newly recorded conversation is not one of them — leaving
+ * it unbuilt meant a contributor finished an interview and saw nothing until
+ * somebody thought to press Rebuild, and it also starved the process-flow graph
+ * stage, which reads the rolling summary.
+ *
+ * Stale is raised even though the rebuild is about to run: `saveProcessFinal`
+ * clears it by comparing the run's source revision against the current one, so a
+ * run that fails leaves the Rebuild control in place rather than an overview
+ * that looks current. The coalescing gate inside
+ * `requestProcessEvidenceRefreshForOrg` collapses a burst of completions onto one
+ * run and bumps the revision exactly once per request.
+ */
+export const requestProcessSummaryRebuild = internalMutation({
+  args: { processId: v.id("processes"), clerkOrgId: v.string() },
+  handler: async (ctx, args): Promise<{ scheduled: boolean }> => {
+    const process = await ctx.db.get(args.processId);
+    if (!process || process.clerkOrgId !== args.clerkOrgId) {
+      return { scheduled: false };
+    }
+    await ctx.db.patch(args.processId, { summaryStale: true });
+    const result = await requestProcessEvidenceRefreshForOrg(ctx, {
+      processId: args.processId,
+      clerkOrgId: args.clerkOrgId,
+    });
+    return { scheduled: result.scheduled };
+  },
+});
+
 export const touchProcessEvidenceRefresh = internalMutation({
   args: {
     processId: v.id("processes"),
