@@ -16,6 +16,10 @@ const app = defineApp({
     FOUNDRY_CLAUDE_DEPLOYMENT: v.optional(v.string()),
     FOUNDRY_OPENAI_FALLBACK_DEPLOYMENT: v.optional(v.string()),
     FOUNDRY_SAFETY_DEPLOYMENT: v.optional(v.string()),
+    // "true" (all tenants), "false"/unset (no tenants), or a comma-separated
+    // Clerk organization allowlist for staged rollout on the shared prod
+    // deployment. See lib/summaryV2Feature.ts.
+    SUMMARY_V2: v.optional(v.string()),
     // Tags every AI usage ledger row with the deployment that produced it, so
     // the platform console can show prod and dev in one merged view.
     // Unset defaults to "dev" — deliberately the safe direction: an

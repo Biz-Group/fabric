@@ -5,6 +5,7 @@ import type { FunctionReturnType } from "convex/server";
 import type { api } from "../../../convex/_generated/api";
 import type { Id } from "../../../convex/_generated/dataModel";
 import { Clock, Loader2 } from "lucide-react";
+import type { FlowConversationForSources } from "./flow-sources";
 
 const ProcessFlow = lazy(() =>
   import("@/features/process-flow/process-flow").then((module) => ({
@@ -21,6 +22,11 @@ type ProcessFlowTabProps = {
   processId: Id<"processes">;
   conversationCount: number;
   flow: FlowSummary | undefined;
+  selectedNodeId: string | null;
+  onSelectedNodeChange: (nodeId: string | null) => void;
+  onOpenConversation: (conversationId: Id<"conversations">) => void;
+  onOpenInsights: () => void;
+  conversations: FlowConversationForSources[];
 };
 
 function formatGeneratedAt(epochMs: number | null | undefined) {
@@ -48,6 +54,11 @@ export function ProcessFlowTab({
   processId,
   conversationCount,
   flow,
+  selectedNodeId,
+  onSelectedNodeChange,
+  onOpenConversation,
+  onOpenInsights,
+  conversations,
 }: ProcessFlowTabProps) {
   const generatedLabel =
     flow === undefined
@@ -71,6 +82,11 @@ export function ProcessFlowTab({
             <ProcessFlow
               processId={processId}
               conversationCount={conversationCount}
+              selectedNodeId={selectedNodeId}
+              onSelectedNodeChange={onSelectedNodeChange}
+              onOpenConversation={onOpenConversation}
+              onOpenInsights={onOpenInsights}
+              conversations={conversations}
             />
           </Suspense>
         </div>

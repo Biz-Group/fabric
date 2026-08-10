@@ -4,6 +4,26 @@ import {
   descriptionSafetyRiskValidator,
   descriptionSafetyStatusValidator,
 } from "./descriptionSafety";
+import {
+  departmentOverviewArtifactV2Validator,
+  flowSummarySourceSnapshotValidator,
+  functionOverviewArtifactV2Validator,
+  processOverviewArtifactV2Validator,
+  processSummaryEvidenceV2Validator,
+  conversationEvidenceFailureV2Validator,
+  hierarchySummaryRollupPhaseValidator,
+  hierarchySummarySourceInputValidator,
+  hierarchySummarySourceScanValidator,
+  processSummarySourceInputValidator,
+  processSummarySourceScanValidator,
+  summaryEntityRefValidator,
+  summaryChunkOutputV2Validator,
+  summaryChunkStateValidator,
+  summaryRunErrorValidator,
+  summaryRunProgressValidator,
+  summaryRunSourceSnapshotValidator,
+  summaryRunStateValidator,
+} from "./summaryV2";
 
 const rgbValidator = v.object({
   r: v.number(),
@@ -360,8 +380,19 @@ export default defineSchema({
     name: v.string(),
     sortOrder: v.number(),
     summary: v.optional(v.string()),
+    summaryV2: v.optional(functionOverviewArtifactV2Validator),
     summaryUpdatedAt: v.optional(v.number()),
     summaryStale: v.optional(v.boolean()),
+    summarySourceRevision: v.optional(v.number()),
+    summaryV2SourceRevision: v.optional(v.number()),
+    summaryRegenScheduledAt: v.optional(v.number()),
+    summaryRegenRequestedAgain: v.optional(v.boolean()),
+    summaryForceRefreshRequested: v.optional(v.boolean()),
+    summaryV2GenerationId: v.optional(v.string()),
+    summaryV2RunId: v.optional(v.id("summaryRuns")),
+    summaryV2LastRunState: v.optional(summaryRunStateValidator),
+    summaryV2LastError: v.optional(summaryRunErrorValidator),
+    summaryV2LastCompletedAt: v.optional(v.number()),
     clerkOrgId: v.string(),
   }).index("by_clerkOrgId", ["clerkOrgId"]),
 
@@ -377,8 +408,19 @@ export default defineSchema({
     descriptionSafetyReason: v.optional(v.string()),
     sortOrder: v.number(),
     summary: v.optional(v.string()),
+    summaryV2: v.optional(departmentOverviewArtifactV2Validator),
     summaryUpdatedAt: v.optional(v.number()),
     summaryStale: v.optional(v.boolean()),
+    summarySourceRevision: v.optional(v.number()),
+    summaryV2SourceRevision: v.optional(v.number()),
+    summaryRegenScheduledAt: v.optional(v.number()),
+    summaryRegenRequestedAgain: v.optional(v.boolean()),
+    summaryForceRefreshRequested: v.optional(v.boolean()),
+    summaryV2GenerationId: v.optional(v.string()),
+    summaryV2RunId: v.optional(v.id("summaryRuns")),
+    summaryV2LastRunState: v.optional(summaryRunStateValidator),
+    summaryV2LastError: v.optional(summaryRunErrorValidator),
+    summaryV2LastCompletedAt: v.optional(v.number()),
     clerkOrgId: v.string(),
   }).index("by_clerkOrgId_and_functionId", ["clerkOrgId", "functionId"]),
 
@@ -394,6 +436,8 @@ export default defineSchema({
     descriptionSafetyReason: v.optional(v.string()),
     sortOrder: v.number(),
     rollingSummary: v.optional(v.string()),
+    summaryV2: v.optional(processOverviewArtifactV2Validator),
+    summaryUpdatedAt: v.optional(v.number()),
     // Coalescing gate for rolling-summary regeneration. Several conversations
     // finishing at once must not each start their own regen: the first sets
     // `summaryRegenScheduledAt`, later ones just raise
@@ -402,6 +446,26 @@ export default defineSchema({
     // requestProcessSummaryRegen in postCall.ts.
     summaryRegenScheduledAt: v.optional(v.number()),
     summaryRegenRequestedAgain: v.optional(v.boolean()),
+    // Phase 2 preparation gate. Evidence and the compatibility Markdown map
+    // finish before this gate hands the process to the existing reduce gate.
+    summaryEvidenceRefreshScheduledAt: v.optional(v.number()),
+    summaryEvidenceRefreshRequestedAgain: v.optional(v.boolean()),
+    summaryEvidenceForceRefreshRequested: v.optional(v.boolean()),
+    summaryEvidenceRefreshGenerationId: v.optional(v.string()),
+    // Monotonic invalidation token. A V2 run captures this after evidence
+    // preparation and refuses to publish if new evidence work starts.
+    summaryEvidenceRevision: v.optional(v.number()),
+    // New evidence has landed since the last published summary, so the overview
+    // reads as stale until someone rebuilds it. Mirrors the department and
+    // function flag, and covers legacy-only rows, whose staleness cannot be
+    // derived from the V2 revision pair.
+    summaryStale: v.optional(v.boolean()),
+    summaryV2SourceRevision: v.optional(v.number()),
+    summaryV2GenerationId: v.optional(v.string()),
+    summaryV2RunId: v.optional(v.id("summaryRuns")),
+    summaryV2LastRunState: v.optional(summaryRunStateValidator),
+    summaryV2LastError: v.optional(summaryRunErrorValidator),
+    summaryV2LastCompletedAt: v.optional(v.number()),
     clerkOrgId: v.string(),
   }).index("by_clerkOrgId_and_departmentId", ["clerkOrgId", "departmentId"]),
 
@@ -454,6 +518,10 @@ export default defineSchema({
     // regenerates it and an unchanged one never pays for it twice.
     processSummaryInput: v.optional(v.string()),
     processSummaryInputHash: v.optional(v.string()),
+    processSummaryEvidenceV2: v.optional(processSummaryEvidenceV2Validator),
+    processSummaryEvidenceV2Failure: v.optional(
+      conversationEvidenceFailureV2Validator,
+    ),
     // One-line headline for the conversation, denormalized out of
     // `analysis.call_summary_title` so list surfaces can label rows without
     // loading the analysis blob. Absent until analysis completes, and on rows
@@ -491,6 +559,9 @@ export default defineSchema({
     generatedAt: v.number(),
     conversationCount: v.number(),
     errorMessage: v.optional(v.string()),
+    // Absent on legacy rows. New generations may identify the exact successful
+    // overview snapshot used as graph context without forcing old flows to run.
+    summarySourceSnapshot: v.optional(flowSummarySourceSnapshotValidator),
 
     nodes: v.array(
       v.object({
@@ -607,6 +678,75 @@ export default defineSchema({
       "processFlowId",
       "generationId",
       "status",
+    ]),
+
+  // Durable orchestration state for Summary V2. `entity` is a strict union, so
+  // a run can carry only the ID matching its discriminator. `entityKey` is the
+  // normalized, indexable representation produced by getSummaryEntityKey.
+  summaryRuns: defineTable({
+    clerkOrgId: v.string(),
+    entity: summaryEntityRefValidator,
+    entityKey: v.string(),
+    generationId: v.string(),
+    sourceRevision: v.optional(v.number()),
+    sourceSnapshot: summaryRunSourceSnapshotValidator,
+    state: summaryRunStateValidator,
+    progress: summaryRunProgressValidator,
+    error: v.optional(summaryRunErrorValidator),
+    createdAt: v.number(),
+    startedAt: v.optional(v.number()),
+    lastProgressAt: v.optional(v.number()),
+    completedAt: v.optional(v.number()),
+    attempt: v.number(),
+    maxAttempts: v.number(),
+    resumeCount: v.number(),
+    chunkCount: v.optional(v.number()),
+    sourceScan: v.optional(processSummarySourceScanValidator),
+    forceRefresh: v.optional(v.boolean()),
+    actorUserId: v.optional(v.id("users")),
+    rollupPhase: v.optional(hierarchySummaryRollupPhaseValidator),
+    rollupScan: v.optional(hierarchySummarySourceScanValidator),
+  })
+    .index("by_clerkOrgId_and_generationId", [
+      "clerkOrgId",
+      "generationId",
+    ])
+    .index("by_clerkOrgId_and_entityKey_and_state_and_createdAt", [
+      "clerkOrgId",
+      "entityKey",
+      "state",
+      "createdAt",
+    ])
+    .index("by_state_and_lastProgressAt", ["state", "lastProgressAt"]),
+
+  // One bounded reduce output per run chunk. Keeping chunks separate avoids
+  // repeatedly rewriting a growing hierarchy document near Convex's 1 MB cap.
+  summaryChunks: defineTable({
+    clerkOrgId: v.string(),
+    summaryRunId: v.id("summaryRuns"),
+    generationId: v.string(),
+    chunkIndex: v.number(),
+    sourceCount: v.number(),
+    sourceInputs: v.optional(v.array(processSummarySourceInputValidator)),
+    rollupInputs: v.optional(v.array(hierarchySummarySourceInputValidator)),
+    state: summaryChunkStateValidator,
+    output: v.optional(summaryChunkOutputV2Validator),
+    error: v.optional(summaryRunErrorValidator),
+    attempt: v.number(),
+    createdAt: v.number(),
+    startedAt: v.optional(v.number()),
+    completedAt: v.optional(v.number()),
+  })
+    .index("by_clerkOrgId_and_summaryRunId_and_chunkIndex", [
+      "clerkOrgId",
+      "summaryRunId",
+      "chunkIndex",
+    ])
+    .index("by_clerkOrgId_and_summaryRunId_and_state_and_chunkIndex", [
+      "clerkOrgId",
+      "summaryRunId",
+      "state",
+      "chunkIndex",
     ]),
 
   // Append-only ledger of every paid AI call: LLM completions (tokens) and

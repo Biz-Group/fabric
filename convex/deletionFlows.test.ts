@@ -190,9 +190,14 @@ describe("deletion flow integrity", () => {
     const rows = await t.run(async (ctx) => ({
       process: await ctx.db.get(ids.processId),
       flow: await ctx.db.get(flowId),
+      department: await ctx.db.get(ids.departmentId),
+      fn: await ctx.db.get(ids.functionId),
     }));
     expect(rows.process).toBeNull();
     expect(rows.flow).toBeNull();
+    expect(rows.department?.summarySourceRevision).toBe(1);
+    expect(rows.fn?.summarySourceRevision).toBe(1);
+    expect(rows.fn?.summaryStale).toBe(true);
   });
 
   test("deleting the last done conversation clears summary and flow", async () => {
@@ -254,5 +259,34 @@ describe("deletion flow integrity", () => {
     expect(rows.process?.rollingSummary).toBe("Old process summary");
     expect(rows.department?.summaryStale).toBe(true);
     expect(rows.flow?.stale).toBe(true);
+  });
+
+  test("deleting a conversation marks the summary stale without rebuilding it", async () => {
+    const t = convexTest(schema, modules);
+    const ids = await seedOrg(t);
+    const conversationId = await insertConversation(t, ids.processId);
+    await insertConversation(t, ids.processId);
+    await t.run(async (ctx) => {
+      await ctx.db.patch(ids.processId, {
+        rollingSummary: "Old process summary",
+      });
+    });
+
+    await t
+      .withIdentity(identityFor("admin"))
+      .mutation(api.conversations.deleteForAdmin, { conversationId });
+
+    const after = await t.run(async (ctx) => ({
+      process: await ctx.db.get(ids.processId),
+      scheduled: (
+        await ctx.db.system.query("_scheduled_functions").collect()
+      ).length,
+    }));
+    // Bulk-deleting test recordings is exactly where a rebuild per deletion
+    // would cost the most for the least value, so deletion only invalidates.
+    expect(after.process?.summaryStale).toBe(true);
+    expect(after.process?.summaryEvidenceRefreshGenerationId).toBeUndefined();
+    expect(after.process?.rollingSummary).toBe("Old process summary");
+    expect(after.scheduled).toBe(0);
   });
 });

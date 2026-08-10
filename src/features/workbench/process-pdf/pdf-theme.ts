@@ -4,6 +4,8 @@ import type {
   Confidence,
   FlowNode,
 } from "@/features/insights/insights-derivations";
+import type { OverviewState } from "@/features/overview/overview-view-model";
+import type { SummaryEvidenceLevel } from "../../../../convex/summaryV2";
 
 // Design tokens for the process PDF export. Kept self-contained (no external
 // fonts) so generation works fully offline and deterministically. Colors mirror
@@ -65,6 +67,26 @@ export const AUTOMATION_TONES: Record<
   medium: { base: "#eab308", soft: "#fefce8", text: "#a16207", label: "Medium" },
   low: { base: "#94a3b8", soft: "#f1f5f9", text: "#475569", label: "Low" },
   none: { base: "#cbd5e1", soft: "#f8fafc", text: "#64748b", label: "None" },
+};
+
+// Evidence strength for overview findings. Mirrors the in-app chip semantics:
+// corroborated reads as settled, single-source as neutral, and an evidence gap
+// takes the same amber the app reserves for attention states.
+export const EVIDENCE_TONES: Record<SummaryEvidenceLevel, CategoryTone> = {
+  corroborated: { base: "#10b981", soft: "#ecfdf5", text: "#047857" },
+  single_source: { base: "#cbd5e1", soft: "#f1f5f9", text: "#475569" },
+  inferred_gap: { base: "#f59e0b", soft: "#fffbeb", text: "#b45309" },
+};
+
+// Overview lifecycle. Amber covers every "read this with care" state, matching
+// the app's stale/partial treatment.
+export const OVERVIEW_STATE_TONES: Record<OverviewState, CategoryTone> = {
+  missing: { base: "#cbd5e1", soft: "#f1f5f9", text: "#475569" },
+  current: { base: "#10b981", soft: "#ecfdf5", text: "#047857" },
+  stale: { base: "#f59e0b", soft: "#fffbeb", text: "#b45309" },
+  refreshing: { base: "#6366f1", soft: "#eef2ff", text: "#4338ca" },
+  partial: { base: "#f59e0b", soft: "#fffbeb", text: "#b45309" },
+  failed: { base: "#ef4444", soft: "#fef2f2", text: "#b91c1c" },
 };
 
 // Page geometry (A4). Margins leave room for the fixed footer.

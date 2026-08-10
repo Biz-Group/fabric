@@ -1,7 +1,7 @@
 import { useMemo } from "react";
 import dagre from "@dagrejs/dagre";
 import type { Node, Edge } from "@xyflow/react";
-import type { Doc } from "../../../convex/_generated/dataModel";
+import type { Doc, Id } from "../../../convex/_generated/dataModel";
 
 // Node dimensions used by dagre for layout calculation
 const NODE_WIDTH = 280;
@@ -22,6 +22,11 @@ export type NodeDetailStatus = "pending" | "generating" | "ready" | "failed";
 export type ReadFlowNode = FlowNode & {
   detailStatus?: NodeDetailStatus;
   detailErrorMessage?: string;
+  sourceConversations?: Array<{
+    source: string;
+    conversationId: Id<"conversations">;
+    contributorName: string;
+  }>;
 };
 
 type ReadFlow = Omit<FlowDoc, "nodes"> & { nodes: ReadFlowNode[] };

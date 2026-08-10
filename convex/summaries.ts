@@ -1,14 +1,427 @@
 import { v } from "convex/values";
-import { action } from "./_generated/server";
+import {
+  action,
+  mutation,
+  query,
+  type MutationCtx,
+  type QueryCtx,
+} from "./_generated/server";
 import { internal } from "./_generated/api";
 import { Doc, Id } from "./_generated/dataModel";
-import { resolveOrgForAction } from "./lib/orgAuth";
+import {
+  assertOrgOwns,
+  requireOrgContributor,
+  requireOrgMember,
+  resolveOrgForAction,
+} from "./lib/orgAuth";
 import {
   AITruncationError,
   assertCompletionNotTruncated,
   isAIConfigured,
 } from "./lib/aiProvider";
 import { meteredCompletion } from "./lib/aiUsageMeter";
+import {
+  isSummaryV2EnabledForOrg,
+  readableSummaryV2,
+} from "./lib/summaryV2Feature";
+import {
+  getSummaryEntityKey,
+  readCompatibleSummary,
+  renderSummaryV2AsLegacyMarkdown,
+  summaryEntityRefValidator,
+  type SummaryEntityRef,
+  type SummaryOverviewResponse,
+} from "./summaryV2";
+import { requestProcessEvidenceRefreshForOrg } from "./summaryEvidence";
+import {
+  requestDepartmentSummaryV2ForOrg,
+  requestFunctionSummaryV2ForOrg,
+} from "./hierarchySummaryV2";
+
+const SUMMARY_PIPELINE_STALE_MS = 10 * 60_000;
+
+type SummaryOwner =
+  | { kind: "process"; doc: Doc<"processes"> }
+  | { kind: "department"; doc: Doc<"departments"> }
+  | { kind: "function"; doc: Doc<"functions"> };
+
+type SummaryRefreshResult = {
+  status: "current" | "scheduled" | "coalesced" | "disabled";
+  scheduled: boolean;
+};
+
+async function getSummaryOwner(
+  ctx: Pick<QueryCtx, "db">,
+  orgId: string,
+  entity: SummaryEntityRef,
+): Promise<SummaryOwner> {
+  if (entity.kind === "process") {
+    const doc = await ctx.db.get(entity.processId);
+    assertOrgOwns({ orgId }, doc);
+    return { kind: "process", doc };
+  }
+  if (entity.kind === "department") {
+    const doc = await ctx.db.get(entity.departmentId);
+    assertOrgOwns({ orgId }, doc);
+    return { kind: "department", doc };
+  }
+  const doc = await ctx.db.get(entity.functionId);
+  assertOrgOwns({ orgId }, doc);
+  return { kind: "function", doc };
+}
+
+function hasLiveTimestamp(value: number | undefined, now: number): boolean {
+  return value !== undefined && now - value < SUMMARY_PIPELINE_STALE_MS;
+}
+
+function hasActiveSummaryWork(
+  owner: SummaryOwner,
+  run: Doc<"summaryRuns"> | null,
+  now = Date.now(),
+): boolean {
+  if (run?.state === "queued" || run?.state === "running") return true;
+  if (owner.kind === "process") {
+    return (
+      hasLiveTimestamp(owner.doc.summaryEvidenceRefreshScheduledAt, now) ||
+      hasLiveTimestamp(owner.doc.summaryRegenScheduledAt, now)
+    );
+  }
+  return hasLiveTimestamp(owner.doc.summaryRegenScheduledAt, now);
+}
+
+function hasCurrentV2Artifact(owner: SummaryOwner): boolean {
+  if (!owner.doc.summaryV2) return false;
+  if (owner.kind === "process") {
+    return (
+      owner.doc.summaryV2SourceRevision ===
+      (owner.doc.summaryEvidenceRevision ?? 0)
+    );
+  }
+  return (
+    owner.doc.summaryStale !== true &&
+    owner.doc.summaryV2SourceRevision === (owner.doc.summarySourceRevision ?? 0)
+  );
+}
+
+function hasStaleArtifact(owner: SummaryOwner): boolean {
+  if (owner.kind === "process") {
+    return (
+      // The flag is authoritative and covers a legacy-only row, whose staleness
+      // cannot be derived from the V2 revision pair.
+      owner.doc.summaryStale === true ||
+      Boolean(
+        owner.doc.summaryV2 &&
+          owner.doc.summaryV2SourceRevision !==
+            (owner.doc.summaryEvidenceRevision ?? 0),
+      )
+    );
+  }
+  return (
+    owner.doc.summaryStale === true ||
+    Boolean(
+      owner.doc.summaryV2 &&
+        owner.doc.summaryV2SourceRevision !==
+          (owner.doc.summarySourceRevision ?? 0),
+    )
+  );
+}
+
+function ownerRunId(owner: SummaryOwner): Id<"summaryRuns"> | undefined {
+  return owner.doc.summaryV2RunId;
+}
+
+function ownerLastRunState(owner: SummaryOwner) {
+  return owner.doc.summaryV2LastRunState;
+}
+
+function ownerLastError(owner: SummaryOwner) {
+  return owner.doc.summaryV2LastError ?? null;
+}
+
+function ownerLegacyMarkdown(owner: SummaryOwner): string | null {
+  return owner.kind === "process"
+    ? (owner.doc.rollingSummary ?? null)
+    : (owner.doc.summary ?? null);
+}
+
+/**
+ * The Markdown an overview falls back to when the structured artifact is not
+ * readable. Publishing writes the projection into the legacy field, so this is
+ * normally that stored string; deriving it from a retained artifact keeps a
+ * rollback from blanking a row whose legacy field was never written.
+ */
+function ownerCompatibilityMarkdown(owner: SummaryOwner): string | null {
+  const stored = ownerLegacyMarkdown(owner);
+  if (stored?.trim()) return stored;
+  return owner.doc.summaryV2
+    ? renderSummaryV2AsLegacyMarkdown(owner.doc.summaryV2)
+    : null;
+}
+
+function overviewRefreshKey(owner: SummaryOwner): string {
+  if (owner.kind === "process") {
+    return [
+      owner.doc.summaryEvidenceRevision ?? 0,
+      owner.doc.summaryV2SourceRevision ?? "none",
+      owner.doc.summaryEvidenceRefreshGenerationId ?? "idle",
+      owner.doc.summaryV2GenerationId ?? "idle",
+    ].join(":");
+  }
+  return [
+    owner.doc.summarySourceRevision ?? 0,
+    owner.doc.summaryV2SourceRevision ?? "none",
+    owner.doc.summaryStale === true ? "stale" : "settled",
+    owner.doc.summaryV2GenerationId ?? "idle",
+  ].join(":");
+}
+
+async function getRelevantRun(
+  ctx: Pick<QueryCtx, "db">,
+  orgId: string,
+  entity: SummaryEntityRef,
+  runId: Id<"summaryRuns"> | undefined,
+): Promise<Doc<"summaryRuns"> | null> {
+  const entityKey = getSummaryEntityKey(entity);
+  if (runId) {
+    const run = await ctx.db.get(runId);
+    if (run?.clerkOrgId === orgId && run.entityKey === entityKey) return run;
+  }
+
+  const terminalRuns: Doc<"summaryRuns">[] = [];
+  for (const state of ["succeeded", "partial", "failed"] as const) {
+    const run = await ctx.db
+      .query("summaryRuns")
+      .withIndex(
+        "by_clerkOrgId_and_entityKey_and_state_and_createdAt",
+        (q) =>
+          q
+            .eq("clerkOrgId", orgId)
+            .eq("entityKey", entityKey)
+            .eq("state", state),
+      )
+      .order("desc")
+      .first();
+    if (run) terminalRuns.push(run);
+  }
+  terminalRuns.sort((a, b) => b.createdAt - a.createdAt);
+  return terminalRuns[0] ?? null;
+}
+
+function runMatchesCurrentSource(
+  owner: SummaryOwner,
+  run: Doc<"summaryRuns"> | null,
+): boolean {
+  if (run?.sourceRevision === undefined) return false;
+  const currentRevision =
+    owner.kind === "process"
+      ? (owner.doc.summaryEvidenceRevision ?? 0)
+      : (owner.doc.summarySourceRevision ?? 0);
+  return run.sourceRevision === currentRevision;
+}
+
+function flowGenerationStatus(flow: Doc<"processFlows"> | null) {
+  if (!flow) return "idle" as const;
+  return flow.status;
+}
+
+function insightsGenerationStatus(flow: Doc<"processFlows"> | null) {
+  if (!flow) return "idle" as const;
+  if (flow.status === "generating") return "generating" as const;
+  if (flow.status === "failed") return "failed" as const;
+  if (flow.generationVersion === undefined) return "ready" as const;
+  if (flow.detailsStatus === "pending" || flow.detailsStatus === "generating") {
+    return "generating" as const;
+  }
+  if (flow.detailsStatus === "failed") return "failed" as const;
+  return "ready" as const;
+}
+
+function deriveOverviewState(
+  owner: SummaryOwner,
+  run: Doc<"summaryRuns"> | null,
+  content: ReturnType<typeof readCompatibleSummary>,
+): SummaryOverviewResponse["state"] {
+  if (hasActiveSummaryWork(owner, run)) return "refreshing";
+  const lastSuccessfulGenerationAt =
+    content.format === "v2"
+      ? content.artifact.provenance.generatedAt
+      : content.format === "legacy"
+        ? (owner.doc.summaryUpdatedAt ?? null)
+        : null;
+  const failureCompletedAt =
+    run?.state === "failed"
+      ? (run.completedAt ?? run.createdAt)
+      : ownerLastRunState(owner) === "failed"
+        ? (owner.doc.summaryV2LastCompletedAt ?? null)
+        : null;
+  if (
+    failureCompletedAt !== null &&
+    (lastSuccessfulGenerationAt === null ||
+      failureCompletedAt >= lastSuccessfulGenerationAt)
+  ) {
+    return "failed";
+  }
+  if (content.format === "none") return "missing";
+  if (hasStaleArtifact(owner)) return "stale";
+  if (content.format === "v2" && !content.artifact.coverage.complete) {
+    return "partial";
+  }
+  return "current";
+}
+
+async function requestSummaryRefresh(
+  ctx: MutationCtx,
+  orgId: string,
+  actorUserId: Id<"users">,
+  entity: SummaryEntityRef,
+  forceRefresh: boolean,
+): Promise<SummaryRefreshResult> {
+  const owner = await getSummaryOwner(ctx, orgId, entity);
+  if (!isSummaryV2EnabledForOrg(orgId)) {
+    return { status: "disabled", scheduled: false };
+  }
+
+  const runId = ownerRunId(owner);
+  const pointedRun = runId ? await ctx.db.get(runId) : null;
+  if (!forceRefresh && hasActiveSummaryWork(owner, pointedRun)) {
+    return { status: "coalesced", scheduled: false };
+  }
+  if (!forceRefresh && hasCurrentV2Artifact(owner)) {
+    return { status: "current", scheduled: false };
+  }
+  if (!forceRefresh) {
+    const latestRun = await getRelevantRun(ctx, orgId, entity, runId);
+    if (
+      latestRun?.state === "failed" &&
+      runMatchesCurrentSource(owner, latestRun)
+    ) {
+      return { status: "coalesced", scheduled: false };
+    }
+  }
+
+  const result =
+    entity.kind === "process"
+      ? await requestProcessEvidenceRefreshForOrg(ctx, {
+          processId: entity.processId,
+          clerkOrgId: orgId,
+          forceRefresh,
+        })
+      : entity.kind === "department"
+        ? await requestDepartmentSummaryV2ForOrg(ctx, {
+            departmentId: entity.departmentId,
+            clerkOrgId: orgId,
+            forceRefresh,
+            actorUserId,
+          })
+        : await requestFunctionSummaryV2ForOrg(ctx, {
+            functionId: entity.functionId,
+            clerkOrgId: orgId,
+            forceRefresh,
+            actorUserId,
+          });
+  return {
+    status: result.scheduled ? "scheduled" : "coalesced",
+    scheduled: result.scheduled,
+  };
+}
+
+/** One bounded read model for process, department, and function overviews. */
+export const getOverview = query({
+  args: { entity: summaryEntityRefValidator },
+  handler: async (ctx, args): Promise<SummaryOverviewResponse> => {
+    const caller = await requireOrgMember(ctx);
+    const owner = await getSummaryOwner(ctx, caller.orgId, args.entity);
+    const run = await getRelevantRun(
+      ctx,
+      caller.orgId,
+      args.entity,
+      ownerRunId(owner),
+    );
+    const content = readCompatibleSummary({
+      // `readableSummaryV2` is the rollback gate: with `SUMMARY_V2` disabled
+      // every surface reads the deterministic Markdown projection instead,
+      // and no stored artifact is touched.
+      summaryV2: readableSummaryV2(owner.doc.clerkOrgId, owner.doc.summaryV2),
+      legacyMarkdown: ownerCompatibilityMarkdown(owner),
+    });
+    const flow =
+      owner.kind === "process"
+        ? ((await ctx.db
+            .query("processFlows")
+            .withIndex("by_clerkOrgId_and_processId", (q) =>
+              q
+                .eq("clerkOrgId", caller.orgId)
+                .eq("processId", owner.doc._id),
+            )
+            .first()) ?? null)
+        : null;
+    const hasFlowArtifact = flow !== null && flow.nodes.length > 0;
+    const state = deriveOverviewState(owner, run, content);
+
+    return {
+      entity: args.entity,
+      refreshKey: overviewRefreshKey(owner),
+      state,
+      content,
+      coverage: content.format === "v2" ? content.artifact.coverage : null,
+      lastSuccessfulGenerationAt:
+        content.format === "v2"
+          ? content.artifact.provenance.generatedAt
+          : content.format === "legacy"
+            ? (owner.doc.summaryUpdatedAt ?? null)
+            : null,
+      progress: run?.progress ?? null,
+      error:
+        state === "failed" ? (run?.error ?? ownerLastError(owner)) : null,
+      flow:
+        owner.kind === "process"
+          ? {
+              available: hasFlowArtifact,
+              stale: flow?.stale ?? false,
+              generationStatus: flowGenerationStatus(flow),
+            }
+          : null,
+      insights:
+        owner.kind === "process"
+          ? {
+              available: hasFlowArtifact,
+              stale: flow?.stale ?? false,
+              generationStatus: insightsGenerationStatus(flow),
+            }
+          : null,
+    };
+  },
+});
+
+/** Non-forcing refresh-on-view entrypoint for every authenticated org member. */
+export const ensureCurrent = mutation({
+  args: { entity: summaryEntityRefValidator },
+  handler: async (ctx, args): Promise<SummaryRefreshResult> => {
+    const caller = await requireOrgMember(ctx);
+    return await requestSummaryRefresh(
+      ctx,
+      caller.orgId,
+      caller.userId,
+      args.entity,
+      false,
+    );
+  },
+});
+
+/** Explicit regeneration entrypoint; authorization stays contributor-only. */
+export const forceRefresh = mutation({
+  args: { entity: summaryEntityRefValidator },
+  handler: async (ctx, args): Promise<SummaryRefreshResult> => {
+    const caller = await requireOrgContributor(ctx);
+    return await requestSummaryRefresh(
+      ctx,
+      caller.orgId,
+      caller.userId,
+      args.entity,
+      true,
+    );
+  },
+});
 
 // --- Shared Prompt Constants ---
 
@@ -86,6 +499,30 @@ export const generateDepartmentSummary = action({
     );
     if (!dept) {
       return { summary: null, message: "Department not found." };
+    }
+
+    if (isSummaryV2EnabledForOrg(orgId)) {
+      if (
+        !args.forceRefresh &&
+        dept.summaryV2 &&
+        dept.summaryStale !== true &&
+        dept.summaryV2SourceRevision === (dept.summarySourceRevision ?? 0)
+      ) {
+        return {
+          summary: renderSummaryV2AsLegacyMarkdown(dept.summaryV2),
+          message: null,
+        };
+      }
+      await ctx.runMutation(
+        internal.hierarchySummaryV2.requestDepartmentSummaryV2,
+        {
+          departmentId: dept._id,
+          clerkOrgId: orgId,
+          forceRefresh: args.forceRefresh,
+          actorUserId: caller.userId,
+        },
+      );
+      return { summary: dept.summary ?? null, message: null };
     }
 
     if (!args.forceRefresh && dept.summary && dept.summaryStale === false) {
@@ -196,6 +633,27 @@ export const generateFunctionSummary = action({
     );
     if (!func) {
       return { summary: null, message: "Function not found." };
+    }
+
+    if (isSummaryV2EnabledForOrg(orgId)) {
+      if (
+        !args.forceRefresh &&
+        func.summaryV2 &&
+        func.summaryStale !== true &&
+        func.summaryV2SourceRevision === (func.summarySourceRevision ?? 0)
+      ) {
+        return {
+          summary: renderSummaryV2AsLegacyMarkdown(func.summaryV2),
+          message: null,
+        };
+      }
+      await ctx.runMutation(internal.hierarchySummaryV2.requestFunctionSummaryV2, {
+        functionId: func._id,
+        clerkOrgId: orgId,
+        forceRefresh: args.forceRefresh,
+        actorUserId: caller.userId,
+      });
+      return { summary: func.summary ?? null, message: null };
     }
 
     if (!args.forceRefresh && func.summary && func.summaryStale === false) {
@@ -328,11 +786,14 @@ export const forceRefreshProcessSummary = action({
     // Through the gate, not straight to the action: a manual rebuild pressed
     // while conversations are still landing should join the in-flight run
     // rather than start a competing one.
-    await ctx.runMutation(internal.postCall.requestProcessSummaryRegen, {
-      processId: args.processId,
-      clerkOrgId: orgId,
-      forceRefresh: true,
-    });
+    await ctx.runMutation(
+      internal.summaryEvidence.requestProcessEvidenceRefresh,
+      {
+        processId: args.processId,
+        clerkOrgId: orgId,
+        forceRefresh: true,
+      },
+    );
     return { message: null };
   },
 });

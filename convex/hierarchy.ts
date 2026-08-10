@@ -9,6 +9,8 @@ import {
   PENDING_WORK_LABELS,
   summarizeFlow,
 } from "./readModelHelpers";
+import { getSummaryListMetadata } from "./summaryV2";
+import { readableSummaryV2 } from "./lib/summaryV2Feature";
 
 const MAX_FUNCTIONS = 200;
 const MAX_DEPARTMENTS = 1000;
@@ -115,6 +117,15 @@ export const getTree = query({
           summary: fn.summary ?? null,
           summaryUpdatedAt: fn.summaryUpdatedAt ?? null,
           summaryStale: fn.summaryStale ?? false,
+          summaryOverview: getSummaryListMetadata({
+            summaryV2: readableSummaryV2(fn.clerkOrgId, fn.summaryV2),
+            legacyMarkdown: fn.summary,
+            legacyGeneratedAt: fn.summaryUpdatedAt,
+            stale: fn.summaryStale,
+            refreshScheduledAt: fn.summaryRegenScheduledAt,
+            lastRunState: fn.summaryV2LastRunState,
+            lastRunCompletedAt: fn.summaryV2LastCompletedAt,
+          }),
           departmentCount: childDepartments.length,
           departments: childDepartments.map((department) => {
             const childProcesses =
@@ -129,6 +140,15 @@ export const getTree = query({
               summary: department.summary ?? null,
               summaryUpdatedAt: department.summaryUpdatedAt ?? null,
               summaryStale: department.summaryStale ?? false,
+              summaryOverview: getSummaryListMetadata({
+                summaryV2: readableSummaryV2(department.clerkOrgId, department.summaryV2),
+                legacyMarkdown: department.summary,
+                legacyGeneratedAt: department.summaryUpdatedAt,
+                stale: department.summaryStale,
+                refreshScheduledAt: department.summaryRegenScheduledAt,
+                lastRunState: department.summaryV2LastRunState,
+                lastRunCompletedAt: department.summaryV2LastCompletedAt,
+              }),
               processCount: childProcesses.length,
               processes: childProcesses.map((process) => {
                 const processConversations =
@@ -151,6 +171,21 @@ export const getTree = query({
                   description: process.description ?? null,
                   sortOrder: process.sortOrder,
                   hasSummary: Boolean(process.rollingSummary?.trim()),
+                  summaryOverview: getSummaryListMetadata({
+                    summaryV2: readableSummaryV2(process.clerkOrgId, process.summaryV2),
+                    legacyMarkdown: process.rollingSummary,
+                    legacyGeneratedAt: process.summaryUpdatedAt,
+                    stale:
+                      process.summaryStale === true ||
+                      Boolean(
+                        process.summaryV2 &&
+                          process.summaryV2SourceRevision !==
+                            (process.summaryEvidenceRevision ?? 0),
+                      ),
+                    refreshScheduledAt: process.summaryRegenScheduledAt,
+                    lastRunState: process.summaryV2LastRunState,
+                    lastRunCompletedAt: process.summaryV2LastCompletedAt,
+                  }),
                   conversationCounts: counts,
                   conversationCount: counts.total,
                   pendingWorkStatus,

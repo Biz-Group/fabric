@@ -7,13 +7,6 @@ import { api } from "../../../convex/_generated/api";
 import type { Id } from "../../../convex/_generated/dataModel";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { Button } from "@/components/ui/button";
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
 import { cn } from "@/lib/utils";
 import {
   BarChart3,
@@ -24,10 +17,6 @@ import {
   Cog,
   FileText,
   Mic,
-  Sparkles,
-  Loader2,
-  AlertCircle,
-  Clock,
 } from "lucide-react";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { ProcessHeader } from "@/features/workbench/process-header";
@@ -36,7 +25,15 @@ import { useWorkspaceRoutes } from "@/features/shell/use-workspace-routes";
 import { ProcessConversationsTab } from "@/features/conversations/conversations-tab";
 import { ProcessFlowTab } from "@/features/process-flow/process-flow-tab";
 import { ProcessInsightsTab } from "@/features/insights/process-insights-tab";
-import { ProcessSummaryPanel } from "@/features/workbench/process-summary-panel";
+import {
+  HierarchyOverview,
+  HierarchyOverviewCompactPreview,
+  type HierarchyChildSummary,
+} from "@/features/overview/hierarchy-overview";
+import {
+  ProcessOverview,
+  ProcessOverviewCompactPreview,
+} from "@/features/overview/process-overview";
 import {
   ProcessTreeNavigator,
   type ProcessTreeDepartment,
@@ -61,7 +58,6 @@ import {
 } from "@/features/recording/recording-modal";
 import { CrudDialog } from "@/features/hierarchy/crud-dialog";
 import { CommandPalette } from "@/features/hierarchy/command-palette";
-import { MarkdownSummary } from "@/features/workbench/markdown-summary";
 import { useProcessPdfDownload } from "@/features/workbench/process-pdf/use-process-pdf-download";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import {
@@ -94,19 +90,6 @@ function deepestMobileLevel(sel: {
   return 1;
 }
 
-// --- Time Ago Helper ---
-
-function formatTimeAgo(epochMs: number): string {
-  const seconds = Math.floor((Date.now() - epochMs) / 1000);
-  if (seconds < 60) return "just now";
-  const minutes = Math.floor(seconds / 60);
-  if (minutes < 60) return `${minutes}m ago`;
-  const hours = Math.floor(minutes / 60);
-  if (hours < 24) return `${hours}h ago`;
-  const days = Math.floor(hours / 24);
-  return `${days}d ago`;
-}
-
 async function copyTextToClipboard(text: string): Promise<boolean> {
   try {
     if (navigator.clipboard?.writeText) {
@@ -132,36 +115,6 @@ async function copyTextToClipboard(text: string): Promise<boolean> {
   } finally {
     document.body.removeChild(textarea);
   }
-}
-
-/**
- * Mirrors SUMMARY_REGEN_STALE_MS in convex/postCall.ts. Past this, a gate that
- * was never released means the run died rather than that it is still working.
- */
-const SUMMARY_REGEN_STALE_MS = 120_000;
-
-/**
- * True once a regeneration that started at `startedAt` has been running long
- * enough to be considered dead. A crashed run leaves its timestamp behind, and
- * a reactive query has no reason to re-fire just because time passed — without
- * this timer the panel would spin forever.
- */
-function useRegenWindowExpired(startedAt: number | null): boolean {
-  // Expiry is derived from a clock reading rather than stored, so the effect
-  // only ever sets state from the timer callback. `now` lags until the
-  // deadline passes, which is exactly when the answer can change.
-  const [now, setNow] = useState(() => Date.now());
-
-  useEffect(() => {
-    if (startedAt === null) return;
-    const remaining = startedAt + SUMMARY_REGEN_STALE_MS - Date.now();
-    if (remaining <= 0) return;
-    const timer = window.setTimeout(() => setNow(Date.now()), remaining);
-    return () => window.clearTimeout(timer);
-  }, [startedAt]);
-
-  if (startedAt === null) return false;
-  return now >= startedAt + SUMMARY_REGEN_STALE_MS;
 }
 
 // --- Main Component ---
@@ -205,31 +158,18 @@ export function ProcessWorkbench() {
 
   // Active detail tab (0 = Overview, 1 = Conversations, 2 = Process Flow, 3 = Insights), seeded from the URL.
   const [detailTab, setDetailTab] = useState<number>(initialSelection.tab);
+  const [flowNodeId, setFlowNodeId] = useState<string | null>(
+    initialSelection.node,
+  );
   const [labelingJumpKey, setLabelingJumpKey] = useState(0);
+  const [conversationFocusId, setConversationFocusId] =
+    useState<Id<"conversations"> | null>(null);
+  const [conversationFocusJumpKey, setConversationFocusJumpKey] = useState(0);
 
   // Selected names for breadcrumbs / back buttons
   const [selectedFunctionName, setSelectedFunctionName] = useState("");
   const [selectedDepartmentName, setSelectedDepartmentName] = useState("");
   const [selectedProcessName, setSelectedProcessName] = useState("");
-
-  // On-demand summary state (loading/error only - summary now comes from reactive queries)
-  const [deptSummaryLoading, setDeptSummaryLoading] = useState(false);
-  const [deptSummaryError, setDeptSummaryError] = useState<string | null>(null);
-  const [funcSummaryLoading, setFuncSummaryLoading] = useState(false);
-  const [funcSummaryError, setFuncSummaryError] = useState<string | null>(null);
-
-  // On-demand summary actions
-  const generateDepartmentSummary = useAction(
-    api.summaries.generateDepartmentSummary,
-  );
-  const generateFunctionSummary = useAction(
-    api.summaries.generateFunctionSummary,
-  );
-  const forceRefreshProcessSummary = useAction(
-    api.summaries.forceRefreshProcessSummary,
-  );
-  const [processSummaryRefreshing, setProcessSummaryRefreshing] =
-    useState(false);
 
   // Process report PDF export (flow fetched + rendered on demand).
   const { download: downloadProcessPdf, isDownloading: isDownloadingPdf } =
@@ -454,29 +394,40 @@ export function ProcessWorkbench() {
     api.conversations.listByProcess,
     selectedProcessId ? { processId: selectedProcessId } : "skip",
   );
-  const processSummary =
-    selectedProcess?.rollingSummary ??
-    processWorkbench?.process.rollingSummary ??
-    undefined;
-  const processSummaryLoading =
-    selectedProcessId !== null &&
-    selectedProcess === undefined &&
-    processWorkbench === undefined;
-  const summaryRegenStartedAt =
-    processWorkbench?.process.summaryRegenStartedAt ?? null;
-  const summaryRegenWindowExpired = useRegenWindowExpired(
-    summaryRegenStartedAt,
-  );
-  // Server state is what keeps the spinner up for the whole run: the rebuild
-  // action returns as soon as the work is scheduled. The local flag only
-  // covers the moment before the gate lands in this query.
-  const processSummaryRebuilding =
-    processSummaryRefreshing ||
-    (summaryRegenStartedAt !== null && !summaryRegenWindowExpired);
   const completedProcessConversationCount =
     processConversations?.filter(
       (conversation) => conversation.status === "done",
     ).length ?? 0;
+  const departmentOverviewChildren = useMemo<
+    HierarchyChildSummary[] | undefined
+  >(
+    () =>
+      processes?.map((process) => ({
+        kind: "process" as const,
+        id: process._id,
+        name: process.name,
+        state: process.summaryOverview.state,
+        format: process.summaryOverview.format,
+        generatedAt: process.summaryOverview.generatedAt,
+        coverage: process.summaryOverview.coverage,
+      })),
+    [processes],
+  );
+  const functionOverviewChildren = useMemo<
+    HierarchyChildSummary[] | undefined
+  >(
+    () =>
+      departments?.map((department) => ({
+        kind: "department" as const,
+        id: department._id,
+        name: department.name,
+        state: department.summaryOverview.state,
+        format: department.summaryOverview.format,
+        generatedAt: department.summaryOverview.generatedAt,
+        coverage: department.summaryOverview.coverage,
+      })),
+    [departments],
+  );
 
   // Row scent, derived from the lists already loaded for navigation/search
   // (no per-row queries). See plan: "compute on read".
@@ -516,12 +467,14 @@ export function ProcessWorkbench() {
     dept: null,
     proc: null,
     tab: detailTab,
+    node: null,
   });
   const departmentBreadcrumbQuery = buildSelectionQuery(searchParams, {
     fn: selectedFunctionId,
     dept: selectedDepartmentId,
     proc: null,
     tab: detailTab,
+    node: null,
   });
   const functionBreadcrumbHref = `${pathname}${
     functionBreadcrumbQuery ? `?${functionBreadcrumbQuery}` : ""
@@ -561,6 +514,7 @@ export function ProcessWorkbench() {
       setSelectedDepartmentName("");
       setSelectedProcessId(null);
       setSelectedProcessName("");
+      setFlowNodeId(null);
     }
   }, [selectedFunctionId, selectedFunction]);
 
@@ -570,6 +524,7 @@ export function ProcessWorkbench() {
       setSelectedDepartmentName("");
       setSelectedProcessId(null);
       setSelectedProcessName("");
+      setFlowNodeId(null);
     }
   }, [selectedDepartmentId, selectedDepartment]);
 
@@ -577,6 +532,7 @@ export function ProcessWorkbench() {
     if (selectedProcessId && selectedProcess === null) {
       setSelectedProcessId(null);
       setSelectedProcessName("");
+      setFlowNodeId(null);
     }
   }, [selectedProcessId, selectedProcess]);
   /* eslint-enable react-hooks/set-state-in-effect */
@@ -638,7 +594,11 @@ export function ProcessWorkbench() {
           dept: selectedDepartmentId,
           proc: selectedProcessId,
         };
-    return { ...ids, tab: detailTab };
+    return {
+      ...ids,
+      tab: detailTab,
+      node: ids.proc && detailTab === 2 ? flowNodeId : null,
+    };
   }, [
     isMobile,
     mobileLevel,
@@ -646,6 +606,7 @@ export function ProcessWorkbench() {
     selectedDepartmentId,
     selectedProcessId,
     detailTab,
+    flowNodeId,
   ]);
 
   // Write: mirror the committed selection into the URL (push, so Back walks up
@@ -678,7 +639,8 @@ export function ProcessWorkbench() {
       next.fn !== selectedFunctionId ||
       next.dept !== selectedDepartmentId ||
       next.proc !== selectedProcessId ||
-      next.tab !== detailTab
+      next.tab !== detailTab ||
+      next.node !== flowNodeId
     ) {
       setSelectedFunctionId(next.fn);
       setSelectedDepartmentId(next.dept);
@@ -688,6 +650,7 @@ export function ProcessWorkbench() {
       setSelectedProcessName("");
       setMobileLevel(deepestMobileLevel(next));
       setDetailTab(next.tab);
+      setFlowNodeId(next.node);
     }
   }, [searchParams]);
   /* eslint-enable react-hooks/set-state-in-effect, react-hooks/exhaustive-deps */
@@ -712,8 +675,7 @@ export function ProcessWorkbench() {
       setSelectedDepartmentName("");
       setSelectedProcessId(null);
       setSelectedProcessName("");
-      setDeptSummaryError(null);
-      setFuncSummaryError(null);
+      setFlowNodeId(null);
       setMobilePreview(null);
       setMobileLevel(2);
     },
@@ -728,8 +690,7 @@ export function ProcessWorkbench() {
       setSelectedDepartmentName("");
       setSelectedProcessId(null);
       setSelectedProcessName("");
-      setDeptSummaryError(null);
-      setFuncSummaryError(null);
+      setFlowNodeId(null);
       setMobilePreview({ type: "function", id, name });
     },
     [],
@@ -741,7 +702,7 @@ export function ProcessWorkbench() {
       setSelectedDepartmentName(name);
       setSelectedProcessId(null);
       setSelectedProcessName("");
-      setDeptSummaryError(null);
+      setFlowNodeId(null);
       setMobilePreview(null);
       setMobileLevel(3);
     },
@@ -754,7 +715,7 @@ export function ProcessWorkbench() {
       setSelectedDepartmentName(name);
       setSelectedProcessId(null);
       setSelectedProcessName("");
-      setDeptSummaryError(null);
+      setFlowNodeId(null);
       setMobilePreview({ type: "department", id, name });
     },
     [],
@@ -764,6 +725,7 @@ export function ProcessWorkbench() {
     (id: Id<"processes">, name: string) => {
       setSelectedProcessId(id);
       setSelectedProcessName(name);
+      setFlowNodeId(null);
       setMobilePreview(null);
       setMobileLevel(4);
     },
@@ -774,6 +736,7 @@ export function ProcessWorkbench() {
     (id: Id<"processes">, name: string) => {
       setSelectedProcessId(id);
       setSelectedProcessName(name);
+      setFlowNodeId(null);
       setMobilePreview({ type: "process", id, name });
     },
     [],
@@ -808,8 +771,6 @@ export function ProcessWorkbench() {
       setSelectedDepartmentName(departmentName);
       setSelectedProcessId(null);
       setSelectedProcessName("");
-      setDeptSummaryError(null);
-      setFuncSummaryError(null);
       setMobilePreview(null);
       setMobileLevel(3);
     },
@@ -831,8 +792,6 @@ export function ProcessWorkbench() {
       setSelectedDepartmentName(departmentName);
       setSelectedProcessId(processId);
       setSelectedProcessName(processName);
-      setDeptSummaryError(null);
-      setFuncSummaryError(null);
       setMobilePreview(null);
       setMobileLevel(4);
     },
@@ -959,11 +918,13 @@ export function ProcessWorkbench() {
       dept: selectedDepartmentId,
       proc: selectedProcessId,
       tab: detailTab,
+      node: detailTab === 2 ? flowNodeId : null,
     });
     const url = `${window.location.origin}${pathname}${target ? `?${target}` : ""}`;
     return await copyTextToClipboard(url);
   }, [
     detailTab,
+    flowNodeId,
     pathname,
     searchParams,
     selectedDepartmentId,
@@ -977,9 +938,43 @@ export function ProcessWorkbench() {
   }, []);
 
   const handleJumpToLabeling = useCallback(() => {
+    setFlowNodeId(null);
     setDetailTab(1);
     setLabelingJumpKey((key) => key + 1);
   }, []);
+
+  const handleOpenOverviewConversation = useCallback(
+    (conversationId: Id<"conversations">) => {
+      setConversationFocusId(conversationId);
+      setConversationFocusJumpKey((key) => key + 1);
+      setFlowNodeId(null);
+      setDetailTab(1);
+    },
+    [],
+  );
+
+  const handleOpenProcessFlow = useCallback((nodeId?: string) => {
+    setFlowNodeId(nodeId ?? null);
+    setDetailTab(2);
+  }, []);
+
+  const handleOpenOverviewProcess = useCallback(
+    (processId: Id<"processes">) => {
+      const process = processes?.find((row) => row._id === processId);
+      if (process) handleSelectProcess(process._id, process.name);
+    },
+    [handleSelectProcess, processes],
+  );
+
+  const handleOpenOverviewDepartment = useCallback(
+    (departmentId: Id<"departments">) => {
+      const department = departments?.find((row) => row._id === departmentId);
+      if (department) {
+        handleSelectDepartment(department._id, department.name);
+      }
+    },
+    [departments, handleSelectDepartment],
+  );
 
   const handleEditSelectedProcess = useCallback(() => {
     if (!selectedProcessId) return;
@@ -1013,7 +1008,6 @@ export function ProcessWorkbench() {
       processName: workbenchProcessName,
       functionName: workbenchFunctionName,
       departmentName: workbenchDepartmentName,
-      summary: processSummary ?? null,
       contributorName: processWorkbench?.latestContributor?.name ?? null,
       submittedByName:
         processWorkbench?.latestContributor?.submittedByName ?? null,
@@ -1026,7 +1020,6 @@ export function ProcessWorkbench() {
     workbenchProcessName,
     workbenchFunctionName,
     workbenchDepartmentName,
-    processSummary,
     processWorkbench,
     completedProcessConversationCount,
   ]);
@@ -1253,7 +1246,10 @@ export function ProcessWorkbench() {
                 status={
                   attentionProcessIdSet.has(proc._id)
                     ? "attention"
-                    : proc.rollingSummary
+                    : // Read the projection, not the legacy field: a V2-only
+                      // process still has knowledge even once `rollingSummary`
+                      // stops being written.
+                      proc.summaryOverview.format !== "none"
                       ? "knowledge"
                       : undefined
                 }
@@ -1317,9 +1313,9 @@ export function ProcessWorkbench() {
           <ColumnHeader
             title={
               selectedDepartmentId
-                ? "Department Overview"
+                ? departmentDisplayName || "Department Overview"
                 : selectedFunctionId
-                  ? "Function Overview"
+                  ? functionDisplayName || "Function Overview"
                   : "Process Detail"
             }
             mobile={mobile}
@@ -1374,244 +1370,25 @@ export function ProcessWorkbench() {
             }
           />
 
-          {/* On-demand Department Summary */}
+          {/* Unified Department Overview */}
           {selectedDepartmentId && !selectedProcessId && (
-            <div className="space-y-4 p-4 md:p-6">
-              {selectedDepartment?.description && (
-                <Card>
-                  <CardHeader>
-                    <CardTitle className="flex items-center gap-2 text-base">
-                      <FileText className="h-4 w-4 text-muted-foreground" />
-                      Department Description
-                    </CardTitle>
-                  </CardHeader>
-                  <CardContent>
-                    <p className="whitespace-pre-wrap text-sm leading-6 text-muted-foreground">
-                      {selectedDepartment.description}
-                    </p>
-                  </CardContent>
-                </Card>
-              )}
-              <Card>
-                <CardHeader>
-                  <CardTitle className="flex items-center gap-2 text-base">
-                    <Sparkles className="h-4 w-4 text-muted-foreground" />
-                    Department Summary
-                    {selectedDepartment?.summaryStale &&
-                      selectedDepartment?.summary && (
-                        <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-medium text-amber-700">
-                          New data available
-                        </span>
-                      )}
-                  </CardTitle>
-                  <CardDescription>
-                    {selectedDepartment?.summary
-                      ? `AI-synthesized overview of processes in ${departmentDisplayName}.`
-                      : `Generate an AI-synthesized overview of all processes in ${departmentDisplayName}.`}
-                  </CardDescription>
-                </CardHeader>
-                <CardContent className="space-y-3">
-                  {deptSummaryLoading && selectedDepartment?.summary && (
-                    <div className="relative">
-                      <div className="opacity-50">
-                        <MarkdownSummary content={selectedDepartment.summary} />
-                      </div>
-                      <div className="absolute inset-0 flex items-center justify-center">
-                        <Loader2 className="h-6 w-6 animate-spin text-org-accent" />
-                      </div>
-                    </div>
-                  )}
-                  {!deptSummaryLoading && selectedDepartment?.summary && (
-                    <MarkdownSummary content={selectedDepartment.summary} />
-                  )}
-                  {selectedDepartment?.summaryUpdatedAt && (
-                    <div className="flex items-center gap-1 text-[11px] text-muted-foreground/60">
-                      <Clock className="h-3 w-3" />
-                      Last refreshed:{" "}
-                      {formatTimeAgo(selectedDepartment.summaryUpdatedAt)}
-                    </div>
-                  )}
-                  {deptSummaryError && (
-                    <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                      <AlertCircle className="h-4 w-4 shrink-0 text-amber-500" />
-                      {deptSummaryError}
-                    </div>
-                  )}
-                  <Button
-                    variant={
-                      !selectedDepartment?.summary
-                        ? "default"
-                        : selectedDepartment?.summaryStale
-                          ? "default"
-                          : "outline"
-                    }
-                    size="sm"
-                    className="gap-2"
-                    disabled={deptSummaryLoading}
-                    onClick={async () => {
-                      if (!selectedDepartmentId) return;
-                      setDeptSummaryLoading(true);
-                      setDeptSummaryError(null);
-                      try {
-                        const result = await generateDepartmentSummary({
-                          departmentId: selectedDepartmentId,
-                          forceRefresh:
-                            !!selectedDepartment?.summary &&
-                            !selectedDepartment?.summaryStale,
-                        });
-                        if (!result.summary && result.message) {
-                          setDeptSummaryError(result.message);
-                        }
-                      } catch {
-                        setDeptSummaryError(
-                          "Failed to generate summary. Please try again.",
-                        );
-                      } finally {
-                        setDeptSummaryLoading(false);
-                      }
-                    }}
-                  >
-                    {deptSummaryLoading ? (
-                      <>
-                        <Loader2 className="h-4 w-4 animate-spin" />
-                        Generating...
-                      </>
-                    ) : !selectedDepartment?.summary ? (
-                      <>
-                        <Sparkles className="h-4 w-4" />
-                        Generate Summary
-                      </>
-                    ) : selectedDepartment?.summaryStale ? (
-                      <>
-                        <Sparkles className="h-4 w-4" />
-                        Refresh Summary
-                      </>
-                    ) : (
-                      <>
-                        <Sparkles className="h-4 w-4" />
-                        Rebuild
-                      </>
-                    )}
-                  </Button>
-                </CardContent>
-              </Card>
-              <p className="text-center text-xs text-muted-foreground">
-                Select a process from the list to view conversations and
-                details.
-              </p>
-            </div>
+            <HierarchyOverview
+              entity={{ kind: "department", departmentId: selectedDepartmentId }}
+              description={selectedDepartment?.description}
+              childSummaries={departmentOverviewChildren}
+              canRefresh={canEdit}
+              onOpenProcess={handleOpenOverviewProcess}
+            />
           )}
 
-          {/* On-demand Function Summary */}
+          {/* Unified Function Overview */}
           {selectedFunctionId && !selectedDepartmentId && (
-            <div className="space-y-4 p-4 md:p-6">
-              <Card>
-                <CardHeader>
-                  <CardTitle className="flex items-center gap-2 text-base">
-                    <Sparkles className="h-4 w-4 text-muted-foreground" />
-                    Function Summary
-                    {selectedFunction?.summaryStale &&
-                      selectedFunction?.summary && (
-                        <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-medium text-amber-700">
-                          New data available
-                        </span>
-                      )}
-                  </CardTitle>
-                  <CardDescription>
-                    {selectedFunction?.summary
-                      ? `AI-synthesized overview of departments across ${functionDisplayName}.`
-                      : `Generate an AI-synthesized overview of all departments across ${functionDisplayName}.`}
-                  </CardDescription>
-                </CardHeader>
-                <CardContent className="space-y-3">
-                  {funcSummaryLoading && selectedFunction?.summary && (
-                    <div className="relative">
-                      <div className="opacity-50">
-                        <MarkdownSummary content={selectedFunction.summary} />
-                      </div>
-                      <div className="absolute inset-0 flex items-center justify-center">
-                        <Loader2 className="h-6 w-6 animate-spin text-org-accent" />
-                      </div>
-                    </div>
-                  )}
-                  {!funcSummaryLoading && selectedFunction?.summary && (
-                    <MarkdownSummary content={selectedFunction.summary} />
-                  )}
-                  {selectedFunction?.summaryUpdatedAt && (
-                    <div className="flex items-center gap-1 text-[11px] text-muted-foreground/60">
-                      <Clock className="h-3 w-3" />
-                      Last refreshed:{" "}
-                      {formatTimeAgo(selectedFunction.summaryUpdatedAt)}
-                    </div>
-                  )}
-                  {funcSummaryError && (
-                    <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                      <AlertCircle className="h-4 w-4 shrink-0 text-amber-500" />
-                      {funcSummaryError}
-                    </div>
-                  )}
-                  <Button
-                    variant={
-                      !selectedFunction?.summary
-                        ? "default"
-                        : selectedFunction?.summaryStale
-                          ? "default"
-                          : "outline"
-                    }
-                    size="sm"
-                    className="gap-2"
-                    disabled={funcSummaryLoading}
-                    onClick={async () => {
-                      if (!selectedFunctionId) return;
-                      setFuncSummaryLoading(true);
-                      setFuncSummaryError(null);
-                      try {
-                        const result = await generateFunctionSummary({
-                          functionId: selectedFunctionId,
-                          forceRefresh:
-                            !!selectedFunction?.summary &&
-                            !selectedFunction?.summaryStale,
-                        });
-                        if (!result.summary && result.message) {
-                          setFuncSummaryError(result.message);
-                        }
-                      } catch {
-                        setFuncSummaryError(
-                          "Failed to generate summary. Please try again.",
-                        );
-                      } finally {
-                        setFuncSummaryLoading(false);
-                      }
-                    }}
-                  >
-                    {funcSummaryLoading ? (
-                      <>
-                        <Loader2 className="h-4 w-4 animate-spin" />
-                        Generating...
-                      </>
-                    ) : !selectedFunction?.summary ? (
-                      <>
-                        <Sparkles className="h-4 w-4" />
-                        Generate Summary
-                      </>
-                    ) : selectedFunction?.summaryStale ? (
-                      <>
-                        <Sparkles className="h-4 w-4" />
-                        Refresh Summary
-                      </>
-                    ) : (
-                      <>
-                        <Sparkles className="h-4 w-4" />
-                        Rebuild
-                      </>
-                    )}
-                  </Button>
-                </CardContent>
-              </Card>
-              <p className="text-center text-xs text-muted-foreground">
-                Select a department to drill down further.
-              </p>
-            </div>
+            <HierarchyOverview
+              entity={{ kind: "function", functionId: selectedFunctionId }}
+              childSummaries={functionOverviewChildren}
+              canRefresh={canEdit}
+              onOpenDepartment={handleOpenOverviewDepartment}
+            />
           )}
 
           {/* No selection at all */}
@@ -1672,7 +1449,9 @@ export function ProcessWorkbench() {
             value={detailTab}
             onValueChange={(value) => {
               const nextTab = typeof value === "number" ? value : Number(value);
-              setDetailTab(Number.isFinite(nextTab) ? nextTab : 0);
+              const safeTab = Number.isFinite(nextTab) ? nextTab : 0;
+              if (safeTab !== 2) setFlowNodeId(null);
+              setDetailTab(safeTab);
             }}
             className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden gap-0"
           >
@@ -1684,7 +1463,7 @@ export function ProcessWorkbench() {
               >
                 <TabsTrigger value={0} className="gap-1.5 px-2 text-xs">
                   <FileText className="h-3.5 w-3.5" />
-                  Process Summary
+                  Overview
                 </TabsTrigger>
                 <TabsTrigger value={1} className="gap-1.5 px-2 text-xs">
                   <Mic className="h-3.5 w-3.5" />
@@ -1711,34 +1490,16 @@ export function ProcessWorkbench() {
               value={0}
               className="min-h-0 min-w-0 flex-1 overflow-y-auto"
             >
-              <div className="min-h-full p-4 md:h-full md:min-h-0 md:p-6">
-                <div className="mx-auto h-full min-h-[28rem] max-w-5xl">
-                  <ProcessSummaryPanel
-                    summary={processSummary ?? null}
-                    isLoading={processSummaryLoading}
-                    canRefresh={
-                      canEdit &&
-                      !!selectedProcessId &&
-                      !!processSummary &&
-                      completedProcessConversationCount > 1
-                    }
-                    isRefreshing={processSummaryRebuilding}
-                    onRefresh={async () => {
-                      if (!selectedProcessId) return;
-                      setProcessSummaryRefreshing(true);
-                      try {
-                        await forceRefreshProcessSummary({
-                          processId: selectedProcessId,
-                        });
-                      } catch {
-                        // Error is logged server-side.
-                      } finally {
-                        setProcessSummaryRefreshing(false);
-                      }
-                    }}
-                  />
-                </div>
-              </div>
+              <ProcessOverview
+                processId={selectedProcessId!}
+                canRefresh={canEdit}
+                onOpenConversation={handleOpenOverviewConversation}
+                onOpenFlow={() => handleOpenProcessFlow()}
+                onOpenInsights={() => {
+                  setFlowNodeId(null);
+                  setDetailTab(3);
+                }}
+              />
             </TabsContent>
 
             {/* Conversations tab */}
@@ -1751,6 +1512,8 @@ export function ProcessWorkbench() {
                 processId={selectedProcessId!}
                 canLabelSpeakers={canEdit}
                 labelingJumpKey={labelingJumpKey}
+                focusConversationId={conversationFocusId}
+                focusConversationJumpKey={conversationFocusJumpKey}
               />
             </TabsContent>
 
@@ -1768,6 +1531,21 @@ export function ProcessWorkbench() {
                     ? undefined
                     : (processWorkbench?.flow ?? null)
                 }
+                selectedNodeId={flowNodeId}
+                onSelectedNodeChange={setFlowNodeId}
+                onOpenConversation={handleOpenOverviewConversation}
+                conversations={(processConversations ?? []).map(
+                  (conversation) => ({
+                    conversationId: conversation._id,
+                    contributorName: conversation.contributorName,
+                    creationTime: conversation._creationTime,
+                    status: conversation.status,
+                  }),
+                )}
+                onOpenInsights={() => {
+                  setFlowNodeId(null);
+                  setDetailTab(3);
+                }}
               />
             </TabsContent>
 
@@ -1781,7 +1559,7 @@ export function ProcessWorkbench() {
                 completedConversationCount={completedProcessConversationCount}
                 canGenerate={canEdit}
                 isActive={detailTab === 3}
-                onOpenProcessFlow={() => setDetailTab(2)}
+                onOpenProcessFlow={handleOpenProcessFlow}
               />
             </TabsContent>
           </Tabs>
@@ -1790,44 +1568,12 @@ export function ProcessWorkbench() {
     </div>
   );
 
-  const mobilePreviewSummary =
-    mobilePreview?.type === "function"
-      ? selectedFunction?.summary
-      : mobilePreview?.type === "department"
-        ? selectedDepartment?.summary
-        : mobilePreview?.type === "process"
-          ? selectedProcess?.rollingSummary
-          : undefined;
-  const mobilePreviewUpdatedAt =
-    mobilePreview?.type === "function"
-      ? selectedFunction?.summaryUpdatedAt
-      : mobilePreview?.type === "department"
-        ? selectedDepartment?.summaryUpdatedAt
-        : undefined;
-  const mobilePreviewStale =
-    mobilePreview?.type === "function"
-      ? selectedFunction?.summaryStale
-      : mobilePreview?.type === "department"
-        ? selectedDepartment?.summaryStale
-        : false;
-  const mobilePreviewLoading =
-    mobilePreview?.type === "function"
-      ? funcSummaryLoading
-      : mobilePreview?.type === "department"
-        ? deptSummaryLoading
-        : false;
-  const mobilePreviewError =
-    mobilePreview?.type === "function"
-      ? funcSummaryError
-      : mobilePreview?.type === "department"
-        ? deptSummaryError
-        : null;
   const mobilePreviewTitle =
     mobilePreview?.type === "function"
-      ? "Function Summary"
+      ? "Function Overview"
       : mobilePreview?.type === "department"
-        ? "Department Summary"
-        : "Process Summary";
+        ? "Department Overview"
+        : "Process Overview";
   const mobilePreviewDescription =
     mobilePreview?.type === "function"
       ? "An at-a-glance view of the departments and work in this function."
@@ -1840,59 +1586,6 @@ export function ProcessWorkbench() {
       : mobilePreview?.type === "department"
         ? "View processes"
         : "Open process details";
-  const canGenerateMobilePreviewSummary =
-    mobilePreview?.type === "function" || mobilePreview?.type === "department";
-  const mobilePreviewGenerateLabel = mobilePreviewLoading
-    ? "Generating..."
-    : !mobilePreviewSummary
-      ? "Generate Summary"
-      : mobilePreviewStale
-        ? "Refresh Summary"
-        : "Rebuild";
-
-  const handleGenerateMobilePreviewSummary = async () => {
-    if (!mobilePreview) return;
-
-    if (mobilePreview.type === "function") {
-      setFuncSummaryLoading(true);
-      setFuncSummaryError(null);
-      try {
-        const result = await generateFunctionSummary({
-          functionId: mobilePreview.id,
-          forceRefresh:
-            !!selectedFunction?.summary && !selectedFunction?.summaryStale,
-        });
-        if (!result.summary && result.message) {
-          setFuncSummaryError(result.message);
-        }
-      } catch {
-        setFuncSummaryError("Failed to generate summary. Please try again.");
-      } finally {
-        setFuncSummaryLoading(false);
-      }
-      return;
-    }
-
-    if (mobilePreview.type === "department") {
-      setDeptSummaryLoading(true);
-      setDeptSummaryError(null);
-      try {
-        const result = await generateDepartmentSummary({
-          departmentId: mobilePreview.id,
-          forceRefresh:
-            !!selectedDepartment?.summary && !selectedDepartment?.summaryStale,
-        });
-        if (!result.summary && result.message) {
-          setDeptSummaryError(result.message);
-        }
-      } catch {
-        setDeptSummaryError("Failed to generate summary. Please try again.");
-      } finally {
-        setDeptSummaryLoading(false);
-      }
-    }
-  };
-
   const handleMobilePreviewNavigate = () => {
     if (!mobilePreview) return;
 
@@ -1989,68 +1682,27 @@ export function ProcessWorkbench() {
                 <p className="text-sm text-muted-foreground">
                   {mobilePreviewDescription}
                 </p>
-                {mobilePreviewStale && mobilePreviewSummary && (
-                  <span className="shrink-0 rounded-full bg-amber-100 px-2 py-1 text-[10px] font-medium text-amber-700">
-                    New data
-                  </span>
-                )}
               </div>
 
-              {mobilePreviewLoading && !mobilePreviewSummary ? (
-                <LoadingSpinner />
-              ) : mobilePreviewSummary ? (
-                <div className="relative rounded-xl border bg-background p-4">
-                  {mobilePreviewLoading && (
-                    <div className="absolute inset-0 z-10 flex items-center justify-center rounded-xl bg-background/70">
-                      <Loader2 className="h-6 w-6 animate-spin text-org-accent" />
-                    </div>
-                  )}
-                  <MarkdownSummary content={mobilePreviewSummary} />
-                </div>
-              ) : (
-                <div className="rounded-xl border border-dashed bg-muted/30 p-4 text-sm leading-6 text-muted-foreground">
-                  {mobilePreview?.type === "process"
-                    ? "No process summary yet. Open the process details to record or review conversations."
-                    : "No summary has been generated yet."}
-                </div>
-              )}
-
-              {mobilePreviewUpdatedAt && (
-                <div className="mt-3 flex items-center gap-1 text-[11px] text-muted-foreground/70">
-                  <Clock className="h-3 w-3" />
-                  Last refreshed: {formatTimeAgo(mobilePreviewUpdatedAt)}
-                </div>
-              )}
-
-              {mobilePreviewError && (
-                <div className="mt-3 flex items-center gap-2 text-sm text-muted-foreground">
-                  <AlertCircle className="h-4 w-4 shrink-0 text-amber-500" />
-                  {mobilePreviewError}
-                </div>
-              )}
+              {mobilePreview?.type === "process" ? (
+                <ProcessOverviewCompactPreview
+                  processId={mobilePreview.id}
+                />
+              ) : mobilePreview?.type === "department" ? (
+                <HierarchyOverviewCompactPreview
+                  entity={{
+                    kind: "department",
+                    departmentId: mobilePreview.id,
+                  }}
+                />
+              ) : mobilePreview?.type === "function" ? (
+                <HierarchyOverviewCompactPreview
+                  entity={{ kind: "function", functionId: mobilePreview.id }}
+                />
+              ) : null}
             </div>
 
             <SheetFooter className="border-t p-4">
-              {canGenerateMobilePreviewSummary && (
-                <Button
-                  variant={
-                    !mobilePreviewSummary || mobilePreviewStale
-                      ? "default"
-                      : "outline"
-                  }
-                  size="lg"
-                  className="min-h-11 w-full gap-2 rounded-xl"
-                  disabled={mobilePreviewLoading}
-                  onClick={handleGenerateMobilePreviewSummary}
-                >
-                  {mobilePreviewLoading ? (
-                    <Loader2 className="h-4 w-4 animate-spin" />
-                  ) : (
-                    <Sparkles className="h-4 w-4" />
-                  )}
-                  {mobilePreviewGenerateLabel}
-                </Button>
-              )}
               <Button
                 variant="outline"
                 size="lg"

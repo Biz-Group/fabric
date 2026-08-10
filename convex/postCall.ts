@@ -349,6 +349,12 @@ export const updateRollingSummary = internalMutation({
     if (!process || process.clerkOrgId !== args.clerkOrgId) return;
     await ctx.db.patch(args.processId, {
       rollingSummary: args.rollingSummary,
+      // V1 writes invalidate any experimental V2 artifact. The V2 pipeline
+      // will save both representations atomically when it is enabled.
+      summaryV2: undefined,
+      summaryUpdatedAt: Date.now(),
+      // This publication answers whatever evidence was outstanding.
+      summaryStale: false,
     });
   },
 });
@@ -513,17 +519,15 @@ export const fetchConversation = action({
           },
         );
 
-        // Build this conversation's map record now, so a later rebuild is a
-        // single reduce instead of a backfill chain.
-        await ctx.scheduler.runAfter(
-          0,
-          internal.postCall.generateConversationSummaryInput,
-          { conversationId, clerkOrgId: orgId },
+        // Marks the overview stale; it does not generate. Rebuild is a human
+        // action so a few seconds of test audio cannot spend tokens.
+        await ctx.runMutation(
+          internal.summaryEvidence.markProcessSummaryStale,
+          {
+            processId: args.processId,
+            clerkOrgId: orgId,
+          },
         );
-        await ctx.runMutation(internal.postCall.requestProcessSummaryRegen, {
-          processId: args.processId,
-          clerkOrgId: orgId,
-        });
 
         return { status: "done" as const };
       }
@@ -825,12 +829,8 @@ export const importConversation = internalAction({
       },
     );
 
-    await ctx.scheduler.runAfter(
-      0,
-      internal.postCall.generateConversationSummaryInput,
-      { conversationId, clerkOrgId: args.clerkOrgId },
-    );
-    await ctx.runMutation(internal.postCall.requestProcessSummaryRegen, {
+    // Stale only — see markProcessSummaryStale.
+    await ctx.runMutation(internal.summaryEvidence.markProcessSummaryStale, {
       processId: args.processId,
       clerkOrgId: args.clerkOrgId,
     });
@@ -893,6 +893,9 @@ export const refreshConversationAnalysis = internalAction({
       },
     );
 
+    const transcriptChanged =
+      hashTranscript(existing.transcript ?? null) !==
+      hashTranscript(transcript ?? null);
     await ctx.runMutation(internal.postCall.updateConversationAnalysis, {
       conversationId: existing._id,
       clerkOrgId: args.clerkOrgId,
@@ -903,14 +906,15 @@ export const refreshConversationAnalysis = internalAction({
       durationSeconds,
     });
 
-    // A refreshed transcript invalidates the cached map record. The action
-    // hashes the transcript and no-ops when nothing actually changed, so this
-    // is safe to fire on every refresh.
-    await ctx.scheduler.runAfter(
-      0,
-      internal.postCall.generateConversationSummaryInput,
-      { conversationId: existing._id, clerkOrgId: args.clerkOrgId },
-    );
+    if (transcriptChanged) {
+      // A rewritten transcript invalidates the summary but still waits for a
+      // person: the cached evidence for this conversation is already keyed by
+      // transcript hash, so the rebuild re-extracts only what changed.
+      await ctx.runMutation(internal.summaryEvidence.markProcessSummaryStale, {
+        processId: existing.processId,
+        clerkOrgId: args.clerkOrgId,
+      });
+    }
 
     console.log(`Refreshed analysis for ${args.elevenlabsConversationId}`);
     return { status: "updated" as const };
@@ -1158,10 +1162,17 @@ export const saveConversationSummaryInput = internalMutation({
     if (!conv || conv.clerkOrgId !== args.clerkOrgId) {
       throw new Error("Conversation not found in this organization");
     }
+    if (
+      conv.status !== "done" ||
+      hashTranscript(conv.transcript ?? null) !== args.processSummaryInputHash
+    ) {
+      return { saved: false as const };
+    }
     await ctx.db.patch(args.conversationId, {
       processSummaryInput: args.processSummaryInput,
       processSummaryInputHash: args.processSummaryInputHash,
     });
+    return { saved: true as const };
   },
 });
 
@@ -1170,10 +1181,11 @@ export const saveConversationSummaryInput = internalMutation({
  * call, one conversation, per the plan's "one call per scheduled action" rule.
  * No-ops when the cached record already matches the current transcript.
  */
-async function generateSummaryInputForConversation(
+export async function generateSummaryInputForConversation(
   ctx: ActionCtx,
   conversationId: Id<"conversations">,
   clerkOrgId: string,
+  generationId?: string,
 ): Promise<void> {
   const conv = await ctx.runQuery(
     internal.postCall.getConversationForSummaryInput,
@@ -1191,6 +1203,7 @@ async function generateSummaryInputForConversation(
       entityType: "conversation",
       entityId: conversationId,
       entityLabel: conv.contributorName,
+      runId: generationId,
     },
     {
       capability: "synthesis",
@@ -1222,6 +1235,7 @@ export const generateConversationSummaryInput = internalAction({
   args: {
     conversationId: v.id("conversations"),
     clerkOrgId: v.string(),
+    generationId: v.optional(v.string()),
   },
   handler: async (ctx, args): Promise<void> => {
     if (!isAIConfigured("synthesis")) return;
@@ -1229,6 +1243,7 @@ export const generateConversationSummaryInput = internalAction({
       ctx,
       args.conversationId,
       args.clerkOrgId,
+      args.generationId,
     );
   },
 });
@@ -1317,7 +1332,11 @@ export const getProcessSummaryInputs = internalQuery({
     const missingIds: Array<Id<"conversations">> = [];
 
     rows.forEach((row, index) => {
-      if (row.processSummaryInput) {
+      const transcriptHash = hashTranscript(row.transcript ?? null);
+      if (
+        row.processSummaryInput &&
+        row.processSummaryInputHash === transcriptHash
+      ) {
         ready.push({
           conversationNumber: index + 1,
           contributorName: row.contributorName,

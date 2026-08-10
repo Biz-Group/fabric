@@ -11,17 +11,26 @@ import {
   CATEGORY_TONES,
   COLORS,
   CONFIDENCE_TONES,
+  EVIDENCE_TONES,
+  OVERVIEW_STATE_TONES,
   s,
 } from "./pdf-theme";
 import { PdfMarkdown } from "./pdf-markdown";
 import { FlowDiagramPdf } from "./flow-diagram-pdf";
 import {
   buildProcessPdfData,
+  type Metric,
+  type PdfFinding,
+  type PdfOverviewSection,
   type ProcessPdfData,
   type ProcessPdfInput,
   type StepNode,
 } from "./build-process-pdf-data";
-import { type FlowNode, pluralize } from "@/features/insights/insights-derivations";
+import {
+  type FlowNode,
+  pluralize,
+  uniqueStrings,
+} from "@/features/insights/insights-derivations";
 
 // ---------------------------------------------------------------------------
 // Formatting
@@ -47,9 +56,10 @@ function fmtDate(ms: number | null | undefined) {
   });
 }
 
-const FLOW_STATUS_COPY: Record<ProcessPdfData["flowStatus"], string> = {
+const FLOW_STAGE_COPY: Record<ProcessPdfData["flowStage"], string> = {
   ready: "Flow generated",
-  generating: "Flow generation in progress",
+  graph: "Process mapping is still in progress",
+  details: "The flow is mapped and its step details are still being written",
   failed: "Flow generation failed",
   none: "No flow generated yet",
 };
@@ -172,7 +182,7 @@ function DetailColumn({
 // Cover
 // ---------------------------------------------------------------------------
 
-function MetricTile({ metric }: { metric: ProcessPdfData["metrics"][number] }) {
+function MetricTile({ metric }: { metric: Metric }) {
   return (
     <View
       style={{
@@ -215,15 +225,89 @@ function MetaItem({ label, value }: { label: string; value: string }) {
   );
 }
 
+/**
+ * Coverage of the interview evidence behind the overview. Deliberately not flow
+ * analysis: mapped steps, handoffs, tools, and bottlenecks belong to the Process
+ * Flow and Flow Insights sections.
+ */
+function EvidenceStrip({ data }: { data: ProcessPdfData }) {
+  const coverage = data.overview.structured?.coverage;
+  if (!coverage) return null;
+
+  const tiles: Metric[] = [
+    {
+      label: "Conversations",
+      value: String(coverage.includedSources),
+      detail: `of ${coverage.totalEligibleSources} eligible conversations included`,
+    },
+    {
+      label: "Contributors",
+      value:
+        coverage.uniqueContributors === null
+          ? "—"
+          : String(coverage.uniqueContributors),
+      detail: "Unique people describing this process",
+    },
+    {
+      label: "Coverage",
+      value: coverage.complete ? "Complete" : "Partial",
+      detail: coverage.complete
+        ? "Every eligible conversation is included"
+        : "Some eligible conversations are not included",
+    },
+  ];
+
+  return (
+    <View style={{ flexDirection: "row", flexWrap: "wrap", marginBottom: 6 }}>
+      {tiles.map((tile) => (
+        <MetricTile key={tile.label} metric={tile} />
+      ))}
+    </View>
+  );
+}
+
+/**
+ * Navigation-only map of the report. The readiness wording is the same string
+ * the in-app Overview footer shows, so the export never claims flow or insight
+ * content the app would not.
+ */
+function ReportContents({ data }: { data: ProcessPdfData }) {
+  // A flow whose steps are not described yet is left out of the export, so the
+  // contents say so rather than reporting in-app readiness for a section this
+  // document does not contain.
+  const entries = [
+    { label: "Overview", detail: "Reported process knowledge (this section)" },
+    {
+      label: "Process Flow",
+      detail: data.hasFlow
+        ? data.overview.flowReadiness
+        : "Not included in this report",
+    },
+    {
+      label: "Flow Insights",
+      detail: data.hasFlow
+        ? data.overview.insightsReadiness
+        : "Not included in this report",
+    },
+  ];
+
+  return (
+    <View style={[s.cardSoft, { marginBottom: 6 }]}>
+      <Text style={s.eyebrow}>In this report</Text>
+      {entries.map((entry) => (
+        <Text key={entry.label} style={[s.muted, { marginBottom: 1 }]}>
+          <Text style={{ fontFamily: "Helvetica-Bold", color: COLORS.ink }}>
+            {entry.label}
+          </Text>
+          {`  ·  ${entry.detail}`}
+        </Text>
+      ))}
+    </View>
+  );
+}
+
 function Cover({ data }: { data: ProcessPdfData }) {
-  const statusTone =
-    data.flowStatus === "ready"
-      ? CONFIDENCE_TONES.high
-      : data.flowStatus === "failed"
-        ? CONFIDENCE_TONES.low
-        : data.flowStatus === "generating"
-          ? CONFIDENCE_TONES.medium
-          : { soft: COLORS.surfaceAlt, text: COLORS.muted };
+  const statusTone = OVERVIEW_STATE_TONES[data.overview.state];
 
   return (
     <View>
@@ -299,9 +383,10 @@ function Cover({ data }: { data: ProcessPdfData }) {
         }}
       >
         <View style={{ marginRight: 22, marginBottom: 4 }}>
-          <Text style={s.eyebrow}>Status</Text>
-          <Chip label={FLOW_STATUS_COPY[data.flowStatus]} tone={statusTone} />
+          <Text style={s.eyebrow}>Overview</Text>
+          <Chip label={data.overview.stateLabel} tone={statusTone} />
         </View>
+        <MetaItem label="Source" value={data.overview.sourceMode} />
         <MetaItem
           label="Contributor"
           value={data.contributorName ?? "Not recorded"}
@@ -316,28 +401,18 @@ function Cover({ data }: { data: ProcessPdfData }) {
         <MetaItem label="Generated" value={fmtDateTime(data.generatedAt)} />
       </View>
 
-      {/* Metrics */}
-      {data.hasFlow && data.metrics.length > 0 && (
-        <View
-          style={{
-            flexDirection: "row",
-            flexWrap: "wrap",
-            marginBottom: 6,
-          }}
-        >
-          {data.metrics.map((metric) => (
-            <MetricTile key={metric.label} metric={metric} />
-          ))}
-        </View>
-      )}
+      <EvidenceStrip data={data} />
+      <ReportContents data={data} />
 
       {!data.hasFlow && (
         <View style={[s.cardSoft, { marginBottom: 6 }]}>
           <Text style={{ fontSize: 9.5, color: COLORS.body, lineHeight: 1.5 }}>
-            {FLOW_STATUS_COPY[data.flowStatus]}.{" "}
+            {FLOW_STAGE_COPY[data.flowStage]}.{" "}
             {data.flowErrorMessage
               ? data.flowErrorMessage
-              : "Generate the process flow in Fabric to include the diagram, step detail, and insights in this report."}
+              : data.flowStage === "none" || data.flowStage === "failed"
+                ? "Generate the process flow in Fabric to include the diagram, step detail, and insights in this report."
+                : "The diagram, step detail, and insights will be included once generation completes."}
           </Text>
         </View>
       )}
@@ -355,20 +430,104 @@ function Cover({ data }: { data: ProcessPdfData }) {
 }
 
 // ---------------------------------------------------------------------------
-// Summary
+// Overview
 // ---------------------------------------------------------------------------
 
-function SummarySection({ data }: { data: ProcessPdfData }) {
+function OverviewFinding({ finding }: { finding: PdfFinding }) {
+  return (
+    <View style={{ marginBottom: 9 }}>
+      <View
+        style={{
+          flexDirection: "row",
+          alignItems: "flex-start",
+          marginBottom: 3,
+        }}
+      >
+        <View style={{ flex: 1, minWidth: 0, paddingRight: 6 }}>
+          <Text style={s.cardTitle}>{finding.title}</Text>
+        </View>
+        <View style={{ flexShrink: 0 }}>
+          <Chip
+            label={finding.evidenceLabel}
+            tone={EVIDENCE_TONES[finding.evidenceLevel]}
+          />
+        </View>
+      </View>
+      <Text style={[s.body, { marginBottom: 4 }]}>{finding.body}</Text>
+      <PillRow
+        values={finding.sources}
+        empty="No direct source — identified as an evidence gap"
+      />
+    </View>
+  );
+}
+
+function OverviewFindingGroup({ section }: { section: PdfOverviewSection }) {
+  return (
+    <View style={{ marginBottom: 12 }}>
+      <Text style={[s.eyebrow, { marginBottom: 6 }]}>{section.title}</Text>
+      {section.findings.length === 0 ? (
+        <Text style={s.muted}>{section.empty}</Text>
+      ) : (
+        section.findings.map((finding) => (
+          <OverviewFinding key={finding.id} finding={finding} />
+        ))
+      )}
+    </View>
+  );
+}
+
+/**
+ * The narrative the report opens with. It carries reported process knowledge
+ * only — step detail belongs to Process Steps and diagnosis to Flow Insights —
+ * and falls back to the stored Markdown projection for a row that has no
+ * readable structured artifact.
+ */
+function OverviewSectionPdf({ data }: { data: ProcessPdfData }) {
+  const { overview } = data;
+
+  if (overview.structured) {
+    return (
+      <View>
+        <SectionHeader title="Overview" kicker="Reported process knowledge" />
+        <Text
+          style={{
+            fontFamily: "Helvetica-Bold",
+            fontSize: 13,
+            color: COLORS.ink,
+            lineHeight: 1.35,
+            marginBottom: 6,
+          }}
+        >
+          {overview.structured.headline}
+        </Text>
+        <Text style={[s.body, { marginBottom: 12 }]}>
+          {overview.structured.brief}
+        </Text>
+        {overview.structured.sections.map((section) => (
+          <OverviewFindingGroup key={section.key} section={section} />
+        ))}
+        {/* The overview states no sequence, so the report has to say where the
+            order lives — the same thing the Overview tab tells a reader. */}
+        <Text style={s.faint}>
+          {data.hasFlow
+            ? "The order these activities happen in, and step-level detail, appear in Process Flow and Process Steps; bottleneck, handoff, and automation analysis appears in Flow Insights."
+            : "This overview reports what contributors said, not the order the work happens in. Generate the process flow in Fabric to include the sequence and step detail."}
+        </Text>
+      </View>
+    );
+  }
+
   return (
     <View>
-      <SectionHeader title="Process Summary" kicker="Synthesized overview" />
-      {data.summary && data.summary.trim().length > 0 ? (
-        <PdfMarkdown content={data.summary} />
+      <SectionHeader title="Overview" kicker={overview.sourceMode} />
+      {overview.legacyMarkdown ? (
+        <PdfMarkdown content={overview.legacyMarkdown} />
       ) : (
         <View style={s.cardSoft}>
           <Text style={s.muted}>
-            No process summary is available yet. Complete a conversation to
-            generate the rolling summary.
+            No overview is available yet. Complete a process conversation to
+            establish the first evidence-backed overview.
           </Text>
         </View>
       )}
@@ -527,6 +686,9 @@ function StepsSection({ data }: { data: ProcessPdfData }) {
         title="Process Steps"
         count={pluralize(data.steps.length, "step")}
       />
+      <Text style={[s.faint, { marginBottom: 8 }]}>
+        Step numbers are used as cross-references throughout Flow Insights.
+      </Text>
       {data.steps.map((step) => (
         <StepCard key={step.id} step={step} data={data} />
       ))}
@@ -721,6 +883,8 @@ function InsightsSection({ data }: { data: ProcessPdfData }) {
             No automation candidates above none are marked.
           </Text>
         ) : (
+          // The step's own description stays in Process Steps; repeating it here
+          // would make the same paragraph the report's most duplicated content.
           data.automationCandidates.map((node) => (
             <MiniItem
               key={node.id}
@@ -732,9 +896,13 @@ function InsightsSection({ data }: { data: ProcessPdfData }) {
                 />
               }
             >
-              {node.description ? (
-                <Text style={s.muted}>{node.description}</Text>
-              ) : null}
+              <Text style={s.faint}>
+                {`Assessed on step #${node.number}${
+                  node.tools.length > 0
+                    ? ` · ${uniqueStrings(node.tools).join(", ")}`
+                    : ""
+                }`}
+              </Text>
             </MiniItem>
           ))
         )}
@@ -759,7 +927,12 @@ function InsightsSection({ data }: { data: ProcessPdfData }) {
               }
             >
               <Text style={s.faint}>
-                {tool.steps.map((st) => st.label).join(", ")}
+                {tool.steps
+                  .map((st) => {
+                    const number = data.nodeNumber[st.id];
+                    return number ? `#${number} ${st.label}` : st.label;
+                  })
+                  .join(", ")}
               </Text>
             </MiniItem>
           ))
@@ -874,10 +1047,14 @@ export function ProcessPdfDocument({ data }: { data: ProcessPdfData }) {
       author="Fabric"
       subject={`${data.functionName} · ${data.departmentName}`}
     >
-      {/* Cover + summary (portrait, auto-paginates) */}
+      {/* Ownership order: overview narrative, then flow/step detail, then
+          insight diagnosis. Each page owns its facts and cross-references the
+          others by step number rather than repeating their content. */}
+
+      {/* Cover + overview (portrait, auto-paginates) */}
       <Page size="A4" style={s.page}>
         <Cover data={data} />
-        <SummarySection data={data} />
+        <OverviewSectionPdf data={data} />
         <Footer processName={data.processName} />
       </Page>
 
@@ -888,6 +1065,15 @@ export function ProcessPdfDocument({ data }: { data: ProcessPdfData }) {
             title="Process Flow"
             count={`${data.steps.length} steps · ${data.edges.length} connections`}
           />
+          {data.metrics.length > 0 && (
+            <View
+              style={{ flexDirection: "row", flexWrap: "wrap", marginBottom: 8 }}
+            >
+              {data.metrics.map((metric) => (
+                <MetricTile key={metric.label} metric={metric} />
+              ))}
+            </View>
+          )}
           <FlowDiagramPdf data={data} />
           <Footer processName={data.processName} />
         </Page>

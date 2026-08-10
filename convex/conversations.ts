@@ -342,15 +342,15 @@ export const deleteForAdmin = mutation({
           { departmentId: process.departmentId },
         );
       }
-      // Rebuild the parent process summary from scratch — the deleted
-      // conversation may have contributed citations/content to the incremental
-      // summary, so a full rebuild is the safe option. The rebuild reduces
-      // over the surviving conversations' cached records, and this row's went
-      // with it, so nothing has to un-say what it contributed.
-      await ctx.runMutation(internal.postCall.requestProcessSummaryRegen, {
+      // Stale, not rebuilt. The deleted conversation may have contributed
+      // citations, so the overview needs regenerating — but bulk-deleting test
+      // recordings is exactly when an automatic rebuild per deletion would burn
+      // the most tokens for the least value. The summary keeps citing the
+      // removed conversation until a contributor rebuilds; its source chip
+      // resolves against loaded conversations and fails safe.
+      await ctx.runMutation(internal.summaryEvidence.markProcessSummaryStale, {
         processId,
         clerkOrgId: caller.orgId,
-        forceRefresh: true,
       });
       return;
     }
@@ -358,7 +358,15 @@ export const deleteForAdmin = mutation({
     const process = await ctx.db.get(processId);
     if (!process || process.clerkOrgId !== caller.orgId) return;
 
-    await ctx.db.patch(processId, { rollingSummary: undefined });
+    await ctx.db.patch(processId, {
+      rollingSummary: undefined,
+      summaryV2: undefined,
+      summaryUpdatedAt: undefined,
+      summaryEvidenceRevision: (process.summaryEvidenceRevision ?? 0) + 1,
+      ...(process.summaryV2GenerationId
+        ? { summaryRegenRequestedAgain: true }
+        : {}),
+    });
     await ctx.runMutation(internal.processFlows.deleteForProcess, {
       processId,
       clerkOrgId: caller.orgId,
@@ -386,8 +394,13 @@ export const deleteForAdmin = mutation({
     } else {
       await ctx.db.patch(process.departmentId, {
         summary: undefined,
+        summaryV2: undefined,
         summaryUpdatedAt: undefined,
         summaryStale: undefined,
+        summarySourceRevision: (department.summarySourceRevision ?? 0) + 1,
+        ...(department.summaryV2GenerationId
+          ? { summaryRegenRequestedAgain: true }
+          : {}),
       });
       await ctx.runMutation(
         internal.summariesHelpers.markFunctionSummaryStale,

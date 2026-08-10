@@ -21,10 +21,6 @@ import {
   Sparkles,
   RefreshCw,
   BarChart3,
-  Bot,
-  ArrowRightLeft,
-  Wrench,
-  AlertTriangle,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -40,19 +36,36 @@ import type { Id } from "../../../convex/_generated/dataModel";
 import { nodeTypes } from "./process-flow-nodes";
 import { useProcessFlowLayout } from "@/features/process-flow/use-process-flow-layout";
 import { ProcessFlowDetailPanel } from "./process-flow-detail-panel";
+import { resolveFlowNodeId } from "./flow-navigation";
+import {
+  resolveFreshFlowSourceConversations,
+  type FlowConversationForSources,
+} from "./flow-sources";
 
 interface ProcessFlowProps {
   processId: Id<"processes">;
   conversationCount: number;
+  selectedNodeId: string | null;
+  onSelectedNodeChange: (nodeId: string | null) => void;
+  onOpenConversation: (conversationId: Id<"conversations">) => void;
+  onOpenInsights: () => void;
+  conversations: FlowConversationForSources[];
 }
 
-function ProcessFlowInner({ processId, conversationCount }: ProcessFlowProps) {
+function ProcessFlowInner({
+  processId,
+  conversationCount,
+  selectedNodeId,
+  onSelectedNodeChange,
+  onOpenConversation,
+  onOpenInsights,
+  conversations,
+}: ProcessFlowProps) {
   const isMobile = useIsMobile();
   const flow = useQuery(api.processFlows.getProcessFlow, { processId });
   const generateFlow = useAction(api.processFlows.generateProcessFlow);
   const retryNodeDetail = useAction(api.processFlows.retryNodeDetail);
   const [retryingNodeId, setRetryingNodeId] = useState<string | null>(null);
-  const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const { nodes, edges } = useProcessFlowLayout(flow, selectedNodeId);
   const { fitView, setCenter } = useReactFlow();
 
@@ -60,8 +73,21 @@ function ProcessFlowInner({ processId, conversationCount }: ProcessFlowProps) {
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
 
-  const selectedNode = selectedNodeId
+  const selectedFlowNode = selectedNodeId
     ? (flow?.nodes.find((n) => n.id === selectedNodeId) ?? null)
+    : null;
+  const selectedNode = selectedFlowNode
+    ? {
+        ...selectedFlowNode,
+        sourceConversations: resolveFreshFlowSourceConversations(
+          selectedFlowNode.sources,
+          {
+            stale: flow?.stale ?? true,
+            conversationCount: flow?.conversationCount ?? 0,
+          },
+          conversations,
+        ),
+      }
     : null;
 
   const handleGenerate = useCallback(async () => {
@@ -95,18 +121,18 @@ function ProcessFlowInner({ processId, conversationCount }: ProcessFlowProps) {
 
   const handleNodeClick = useCallback(
     (_event: React.MouseEvent, node: { id: string }) => {
-      setSelectedNodeId((prev) => (prev === node.id ? null : node.id));
+      onSelectedNodeChange(selectedNodeId === node.id ? null : node.id);
     },
-    [],
+    [onSelectedNodeChange, selectedNodeId],
   );
 
   const handlePaneClick = useCallback(() => {
-    setSelectedNodeId(null);
-  }, []);
+    onSelectedNodeChange(null);
+  }, [onSelectedNodeChange]);
 
   const handleNavigateToNode = useCallback(
     (nodeId: string) => {
-      setSelectedNodeId(nodeId);
+      onSelectedNodeChange(nodeId);
       const targetNode = nodes.find((n) => n.id === nodeId);
       if (targetNode) {
         setCenter(targetNode.position.x + 140, targetNode.position.y + 60, {
@@ -115,7 +141,7 @@ function ProcessFlowInner({ processId, conversationCount }: ProcessFlowProps) {
         });
       }
     },
-    [nodes, setCenter],
+    [nodes, onSelectedNodeChange, setCenter],
   );
 
   const isStale = flow?.status === "ready" && flow.stale;
@@ -125,10 +151,33 @@ function ProcessFlowInner({ processId, conversationCount }: ProcessFlowProps) {
   useEffect(() => {
     if (nodes.length === 0) return;
     const timeout = window.setTimeout(() => {
+      if (selectedNodeId) {
+        const resolvedNodeId = resolveFlowNodeId(nodes, selectedNodeId);
+        const targetNode = resolvedNodeId
+          ? nodes.find((node) => node.id === resolvedNodeId)
+          : null;
+        if (targetNode) {
+          setCenter(targetNode.position.x + 140, targetNode.position.y + 60, {
+            zoom: 1,
+            duration: 250,
+          });
+          return;
+        }
+        onSelectedNodeChange(null);
+      }
       void fitView({ padding: 0.15, duration: 250 });
     }, 0);
     return () => window.clearTimeout(timeout);
-  }, [fitView, flow?.generatedAt, flow?.status, isFullscreen, nodes.length]);
+  }, [
+    fitView,
+    flow?.generatedAt,
+    flow?.status,
+    isFullscreen,
+    nodes,
+    onSelectedNodeChange,
+    selectedNodeId,
+    setCenter,
+  ]);
 
   // Empty state: no flow generated yet
   if (flow === undefined) {
@@ -375,10 +424,11 @@ function ProcessFlowInner({ processId, conversationCount }: ProcessFlowProps) {
               node={selectedNode}
               edges={flow.edges}
               allNodes={flow.nodes}
-              onClose={() => setSelectedNodeId(null)}
+              onClose={() => onSelectedNodeChange(null)}
               onNavigate={handleNavigateToNode}
               onRetryDetail={() => handleRetryNodeDetail(selectedNode.id)}
               isRetryingDetail={retryingNodeId === selectedNode.id}
+              onOpenConversation={onOpenConversation}
             />
           </div>
         )}
@@ -388,7 +438,7 @@ function ProcessFlowInner({ processId, conversationCount }: ProcessFlowProps) {
           <Sheet
             open={!!selectedNode}
             onOpenChange={(open) => {
-              if (!open) setSelectedNodeId(null);
+              if (!open) onSelectedNodeChange(null);
             }}
           >
             <SheetContent
@@ -402,10 +452,11 @@ function ProcessFlowInner({ processId, conversationCount }: ProcessFlowProps) {
                   node={selectedNode}
                   edges={flow.edges}
                   allNodes={flow.nodes}
-                  onClose={() => setSelectedNodeId(null)}
+                  onClose={() => onSelectedNodeChange(null)}
                   onNavigate={handleNavigateToNode}
                   onRetryDetail={() => handleRetryNodeDetail(selectedNode.id)}
                   isRetryingDetail={retryingNodeId === selectedNode.id}
+                  onOpenConversation={onOpenConversation}
                 />
               )}
             </SheetContent>
@@ -413,10 +464,23 @@ function ProcessFlowInner({ processId, conversationCount }: ProcessFlowProps) {
         )}
       </div>
 
-      {/* Insights bar at bottom */}
-      {flow.insights && (
-        <InsightsBar insights={flow.insights} nodeCount={flow.nodes.length} />
-      )}
+      <div className="flex shrink-0 flex-wrap items-center justify-between gap-2 border-t border-border bg-background px-4 py-2 text-xs text-muted-foreground">
+        <span className="flex min-w-0 items-center gap-2">
+          <BarChart3 className="size-3.5 shrink-0" aria-hidden="true" />
+          <span className="truncate">
+            Bottlenecks, risks, and opportunities are analyzed in Insights.
+          </span>
+        </span>
+        <Button
+          type="button"
+          variant="ghost"
+          size="sm"
+          className="org-focus-ring h-7 shrink-0 px-2 text-xs"
+          onClick={onOpenInsights}
+        >
+          Open Insights
+        </Button>
+      </div>
     </Wrapper>
   );
 }
@@ -475,60 +539,6 @@ function EmptyState({
           Record at least one conversation first.
         </p>
       )}
-    </div>
-  );
-}
-
-function InsightsBar({
-  insights,
-  nodeCount,
-}: {
-  insights: {
-    totalEstimatedDuration?: string;
-    handoffCount: number;
-    toolCount: number;
-    automationOpportunities: string[];
-    topBottlenecks: string[];
-  };
-  nodeCount: number;
-}) {
-  return (
-    <div className="shrink-0 border-t border-border bg-muted/30 px-4 py-2">
-      <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted-foreground">
-        <span className="flex items-center gap-1">
-          <BarChart3 className="h-3 w-3" />
-          {nodeCount} steps
-        </span>
-        {insights.totalEstimatedDuration && (
-          <span className="flex items-center gap-1">
-            <Wrench className="h-3 w-3" />
-            {insights.totalEstimatedDuration}
-          </span>
-        )}
-        <span className="flex items-center gap-1">
-          <ArrowRightLeft className="h-3 w-3" />
-          {insights.handoffCount} handoff
-          {insights.handoffCount !== 1 ? "s" : ""}
-        </span>
-        <span className="flex items-center gap-1">
-          <Wrench className="h-3 w-3" />
-          {insights.toolCount} tool{insights.toolCount !== 1 ? "s" : ""}
-        </span>
-        {insights.topBottlenecks.length > 0 && (
-          <span className="flex items-center gap-1 text-red-600 dark:text-red-400">
-            <AlertTriangle className="h-3 w-3" />
-            {insights.topBottlenecks.length} bottleneck
-            {insights.topBottlenecks.length !== 1 ? "s" : ""}
-          </span>
-        )}
-        {insights.automationOpportunities.length > 0 && (
-          <span className="flex items-center gap-1 text-green-600 dark:text-green-400">
-            <Bot className="h-3 w-3" />
-            {insights.automationOpportunities.length} automation opportunit
-            {insights.automationOpportunities.length !== 1 ? "ies" : "y"}
-          </span>
-        )}
-      </div>
     </div>
   );
 }

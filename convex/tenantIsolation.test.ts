@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api, internal } from "./_generated/api";
 import { Id } from "./_generated/dataModel";
 import schema from "./schema";
+import { SUMMARY_V2_PROMPT_VERSIONS } from "./summaryV2";
 
 const modules = import.meta.glob("./**/*.ts");
 
@@ -978,6 +979,101 @@ async function seedConversation(
       summary: overrides.summary,
       durationSeconds: overrides.durationSeconds,
     });
+  });
+
+  test("hierarchy lists expose V2 state without returning full artifacts", async () => {
+    const t = convexTest(schema, modules);
+    const ids = await seedTwoOrgs(t);
+    await t.run(async (ctx) => {
+      const common = {
+        schemaVersion: "v2" as const,
+        sourceMode: "interview_evidence" as const,
+        headline: "Synthetic overview",
+        executiveBrief: "A compact synthetic brief.",
+        coverage: {
+          includedSources: 0,
+          totalEligibleSources: 0,
+          complete: true,
+        },
+        provenance: {
+          sourceSnapshotHash: "sha256:empty",
+          generatedAt: 1_786_000_000_000,
+          provider: "fabric-foundry",
+          model: "test-model",
+        },
+      };
+      await ctx.db.patch(ids.fnA, {
+        summaryV2: {
+          ...common,
+          provenance: {
+            ...common.provenance,
+            promptVersion: SUMMARY_V2_PROMPT_VERSIONS.functionOverview,
+          },
+          crossDepartmentDependencies: [],
+          strategicPatterns: [],
+          variationsAndTensions: [],
+          gaps: [],
+          notable: [],
+        },
+      });
+      await ctx.db.patch(ids.deptA, {
+        summaryV2: {
+          ...common,
+          provenance: {
+            ...common.provenance,
+            promptVersion: SUMMARY_V2_PROMPT_VERSIONS.departmentOverview,
+          },
+          crossProcessDependencies: [],
+          sharedPatterns: [],
+          variationsAndTensions: [],
+          gaps: [],
+          notable: [],
+        },
+      });
+      await ctx.db.patch(ids.procA, {
+        summaryV2: {
+          ...common,
+          provenance: {
+            ...common.provenance,
+            promptVersion: SUMMARY_V2_PROMPT_VERSIONS.processOverview,
+          },
+          scope: [],
+          consensus: [],
+          variations: [],
+          gaps: [],
+          notable: [],
+        },
+      });
+    });
+
+    const scoped = t.withIdentity(identityForOrgA());
+    const [functions, departments, processes, tree, selectedProcess] =
+      await Promise.all([
+        scoped.query(api.functions.list),
+        scoped.query(api.departments.listByFunction, {
+          functionId: ids.fnA,
+        }),
+        scoped.query(api.processes.listByDepartment, {
+          departmentId: ids.deptA,
+        }),
+        scoped.query(api.hierarchy.getTree),
+        scoped.query(api.processes.get, { processId: ids.procA }),
+      ]);
+
+    expect(functions[0]).not.toHaveProperty("summaryV2");
+    expect(departments[0]).not.toHaveProperty("summaryV2");
+    expect(processes[0]).not.toHaveProperty("summaryV2");
+    expect(functions[0].summaryOverview).toMatchObject({
+      format: "v2",
+      state: "current",
+      coverage: { includedSources: 0, totalEligibleSources: 0, complete: true },
+    });
+    expect(
+      tree.functions[0].departments[0].processes[0].summaryOverview.format,
+    ).toBe("v2");
+    // Selected-entity reads retain the full artifact for the future Overview
+    // query/UI, while navigation reads stay compact.
+    expect(selectedProcess?.summaryV2?.headline).toBe("Synthetic overview");
   });
 }
 

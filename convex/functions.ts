@@ -1,10 +1,13 @@
 import { v } from "convex/values";
 import { query, mutation } from "./_generated/server";
+import { internal } from "./_generated/api";
 import {
   assertOrgOwns,
   requireOrgContributor,
   requireOrgMember,
 } from "./lib/orgAuth";
+import { toLightweightSummaryListRow } from "./summaryV2";
+import { withSummaryV2ReadGate } from "./lib/summaryV2Feature";
 
 export const list = query({
   args: {},
@@ -19,7 +22,15 @@ export const list = query({
     // order; this makes it authoritative so manual reordering will Just Work.
     // JS sort is stable, so equal sortOrder falls back to the creation order
     // established by `.order("asc")` above.
-    return docs.sort((a, b) => a.sortOrder - b.sortOrder);
+    return docs
+      .sort((a, b) => a.sortOrder - b.sortOrder)
+      .map((doc) =>
+        toLightweightSummaryListRow(withSummaryV2ReadGate(doc), {
+          legacyMarkdown: doc.summary,
+          legacyGeneratedAt: doc.summaryUpdatedAt,
+          stale: doc.summaryStale,
+        }),
+      );
   },
 });
 
@@ -31,7 +42,23 @@ export const get = query({
     // Do not throw on cross-org — return null so the frontend treats it as
     // a "not found" (e.g., stale selection) without leaking existence.
     if (!doc || doc.clerkOrgId !== caller.orgId) return null;
-    return doc;
+    const run = doc.summaryV2RunId
+      ? await ctx.db.get(doc.summaryV2RunId)
+      : null;
+    return {
+      ...doc,
+      summaryRun: run
+        ? {
+            generationId: run.generationId,
+            state: run.state,
+            progress: run.progress,
+            error: run.error ?? null,
+            coverage: run.sourceSnapshot,
+            createdAt: run.createdAt,
+            completedAt: run.completedAt ?? null,
+          }
+        : null,
+    };
   },
 });
 
@@ -68,6 +95,10 @@ export const update = mutation({
     // be updated. Acceptable for Biz-Group-only rollout; revisit when a
     // second tenant joins (see PRD §3.7 Open Items).
     if (oldName !== args.name) {
+      await ctx.runMutation(
+        internal.summariesHelpers.markFunctionSummaryStale,
+        { functionId: args.functionId },
+      );
       const usersWithOldName = await ctx.db
         .query("users")
         .withIndex("by_function", (q) => q.eq("function", oldName))
@@ -153,6 +184,14 @@ export const remove = mutation({
         "Cannot delete this function because it still has departments. Remove all departments first.",
       );
     }
+    await ctx.scheduler.runAfter(
+      0,
+      internal.hierarchySummaryV2.deleteRollupRunsForEntity,
+      {
+        entity: { kind: "function", functionId: args.functionId },
+        clerkOrgId: caller.orgId,
+      },
+    );
     await ctx.db.delete(args.functionId);
   },
 });

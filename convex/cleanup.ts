@@ -47,7 +47,11 @@ export const removeTestData = internalMutation({
         .take(1);
 
       if (remaining.length === 0) {
-        await ctx.db.patch(processId, { rollingSummary: undefined });
+        await ctx.db.patch(processId, {
+          rollingSummary: undefined,
+          summaryV2: undefined,
+          summaryUpdatedAt: undefined,
+        });
         await ctx.runMutation(internal.processFlows.deleteForProcess, {
           processId,
           clerkOrgId: args.clerkOrgId,

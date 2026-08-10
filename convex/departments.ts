@@ -22,6 +22,8 @@ import {
   requireOrgMember,
   resolveOrgForAction,
 } from "./lib/orgAuth";
+import { toLightweightSummaryListRow } from "./summaryV2";
+import { withSummaryV2ReadGate } from "./lib/summaryV2Feature";
 
 type DescriptionUpdate =
   | { kind: "unchanged" }
@@ -133,7 +135,15 @@ export const listByFunction = query({
       .collect();
     // Order by the maintained `sortOrder` field (stable fallback to the
     // creation order from `.order("asc")` for equal values). See functions.list.
-    return docs.sort((a, b) => a.sortOrder - b.sortOrder);
+    return docs
+      .sort((a, b) => a.sortOrder - b.sortOrder)
+      .map((doc) =>
+        toLightweightSummaryListRow(withSummaryV2ReadGate(doc), {
+          legacyMarkdown: doc.summary,
+          legacyGeneratedAt: doc.summaryUpdatedAt,
+          stale: doc.summaryStale,
+        }),
+      );
   },
 });
 
@@ -143,7 +153,23 @@ export const get = query({
     const caller = await requireOrgMember(ctx);
     const doc = await ctx.db.get(args.departmentId);
     if (!doc || doc.clerkOrgId !== caller.orgId) return null;
-    return doc;
+    const run = doc.summaryV2RunId
+      ? await ctx.db.get(doc.summaryV2RunId)
+      : null;
+    return {
+      ...doc,
+      summaryRun: run
+        ? {
+            generationId: run.generationId,
+            state: run.state,
+            progress: run.progress,
+            error: run.error ?? null,
+            coverage: run.sourceSnapshot,
+            createdAt: run.createdAt,
+            completedAt: run.completedAt ?? null,
+          }
+        : null,
+    };
   },
 });
 
@@ -167,7 +193,11 @@ export const listAll = query({
     const fnMap = new Map(functions.map((f) => [f._id, f.name]));
     return depts
       .map((d) => ({
-        ...d,
+        ...toLightweightSummaryListRow(withSummaryV2ReadGate(d), {
+          legacyMarkdown: d.summary,
+          legacyGeneratedAt: d.summaryUpdatedAt,
+          stale: d.summaryStale,
+        }),
         functionName: fnMap.get(d.functionId) ?? "Unknown",
       }))
       // Grouped by function in the picker, so order by function name then the
@@ -389,9 +419,12 @@ export const updateInternal = internalMutation({
       await ctx.runMutation(internal.summariesHelpers.markFunctionSummaryStale, {
         functionId: dept.functionId,
       });
-      await ctx.runMutation(internal.summariesHelpers.markFunctionSummaryStale, {
-        functionId: args.functionId!,
-      });
+    }
+    if (isMoving || oldName !== args.name) {
+      await ctx.runMutation(
+        internal.summariesHelpers.markDepartmentSummaryStale,
+        { departmentId: args.departmentId },
+      );
     }
   },
 });
@@ -477,6 +510,14 @@ export const remove = mutation({
       );
     }
     const functionId = dept.functionId;
+    await ctx.scheduler.runAfter(
+      0,
+      internal.hierarchySummaryV2.deleteRollupRunsForEntity,
+      {
+        entity: { kind: "department", departmentId: args.departmentId },
+        clerkOrgId: caller.orgId,
+      },
+    );
     await ctx.db.delete(args.departmentId);
     // Mark function summary as stale
     await ctx.runMutation(internal.summariesHelpers.markFunctionSummaryStale, {

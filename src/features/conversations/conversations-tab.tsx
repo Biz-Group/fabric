@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type Ref } from "react";
 import { useQuery } from "convex/react";
 import type { FunctionReturnType } from "convex/server";
 import type { LucideIcon } from "lucide-react";
@@ -58,6 +58,8 @@ type ProcessConversationListProps = {
   processId: Id<"processes">;
   canLabelSpeakers: boolean;
   labelingJumpKey?: number;
+  focusConversationId?: Id<"conversations"> | null;
+  focusConversationJumpKey?: number;
 };
 
 const STATUS_META: Record<
@@ -189,10 +191,12 @@ function ConversationRow({
   conversation,
   selected,
   onSelect,
+  buttonRef,
 }: {
   conversation: CompactConversation;
   selected: boolean;
   onSelect: () => void;
+  buttonRef?: Ref<HTMLButtonElement>;
 }) {
   const type = TYPE_META[conversation.inputMode];
   const status = STATUS_META[conversation.status];
@@ -240,6 +244,7 @@ function ConversationRow({
         </Tooltip>
       </div>
       <button
+        ref={buttonRef}
         type="button"
         className="flex min-w-0 flex-1 items-start p-3 text-left outline-none focus-visible:ring-3 focus-visible:ring-org-accent-ring/35"
         aria-expanded={selected}
@@ -365,6 +370,8 @@ export function ProcessConversationsTab({
   processId,
   canLabelSpeakers,
   labelingJumpKey = 0,
+  focusConversationId = null,
+  focusConversationJumpKey = 0,
 }: ProcessConversationListProps) {
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
   const [typeFilter, setTypeFilter] = useState<TypeFilter>("all");
@@ -373,6 +380,10 @@ export function ProcessConversationsTab({
   const [selectedConversationId, setSelectedConversationId] =
     useState<Id<"conversations"> | null>(null);
   const handledLabelingJumpKey = useRef(0);
+  const handledFocusConversationJumpKey = useRef(0);
+  const conversationButtonRefs = useRef(
+    new Map<Id<"conversations">, HTMLButtonElement>(),
+  );
   const conversations = useQuery(api.conversations.listCompactByProcess, {
     processId,
     limit: COMPACT_QUERY_LIMIT,
@@ -401,6 +412,30 @@ export function ProcessConversationsTab({
     }
     handledLabelingJumpKey.current = labelingJumpKey;
   }, [conversations, labelingJumpKey]);
+
+  useEffect(() => {
+    if (
+      !focusConversationId ||
+      !focusConversationJumpKey ||
+      handledFocusConversationJumpKey.current === focusConversationJumpKey
+    ) {
+      return;
+    }
+
+    setStatusFilter("all");
+    setTypeFilter("all");
+    setViewAll(true);
+
+    if (conversations === undefined) return;
+
+    const targetConversation = conversations.find(
+      (conversation) => conversation._id === focusConversationId,
+    );
+    if (targetConversation) {
+      setSelectedConversationId(targetConversation._id);
+    }
+    handledFocusConversationJumpKey.current = focusConversationJumpKey;
+  }, [conversations, focusConversationId, focusConversationJumpKey]);
   /* eslint-enable react-hooks/set-state-in-effect */
 
   const filteredConversations = useMemo(() => {
@@ -432,6 +467,21 @@ export function ProcessConversationsTab({
     )?._id ??
     visibleConversations[0]?._id ??
     null;
+
+  useEffect(() => {
+    if (
+      !focusConversationId ||
+      !focusConversationJumpKey ||
+      handledFocusConversationJumpKey.current !== focusConversationJumpKey ||
+      activeConversationId !== focusConversationId
+    ) {
+      return;
+    }
+
+    const target = conversationButtonRefs.current.get(focusConversationId);
+    target?.scrollIntoView({ block: "nearest" });
+    target?.focus({ preventScroll: true });
+  }, [activeConversationId, focusConversationId, focusConversationJumpKey]);
 
   return (
     <TooltipProvider>
@@ -509,6 +559,16 @@ export function ProcessConversationsTab({
                     conversation={conversation}
                     selected={activeConversationId === conversation._id}
                     onSelect={() => setSelectedConversationId(conversation._id)}
+                    buttonRef={(node) => {
+                      if (node) {
+                        conversationButtonRefs.current.set(
+                          conversation._id,
+                          node,
+                        );
+                      } else {
+                        conversationButtonRefs.current.delete(conversation._id);
+                      }
+                    }}
                   />
                 ))}
 

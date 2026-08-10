@@ -1,0 +1,670 @@
+import { describe, expect, test } from "vitest";
+import { Id } from "./_generated/dataModel";
+import {
+  getSummaryListMetadata,
+  normalizeDepartmentOverviewArtifactV2,
+  normalizeFunctionOverviewArtifactV2,
+  normalizeProcessOverviewArtifactV2,
+  readCompatibleSummary,
+  renderSummaryV2AsLegacyMarkdown,
+  SUMMARY_V2_CAPS,
+  SUMMARY_V2_PROMPT_VERSIONS,
+  type SummaryNormalizationContext,
+  type SummarySourceKeyMap,
+} from "./summaryV2";
+import { normalizeProcessSummaryEvidenceV2 } from "./lib/conversationEvidenceV2";
+import {
+  longProcessFixture,
+  summaryV2BaselineFixtures,
+  summaryV2ScenarioFixtures,
+  uncertaintyFixture,
+} from "./testFixtures/summaryV2";
+
+const sourceByKey: SummarySourceKeyMap = {
+  C1: {
+    kind: "conversation",
+    conversationId: "conversation-1" as Id<"conversations">,
+    label: "Contributor A · Interview 1",
+  },
+  C2: {
+    kind: "conversation",
+    conversationId: "conversation-2" as Id<"conversations">,
+    label: "Contributor B · Interview 2",
+  },
+  P1: {
+    kind: "process",
+    processId: "process-1" as Id<"processes">,
+    label: "Request intake",
+  },
+  D1: {
+    kind: "department",
+    departmentId: "department-1" as Id<"departments">,
+    label: "Operations",
+  },
+};
+
+function context(
+  overrides: Partial<SummaryNormalizationContext> = {},
+): SummaryNormalizationContext {
+  return {
+    sourceByKey,
+    coverage: {
+      includedSources: 2,
+      totalEligibleSources: 2,
+      uniqueContributors: 2,
+      complete: true,
+    },
+    provenance: {
+      sourceSnapshotHash: "sha256:synthetic",
+      generatedAt: 1_786_000_000_000,
+      promptVersion: SUMMARY_V2_PROMPT_VERSIONS.processOverview,
+      provider: "fabric-foundry",
+      model: "test-model",
+    },
+    ...overrides,
+  };
+}
+
+function rawFinding(
+  title: string,
+  sourceKeys: string[] = ["C1"],
+  evidenceLevel: "corroborated" | "single_source" | "inferred_gap" =
+    "single_source",
+) {
+  return {
+    title,
+    body: `${title} is described in the synthetic evidence.`,
+    sourceKeys,
+    evidenceLevel,
+  };
+}
+
+function processPayload(overrides: Record<string, unknown> = {}) {
+  return {
+    headline: "Requests are checked before approval",
+    executiveBrief:
+      "Contributors describe a short intake and approval process with explicit evidence boundaries.",
+    scope: [rawFinding("Requests arrive from the shared queue")],
+    consensus: [],
+    variations: [],
+    gaps: [],
+    notable: [],
+    ...overrides,
+  };
+}
+
+describe("Summary V2 contracts and normalizers", () => {
+  test("locks prompt versions and configured caps", () => {
+    expect(SUMMARY_V2_PROMPT_VERSIONS).toEqual({
+      conversationEvidence: "summary-v2-conversation-evidence-v1",
+      // v2: the ordered stage timeline became non-sequential scope findings.
+      // The evidence version is deliberately unchanged — no transcript needs
+      // re-extraction for an overview contract change.
+      processOverview: "summary-v2-process-overview-v2",
+      departmentOverview: "summary-v2-department-overview-v1",
+      functionOverview: "summary-v2-function-overview-v1",
+      legacyMarkdown: "summary-v2-legacy-markdown-v2",
+    });
+    expect(SUMMARY_V2_CAPS).toMatchObject({
+      findingGroup: 8,
+      sourcesPerFinding: 8,
+      findingTitleChars: 120,
+      findingBodyChars: 1_200,
+      executiveBriefChars: 1_800,
+      conversationSteps: 40,
+      conversationEvidenceGroup: 20,
+      reduceChunkSources: 20,
+    });
+  });
+
+  test("rejects malformed artifacts and keeps empty sections explicit", () => {
+    expect(normalizeProcessOverviewArtifactV2(null, context())).toBeNull();
+    expect(
+      normalizeProcessOverviewArtifactV2(
+        processPayload({ headline: "   " }),
+        context(),
+      ),
+    ).toBeNull();
+
+    const artifact = normalizeProcessOverviewArtifactV2(
+      processPayload({ scope: [] }),
+      context(),
+    );
+    expect(artifact).not.toBeNull();
+    expect(artifact?.scope).toEqual([]);
+    expect(artifact?.gaps).toEqual([]);
+  });
+
+  test("resolves only supplied keys and rejects unsupported factual claims", () => {
+    const artifact = normalizeProcessOverviewArtifactV2(
+      processPayload({
+        scope: [
+          rawFinding("Known source", ["C1", "UNKNOWN"]),
+          rawFinding("Unknown source", ["UNKNOWN"]),
+        ],
+      }),
+      context(),
+    );
+
+    expect(artifact?.scope).toHaveLength(1);
+    expect(artifact?.scope[0].title).toBe("Known source");
+    expect(artifact?.scope[0].sources).toHaveLength(1);
+    expect(artifact?.scope[0].supportCount).toBe(1);
+  });
+
+  test("allows a sourceless inferred gap only when wording says evidence is missing", () => {
+    const payload = uncertaintyFixture.payload;
+    const artifact = normalizeProcessOverviewArtifactV2(payload, context());
+    expect(artifact?.gaps).toHaveLength(1);
+    expect(artifact?.gaps[0]).toMatchObject({
+      title: "Final confirmation is not documented",
+      evidenceLevel: "inferred_gap",
+      supportCount: 0,
+      sources: [],
+    });
+
+    const unsupported = normalizeProcessOverviewArtifactV2(
+      processPayload({
+        gaps: [
+          rawFinding(
+            "A manager approves every request",
+            [],
+            "inferred_gap",
+          ),
+        ],
+      }),
+      context(),
+    );
+    expect(unsupported?.gaps).toEqual([]);
+  });
+
+  test("deduplicates findings and source keys using normalized identity", () => {
+    const artifact = normalizeProcessOverviewArtifactV2(
+      processPayload({
+        scope: [
+          {
+            ...rawFinding("Check eligibility", ["C1", "C1"]),
+            unsupportedField: "discard me",
+          },
+          rawFinding("  CHECK   ELIGIBILITY ", ["C1"]),
+        ],
+      }),
+      context(),
+    );
+    expect(artifact?.scope).toHaveLength(1);
+    expect(artifact?.scope[0].sources).toHaveLength(1);
+    expect(artifact?.scope[0]).not.toHaveProperty("unsupportedField");
+  });
+
+  test("caps output arrays and strings before persistence", () => {
+    const oversized = "x".repeat(3_000);
+    const artifact = normalizeProcessOverviewArtifactV2(
+      processPayload({
+        headline: oversized,
+        executiveBrief: oversized,
+        scope: Array.from({ length: 20 }, (_, index) => ({
+          ...rawFinding(`Stage ${index}`),
+          title: `${index}-${oversized}`,
+          body: oversized,
+        })),
+        notable: Array.from({ length: 20 }, (_, index) =>
+          rawFinding(`Notable ${index}`),
+        ),
+      }),
+      context(),
+    );
+
+    expect(artifact?.headline).toHaveLength(SUMMARY_V2_CAPS.headlineChars);
+    expect(artifact?.executiveBrief).toHaveLength(
+      SUMMARY_V2_CAPS.executiveBriefChars,
+    );
+    expect(artifact?.scope).toHaveLength(SUMMARY_V2_CAPS.findingGroup);
+    expect(artifact?.scope[0].title.length).toBeLessThanOrEqual(
+      SUMMARY_V2_CAPS.findingTitleChars,
+    );
+    expect(artifact?.scope[0].body).toHaveLength(
+      SUMMARY_V2_CAPS.findingBodyChars,
+    );
+    expect(artifact?.notable).toHaveLength(SUMMARY_V2_CAPS.findingGroup);
+  });
+
+  test("derives evidence strength from unique resolved sources", () => {
+    const artifact = normalizeProcessOverviewArtifactV2(
+      processPayload({
+        scope: [
+          rawFinding("Actually corroborated", ["C1", "C2"]),
+          rawFinding("Actually single source", ["C1"], "corroborated"),
+        ],
+      }),
+      context(),
+    );
+    expect(artifact?.scope.map((item) => item.evidenceLevel)).toEqual([
+      "corroborated",
+      "single_source",
+    ]);
+  });
+
+  test("normalizes department and function level-specific sections", () => {
+    const department = normalizeDepartmentOverviewArtifactV2(
+      {
+        headline: "Department overview",
+        executiveBrief: "A bounded department brief.",
+        crossProcessDependencies: [rawFinding("Dependency", ["P1"])],
+        sharedPatterns: [],
+        variationsAndTensions: [],
+        gaps: [],
+        notable: [],
+      },
+      context({
+        sourceByKey,
+        provenance: {
+          ...context().provenance,
+          promptVersion: SUMMARY_V2_PROMPT_VERSIONS.departmentOverview,
+        },
+      }),
+    );
+    const fn = normalizeFunctionOverviewArtifactV2(
+      {
+        headline: "Function overview",
+        executiveBrief: "A bounded function brief.",
+        crossDepartmentDependencies: [rawFinding("Dependency", ["D1"])],
+        strategicPatterns: [],
+        variationsAndTensions: [],
+        gaps: [],
+        notable: [],
+      },
+      context({
+        sourceByKey,
+        provenance: {
+          ...context().provenance,
+          promptVersion: SUMMARY_V2_PROMPT_VERSIONS.functionOverview,
+        },
+      }),
+    );
+
+    expect(department?.crossProcessDependencies[0].sources[0].kind).toBe(
+      "process",
+    );
+    expect(fn?.crossDepartmentDependencies[0].sources[0].kind).toBe(
+      "department",
+    );
+  });
+
+  test("normalizes structured conversation evidence with bounded groups", () => {
+    const evidence = normalizeProcessSummaryEvidenceV2(
+      {
+        sourceKey: "C-test",
+        steps: Array.from({ length: 45 }, (_, index) => ({
+          title: `Step ${index}`,
+          body: "A synthetic step.",
+          ignored: true,
+        })),
+        actors: [
+          ...Array.from({ length: 25 }, (_, index) => `Actor ${index}`),
+          "Actor 0",
+        ],
+        tools: [],
+        handoffsAndDependencies: [],
+        reportedVariations: [],
+        frictionPoints: [],
+        uncertainties: [],
+      },
+      "C-test",
+      {
+        transcriptHash: "sha256:transcript",
+        promptVersion: SUMMARY_V2_PROMPT_VERSIONS.conversationEvidence,
+        generatedAt: 1_786_000_000_000,
+        provider: "fabric-foundry",
+        model: "test-model",
+      },
+    );
+    expect(evidence?.steps).toHaveLength(SUMMARY_V2_CAPS.conversationSteps);
+    expect(evidence?.actors).toHaveLength(
+      SUMMARY_V2_CAPS.conversationEvidenceGroup,
+    );
+    expect(evidence?.steps[0]).not.toHaveProperty("ignored");
+  });
+});
+
+describe("Summary V2 compatibility reads", () => {
+  test("prefers V2 and generates deterministic legacy Markdown", () => {
+    const artifact = normalizeProcessOverviewArtifactV2(
+      processPayload(),
+      context(),
+    );
+    expect(artifact).not.toBeNull();
+    const first = readCompatibleSummary({
+      summaryV2: artifact!,
+      legacyMarkdown: "Old summary",
+    });
+    const second = renderSummaryV2AsLegacyMarkdown(artifact!);
+    expect(first.format).toBe("v2");
+    expect(first.markdown).toBe(second);
+    expect(first.markdown).toContain("## Scope and participants");
+    expect(first.markdown).not.toContain("Old summary");
+  });
+
+  test("falls back for legacy function, department, and process fields", () => {
+    const legacyRows = [
+      { summary: "## Function\n\nLegacy function brief" },
+      { summary: "## Department\n\nLegacy department brief" },
+      { rollingSummary: "## Process\n\nLegacy process brief" },
+    ];
+    expect(
+      legacyRows.map((row) =>
+        readCompatibleSummary({
+          legacyMarkdown: row.summary ?? row.rollingSummary,
+        }),
+      ),
+    ).toEqual([
+      {
+        format: "legacy",
+        artifact: null,
+        markdown: "## Function\n\nLegacy function brief",
+      },
+      {
+        format: "legacy",
+        artifact: null,
+        markdown: "## Department\n\nLegacy department brief",
+      },
+      {
+        format: "legacy",
+        artifact: null,
+        markdown: "## Process\n\nLegacy process brief",
+      },
+    ]);
+    expect(readCompatibleSummary({})).toEqual({
+      format: "none",
+      artifact: null,
+      markdown: null,
+    });
+  });
+
+  test("returns only lightweight state and coverage metadata for lists", () => {
+    const artifact = normalizeProcessOverviewArtifactV2(
+      processPayload(),
+      context({
+        coverage: {
+          includedSources: 1,
+          totalEligibleSources: 2,
+          complete: false,
+        },
+      }),
+    );
+    expect(
+      getSummaryListMetadata({ summaryV2: artifact!, stale: false }),
+    ).toMatchObject({
+      format: "v2",
+      state: "partial",
+      coverage: {
+        includedSources: 1,
+        totalEligibleSources: 2,
+        complete: false,
+      },
+    });
+    expect(
+      getSummaryListMetadata({
+        legacyMarkdown: "Legacy",
+        legacyGeneratedAt: 100,
+        stale: true,
+      }),
+    ).toEqual({
+      format: "legacy",
+      state: "stale",
+      generatedAt: 100,
+      coverage: null,
+    });
+
+    expect(
+      getSummaryListMetadata({
+        summaryV2: artifact!,
+        refreshScheduledAt: 1_000,
+        now: 1_500,
+      }).state,
+    ).toBe("refreshing");
+    expect(
+      getSummaryListMetadata({
+        summaryV2: artifact!,
+        lastRunState: "failed",
+        lastRunCompletedAt: artifact!.provenance.generatedAt + 1,
+      }).state,
+    ).toBe("failed");
+    expect(
+      getSummaryListMetadata({
+        summaryV2: artifact!,
+        lastRunState: "failed",
+        lastRunCompletedAt: artifact!.provenance.generatedAt - 1,
+      }).state,
+    ).toBe("partial");
+    expect(getSummaryListMetadata({}).state).toBe("missing");
+    expect(
+      getSummaryListMetadata({ summaryV2: artifact!, stale: true }).state,
+    ).toBe("stale");
+    expect(
+      getSummaryListMetadata({
+        summaryV2: normalizeProcessOverviewArtifactV2(
+          processPayload(),
+          context(),
+        )!,
+      }).state,
+    ).toBe("current");
+  });
+});
+
+describe("Summary V2 clipboard and export projection", () => {
+  const richPayload = {
+    headline: "Requests are checked before approval",
+    executiveBrief:
+      "Contributors describe a short intake and approval process with explicit evidence boundaries.",
+    scope: [
+      rawFinding("Who owns the process", ["C1", "C2"], "corroborated"),
+      rawFinding("Systems the work runs on", ["C2"]),
+    ],
+    consensus: [rawFinding("Approval precedes payment", ["C1", "C2"], "corroborated")],
+    variations: [rawFinding("Escalation ownership differs", ["C2"])],
+    gaps: [
+      {
+        title: "Escalation threshold is unconfirmed",
+        body: "No evidence establishes a shared escalation threshold.",
+        sourceKeys: [],
+        evidenceLevel: "inferred_gap" as const,
+      },
+    ],
+    notable: [rawFinding("Month end concentrates volume", ["C1"])],
+  };
+
+  test("projects identical Markdown for identical artifacts, every time", () => {
+    const artifact = normalizeProcessOverviewArtifactV2(richPayload, context())!;
+    const twin = normalizeProcessOverviewArtifactV2(richPayload, context())!;
+
+    const projections = [
+      renderSummaryV2AsLegacyMarkdown(artifact),
+      renderSummaryV2AsLegacyMarkdown(artifact),
+      renderSummaryV2AsLegacyMarkdown(twin),
+      readCompatibleSummary({ summaryV2: artifact }).markdown,
+      readCompatibleSummary({
+        summaryV2: artifact,
+        legacyMarkdown: "A stored projection that must not be preferred",
+      }).markdown,
+    ];
+    expect(new Set(projections).size).toBe(1);
+  });
+
+  test("carries every artifact section, finding, and source into the copied Markdown", () => {
+    const artifact = normalizeProcessOverviewArtifactV2(richPayload, context())!;
+    const markdown = renderSummaryV2AsLegacyMarkdown(artifact);
+
+    expect(markdown.startsWith(`# ${artifact.headline}`)).toBe(true);
+    expect(markdown).toContain(artifact.executiveBrief);
+    for (const finding of [
+      ...artifact.scope,
+      ...artifact.consensus,
+      ...artifact.variations,
+      ...artifact.gaps,
+      ...artifact.notable,
+    ]) {
+      expect(markdown).toContain(finding.title);
+      expect(markdown).toContain(finding.body);
+      for (const source of finding.sources) {
+        expect(markdown).toContain(source.label);
+      }
+    }
+    // Coverage travels with the content so a pasted overview cannot imply more
+    // evidence than was used.
+    expect(markdown).toContain(
+      "2 of 2 eligible sources included across 2 contributors. Coverage is complete.",
+    );
+    expect(markdown.indexOf("## Scope and participants")).toBeLessThan(
+      markdown.indexOf("## Evidence coverage"),
+    );
+  });
+
+  test("never numbers a section, so the copy cannot imply a step order", () => {
+    const artifact = normalizeProcessOverviewArtifactV2(richPayload, context())!;
+    const markdown = renderSummaryV2AsLegacyMarkdown(artifact);
+
+    expect(markdown).toContain("- **Who owns the process**");
+    expect(markdown).not.toMatch(/^\d+\.\s/m);
+    expect(markdown).not.toContain("## How the process works");
+  });
+
+  test("projects department and function rollups with their own section names", () => {
+    const departmentMarkdown = renderSummaryV2AsLegacyMarkdown(
+      normalizeDepartmentOverviewArtifactV2(
+        {
+          headline: "Service depends on two upstream processes",
+          executiveBrief: "Departments share one intake queue.",
+          crossProcessDependencies: [rawFinding("Intake feeds approval", ["P1"])],
+          sharedPatterns: [],
+          variationsAndTensions: [],
+          gaps: [],
+          notable: [],
+        },
+        context(),
+      )!,
+    );
+    const functionMarkdown = renderSummaryV2AsLegacyMarkdown(
+      normalizeFunctionOverviewArtifactV2(
+        {
+          headline: "Operations runs on one shared platform",
+          executiveBrief: "Both departments report the same constraint.",
+          crossDepartmentDependencies: [rawFinding("Shared platform", ["D1"])],
+          strategicPatterns: [],
+          variationsAndTensions: [],
+          gaps: [],
+          notable: [],
+        },
+        context(),
+      )!,
+    );
+
+    expect(departmentMarkdown).toContain("## Cross-process dependencies");
+    expect(departmentMarkdown).toContain("Request intake");
+    expect(functionMarkdown).toContain("## Cross-department dependencies");
+    expect(functionMarkdown).toContain("Operations");
+    expect(departmentMarkdown).not.toContain("## How the process works");
+  });
+
+  test("copies a V1-only row byte for byte", () => {
+    const legacy = "## Existing narrative\n\nThe original summary remains.";
+    expect(readCompatibleSummary({ legacyMarkdown: legacy }).markdown).toBe(
+      legacy,
+    );
+    expect(readCompatibleSummary({ legacyMarkdown: "   " }).markdown).toBeNull();
+  });
+});
+
+describe("Summary V2 bounded fixtures", () => {
+  test("fixtures are synthetic and cover every locked baseline scenario", () => {
+    // The Phase 0 lock is on the baseline six. The Phase 10 golden-set
+    // extension is asserted separately in summaryEvaluation.test.ts.
+    expect(summaryV2BaselineFixtures.map((fixture) => fixture.id)).toEqual([
+      "one-contributor",
+      "agreeing-contributors",
+      "contradicting-contributors",
+      "explicit-uncertainty",
+      "long-process",
+      "stale-rollup",
+    ]);
+    const serialized = JSON.stringify(summaryV2ScenarioFixtures);
+    expect(serialized).not.toMatch(/[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}/);
+    expect(serialized).not.toMatch(/org_[A-Za-z0-9]/);
+  });
+
+  test("the long fixture requires three deterministic reduce chunks", () => {
+    expect(longProcessFixture.sources).toHaveLength(45);
+    expect(
+      Math.ceil(
+        longProcessFixture.sources.length / SUMMARY_V2_CAPS.reduceChunkSources,
+      ),
+    ).toBe(3);
+  });
+
+  test("maximum normalized artifacts stay comfortably below 1 MB", () => {
+    const maximumSources = Object.fromEntries(
+      Array.from({ length: SUMMARY_V2_CAPS.sourcesPerFinding }, (_, index) => [
+        `C${index + 1}`,
+        {
+          kind: "conversation" as const,
+          conversationId: `conversation-${index + 1}` as Id<"conversations">,
+          label: `Synthetic source ${index + 1} ${"s".repeat(100)}`,
+        },
+      ]),
+    );
+    const sourceKeys = Object.keys(maximumSources);
+    const makeMaximumGroup = (
+      count: number,
+      prefix: string,
+      keys = sourceKeys,
+    ) =>
+      Array.from({ length: count }, (_, index) => ({
+        title: `${prefix} ${index} ${"t".repeat(150)}`,
+        body: `${index} ${"b".repeat(1_500)}`,
+        sourceKeys: keys,
+        evidenceLevel: keys.length > 1 ? "corroborated" : "single_source",
+      }));
+    const process = normalizeProcessOverviewArtifactV2(
+      processPayload({
+        scope: makeMaximumGroup(20, "Scope"),
+        consensus: makeMaximumGroup(20, "Consensus"),
+        variations: makeMaximumGroup(20, "Variation"),
+        gaps: makeMaximumGroup(20, "Gap"),
+        notable: makeMaximumGroup(20, "Notable"),
+      }),
+      context({ sourceByKey: maximumSources }),
+    );
+    const department = normalizeDepartmentOverviewArtifactV2(
+      {
+        headline: "Maximum department artifact",
+        executiveBrief: "b".repeat(2_000),
+        crossProcessDependencies: makeMaximumGroup(20, "Dependency", ["P1"]),
+        sharedPatterns: makeMaximumGroup(20, "Pattern", ["P1"]),
+        variationsAndTensions: makeMaximumGroup(20, "Variation", ["P1"]),
+        gaps: makeMaximumGroup(20, "Gap", ["P1"]),
+        notable: makeMaximumGroup(20, "Notable", ["P1"]),
+      },
+      context(),
+    );
+    const fn = normalizeFunctionOverviewArtifactV2(
+      {
+        headline: "Maximum function artifact",
+        executiveBrief: "b".repeat(2_000),
+        crossDepartmentDependencies: makeMaximumGroup(20, "Dependency", [
+          "D1",
+        ]),
+        strategicPatterns: makeMaximumGroup(20, "Pattern", ["D1"]),
+        variationsAndTensions: makeMaximumGroup(20, "Variation", ["D1"]),
+        gaps: makeMaximumGroup(20, "Gap", ["D1"]),
+        notable: makeMaximumGroup(20, "Notable", ["D1"]),
+      },
+      context(),
+    );
+    for (const artifact of [process, department, fn]) {
+      expect(artifact).not.toBeNull();
+      const bytes = new TextEncoder().encode(
+        JSON.stringify(artifact),
+      ).byteLength;
+      expect(bytes).toBeLessThan(256 * 1_024);
+    }
+  });
+});

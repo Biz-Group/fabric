@@ -720,6 +720,7 @@ async function callOpenRouter(
                 name: request.tool.name,
                 description: request.tool.description,
                 parameters: request.tool.inputSchema,
+                strict: true,
               },
             },
           ],

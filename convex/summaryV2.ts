@@ -1,0 +1,1019 @@
+import { type Infer, v } from "convex/values";
+
+/**
+ * Immutable prompt identifiers. Bump the relevant identifier whenever its
+ * prompt or strict tool contract changes; never reinterpret an existing ID.
+ */
+export const SUMMARY_V2_PROMPT_VERSIONS = {
+  conversationEvidence: "summary-v2-conversation-evidence-v1",
+  // v2 replaced the ordered stage timeline with non-sequential scope and
+  // participant findings. Process Flow owns step order; two independently
+  // generated sequences over the same transcripts always disagreed.
+  processOverview: "summary-v2-process-overview-v2",
+  departmentOverview: "summary-v2-department-overview-v1",
+  functionOverview: "summary-v2-function-overview-v1",
+  legacyMarkdown: "summary-v2-legacy-markdown-v2",
+} as const;
+
+/** Bounded persistence and prompt-output limits locked in Phase 0. */
+export const SUMMARY_V2_CAPS = {
+  findingGroup: 8,
+  sourcesPerFinding: 8,
+  headlineChars: 120,
+  findingTitleChars: 120,
+  findingBodyChars: 1_200,
+  executiveBriefChars: 1_800,
+  sourceLabelChars: 120,
+  conversationSteps: 40,
+  conversationEvidenceGroup: 20,
+  conversationStepTitleChars: 120,
+  conversationStepBodyChars: 800,
+  conversationEvidenceItemChars: 500,
+  reduceChunkSources: 20,
+} as const;
+
+/** Initial request budgets; generation phases consume these constants later. */
+export const SUMMARY_V2_AI_BUDGETS = {
+  conversationEvidence: {
+    maxTokens: 1_536,
+    timeoutMs: 120_000,
+    maxRetries: 2,
+  },
+  chunkReduce: { maxTokens: 4_096, timeoutMs: 150_000, maxRetries: 2 },
+  finalReduce: { maxTokens: 3_072, timeoutMs: 120_000, maxRetries: 2 },
+} as const;
+
+export const summaryEvidenceLevelValidator = v.union(
+  v.literal("corroborated"),
+  v.literal("single_source"),
+  v.literal("inferred_gap"),
+);
+
+export const summarySourceRefValidator = v.union(
+  v.object({
+    kind: v.literal("conversation"),
+    conversationId: v.id("conversations"),
+    label: v.string(),
+  }),
+  v.object({
+    kind: v.literal("process"),
+    processId: v.id("processes"),
+    label: v.string(),
+  }),
+  v.object({
+    kind: v.literal("department"),
+    departmentId: v.id("departments"),
+    label: v.string(),
+  }),
+);
+
+export const summaryFindingValidator = v.object({
+  id: v.string(),
+  title: v.string(),
+  body: v.string(),
+  evidenceLevel: summaryEvidenceLevelValidator,
+  supportCount: v.number(),
+  sources: v.array(summarySourceRefValidator),
+});
+
+export const summaryCoverageValidator = v.object({
+  includedSources: v.number(),
+  totalEligibleSources: v.number(),
+  uniqueContributors: v.optional(v.number()),
+  complete: v.boolean(),
+});
+
+export const summaryProvenanceValidator = v.object({
+  sourceSnapshotHash: v.string(),
+  generatedAt: v.number(),
+  promptVersion: v.string(),
+  provider: v.string(),
+  model: v.string(),
+});
+
+const artifactBaseValidators = {
+  schemaVersion: v.literal("v2"),
+  sourceMode: v.literal("interview_evidence"),
+  headline: v.string(),
+  executiveBrief: v.string(),
+  coverage: summaryCoverageValidator,
+  provenance: summaryProvenanceValidator,
+};
+
+export const processOverviewArtifactV2Validator = v.object({
+  ...artifactBaseValidators,
+  /**
+   * What the process covers and who runs it: trigger, completion, owning roles,
+   * systems of record, and upstream/downstream dependencies. Deliberately
+   * unordered — the Process Flow graph is the only surface that states sequence.
+   */
+  scope: v.array(summaryFindingValidator),
+  consensus: v.array(summaryFindingValidator),
+  variations: v.array(summaryFindingValidator),
+  gaps: v.array(summaryFindingValidator),
+  notable: v.array(summaryFindingValidator),
+});
+
+export const departmentOverviewArtifactV2Validator = v.object({
+  ...artifactBaseValidators,
+  crossProcessDependencies: v.array(summaryFindingValidator),
+  sharedPatterns: v.array(summaryFindingValidator),
+  variationsAndTensions: v.array(summaryFindingValidator),
+  gaps: v.array(summaryFindingValidator),
+  notable: v.array(summaryFindingValidator),
+});
+
+export const functionOverviewArtifactV2Validator = v.object({
+  ...artifactBaseValidators,
+  crossDepartmentDependencies: v.array(summaryFindingValidator),
+  strategicPatterns: v.array(summaryFindingValidator),
+  variationsAndTensions: v.array(summaryFindingValidator),
+  gaps: v.array(summaryFindingValidator),
+  notable: v.array(summaryFindingValidator),
+});
+
+export const conversationEvidenceStepV2Validator = v.object({
+  id: v.string(),
+  title: v.string(),
+  body: v.string(),
+});
+
+export const processSummaryEvidenceV2Validator = v.object({
+  schemaVersion: v.literal("v2"),
+  sourceMode: v.literal("interview_evidence"),
+  steps: v.array(conversationEvidenceStepV2Validator),
+  actors: v.array(v.string()),
+  tools: v.array(v.string()),
+  handoffsAndDependencies: v.array(v.string()),
+  reportedVariations: v.array(v.string()),
+  frictionPoints: v.array(v.string()),
+  uncertainties: v.array(v.string()),
+  transcriptHash: v.string(),
+  promptVersion: v.string(),
+  generatedAt: v.number(),
+  provider: v.string(),
+  model: v.string(),
+});
+
+export const conversationEvidenceFailureCodeV2Validator = v.union(
+  v.literal("not_configured"),
+  v.literal("truncated"),
+  v.literal("invalid_output"),
+  v.literal("generation_failed"),
+);
+
+export const conversationEvidenceFailureV2Validator = v.object({
+  transcriptHash: v.string(),
+  promptVersion: v.string(),
+  generationId: v.string(),
+  failedAt: v.number(),
+  code: conversationEvidenceFailureCodeV2Validator,
+});
+
+export const summaryRunStateValidator = v.union(
+  v.literal("queued"),
+  v.literal("running"),
+  v.literal("succeeded"),
+  v.literal("partial"),
+  v.literal("failed"),
+);
+
+export const summaryRunStageValidator = v.union(
+  v.literal("evidence"),
+  v.literal("chunk_reduce"),
+  v.literal("final_reduce"),
+  v.literal("rollup_reduce"),
+);
+
+export const summaryRunProgressValidator = v.object({
+  stage: summaryRunStageValidator,
+  completed: v.number(),
+  total: v.number(),
+});
+
+export const summaryRunErrorValidator = v.object({
+  code: v.string(),
+  message: v.string(),
+  retryable: v.boolean(),
+});
+
+export const summaryRunSourceSnapshotValidator = v.object({
+  hash: v.string(),
+  includedSources: v.number(),
+  totalEligibleSources: v.number(),
+  currentSources: v.optional(v.number()),
+  complete: v.optional(v.boolean()),
+});
+
+export const processSummarySourceInputValidator = v.object({
+  key: v.string(),
+  conversationId: v.id("conversations"),
+  label: v.string(),
+  transcriptHash: v.string(),
+  promptVersion: v.string(),
+});
+
+export const processSummarySourceScanValidator = v.object({
+  cursor: v.optional(v.string()),
+  eligibleSources: v.number(),
+  includedSources: v.number(),
+  nextOrdinal: v.number(),
+  nextChunkIndex: v.number(),
+  hashFirst: v.number(),
+  hashSecond: v.number(),
+  hashLength: v.number(),
+  pendingSources: v.array(processSummarySourceInputValidator),
+});
+
+export const hierarchyChildStateValidator = v.union(
+  v.literal("current"),
+  v.literal("partial"),
+  v.literal("refreshing"),
+  v.literal("stale"),
+  v.literal("missing"),
+  v.literal("failed"),
+);
+
+export const hierarchySummarySourceInputValidator = v.union(
+  v.object({
+    kind: v.literal("process"),
+    key: v.string(),
+    processId: v.id("processes"),
+    label: v.string(),
+    state: v.union(v.literal("current"), v.literal("partial")),
+    artifactSnapshotHash: v.string(),
+    artifactPromptVersion: v.string(),
+    artifactGeneratedAt: v.number(),
+  }),
+  v.object({
+    kind: v.literal("department"),
+    key: v.string(),
+    departmentId: v.id("departments"),
+    label: v.string(),
+    state: v.union(v.literal("current"), v.literal("partial")),
+    artifactSnapshotHash: v.string(),
+    artifactPromptVersion: v.string(),
+    artifactGeneratedAt: v.number(),
+  }),
+);
+
+export const hierarchySummaryRollupPhaseValidator = v.union(
+  v.literal("refresh_children"),
+  v.literal("wait_children"),
+  v.literal("scan_sources"),
+  v.literal("final_reduce"),
+);
+
+export const hierarchySummarySourceScanValidator = v.object({
+  cursor: v.optional(v.string()),
+  eligibleSources: v.number(),
+  includedSources: v.number(),
+  currentSources: v.number(),
+  completedSources: v.number(),
+  nextOrdinal: v.number(),
+  nextChunkIndex: v.number(),
+  hashFirst: v.number(),
+  hashSecond: v.number(),
+  hashLength: v.number(),
+  pendingSources: v.array(hierarchySummarySourceInputValidator),
+});
+
+export const summaryChunkStateValidator = v.union(
+  v.literal("queued"),
+  v.literal("running"),
+  v.literal("succeeded"),
+  v.literal("failed"),
+);
+
+export const summaryChunkSectionKeyValidator = v.union(
+  v.literal("scope"),
+  v.literal("consensus"),
+  v.literal("variations"),
+  v.literal("cross_process_dependencies"),
+  v.literal("shared_patterns"),
+  v.literal("cross_department_dependencies"),
+  v.literal("strategic_patterns"),
+  v.literal("variations_and_tensions"),
+  v.literal("gaps"),
+  v.literal("notable"),
+);
+
+export const summaryChunkOutputV2Validator = v.object({
+  schemaVersion: v.literal("v2"),
+  headline: v.optional(v.string()),
+  executiveBrief: v.optional(v.string()),
+  sections: v.array(
+    v.object({
+      key: summaryChunkSectionKeyValidator,
+      findings: v.array(summaryFindingValidator),
+    }),
+  ),
+  coverage: summaryCoverageValidator,
+});
+
+/** The exact successful summary snapshot used by a new Process Flow run. */
+export const flowSummarySourceSnapshotValidator = v.object({
+  sourceSnapshotHash: v.string(),
+  summaryGeneratedAt: v.number(),
+  summaryPromptVersion: v.string(),
+});
+
+export type SummaryEvidenceLevel = Infer<typeof summaryEvidenceLevelValidator>;
+export type SummarySourceRef = Infer<typeof summarySourceRefValidator>;
+export type SummaryFinding = Infer<typeof summaryFindingValidator>;
+export type SummaryCoverage = Infer<typeof summaryCoverageValidator>;
+export type SummaryProvenance = Infer<typeof summaryProvenanceValidator>;
+export type ProcessOverviewArtifactV2 = Infer<
+  typeof processOverviewArtifactV2Validator
+>;
+export type DepartmentOverviewArtifactV2 = Infer<
+  typeof departmentOverviewArtifactV2Validator
+>;
+export type FunctionOverviewArtifactV2 = Infer<
+  typeof functionOverviewArtifactV2Validator
+>;
+export type SummaryArtifactV2 =
+  | ProcessOverviewArtifactV2
+  | DepartmentOverviewArtifactV2
+  | FunctionOverviewArtifactV2;
+export type ProcessSummaryEvidenceV2 = Infer<
+  typeof processSummaryEvidenceV2Validator
+>;
+export type ConversationEvidenceFailureCodeV2 = Infer<
+  typeof conversationEvidenceFailureCodeV2Validator
+>;
+export type SummaryRunState = Infer<typeof summaryRunStateValidator>;
+export type SummaryRunProgress = Infer<typeof summaryRunProgressValidator>;
+export type SummaryRunError = Infer<typeof summaryRunErrorValidator>;
+export type SummaryChunkOutputV2 = Infer<typeof summaryChunkOutputV2Validator>;
+export type ProcessSummarySourceInput = Infer<
+  typeof processSummarySourceInputValidator
+>;
+export type HierarchyChildState = Infer<typeof hierarchyChildStateValidator>;
+export type HierarchySummarySourceInput = Infer<
+  typeof hierarchySummarySourceInputValidator
+>;
+export type HierarchySummaryRollupPhase = Infer<
+  typeof hierarchySummaryRollupPhaseValidator
+>;
+
+export const summaryEntityRefValidator = v.union(
+  v.object({ kind: v.literal("process"), processId: v.id("processes") }),
+  v.object({
+    kind: v.literal("department"),
+    departmentId: v.id("departments"),
+  }),
+  v.object({ kind: v.literal("function"), functionId: v.id("functions") }),
+);
+
+export type SummaryEntityRef = Infer<typeof summaryEntityRefValidator>;
+
+export function getSummaryEntityKey(entity: SummaryEntityRef): string {
+  if (entity.kind === "process") return `process:${entity.processId}`;
+  if (entity.kind === "department") return `department:${entity.departmentId}`;
+  return `function:${entity.functionId}`;
+}
+
+export type SummaryOverviewState =
+  | "missing"
+  | "current"
+  | "stale"
+  | "refreshing"
+  | "partial"
+  | "failed";
+
+export type SummaryOverviewResponse = {
+  entity: SummaryEntityRef;
+  /** Bounded key for de-duplicating refresh-on-view attempts per source state. */
+  refreshKey: string;
+  state: SummaryOverviewState;
+  content: SummaryCompatibilityRead;
+  coverage: SummaryCoverage | null;
+  lastSuccessfulGenerationAt: number | null;
+  progress: SummaryRunProgress | null;
+  error: SummaryRunError | null;
+  flow: {
+    available: boolean;
+    stale: boolean;
+    generationStatus: "idle" | "generating" | "ready" | "failed";
+  } | null;
+  insights: {
+    available: boolean;
+    stale: boolean;
+    generationStatus: "idle" | "generating" | "ready" | "failed";
+  } | null;
+};
+
+export type SummarySourceKeyMap = Readonly<Record<string, SummarySourceRef>>;
+
+export type SummaryNormalizationContext = {
+  sourceByKey: SummarySourceKeyMap;
+  coverage: SummaryCoverage;
+  provenance: SummaryProvenance;
+};
+
+type UnknownRecord = Record<string, unknown>;
+
+function asRecord(value: unknown): UnknownRecord | null {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+    ? (value as UnknownRecord)
+    : null;
+}
+
+function normalizeInlineText(value: unknown, maxChars: number): string | null {
+  if (typeof value !== "string") return null;
+  const normalized = value.replace(/\s+/g, " ").trim();
+  if (!normalized) return null;
+  return normalized.slice(0, maxChars).trim();
+}
+
+function normalizeBlockText(value: unknown, maxChars: number): string | null {
+  if (typeof value !== "string") return null;
+  const normalized = value
+    .replace(/\r\n?/g, "\n")
+    .replace(/[ \t]+/g, " ")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+  if (!normalized) return null;
+  return normalized.slice(0, maxChars).trim();
+}
+
+function normalizedSemanticText(value: string): string {
+  return (
+    value
+      .normalize("NFKC")
+      .toLocaleLowerCase()
+      .match(/[\p{L}\p{N}]+/gu)
+      ?.join(" ") ?? ""
+  );
+}
+
+function stableHash(value: string): string {
+  let hash = 0x811c9dc5;
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return (hash >>> 0).toString(36);
+}
+
+function sourceIdentity(source: SummarySourceRef): string {
+  if (source.kind === "conversation") {
+    return `conversation:${source.conversationId}`;
+  }
+  if (source.kind === "process") return `process:${source.processId}`;
+  return `department:${source.departmentId}`;
+}
+
+function normalizeSource(source: SummarySourceRef): SummarySourceRef | null {
+  const label = normalizeInlineText(
+    source.label,
+    SUMMARY_V2_CAPS.sourceLabelChars,
+  );
+  if (!label) return null;
+  if (source.kind === "conversation") return { ...source, label };
+  if (source.kind === "process") return { ...source, label };
+  return { ...source, label };
+}
+
+function resolveSources(
+  rawKeys: unknown,
+  sourceByKey: SummarySourceKeyMap,
+): SummarySourceRef[] {
+  if (!Array.isArray(rawKeys)) return [];
+  const sources: SummarySourceRef[] = [];
+  const seen = new Set<string>();
+  for (const rawKey of rawKeys) {
+    if (typeof rawKey !== "string") continue;
+    const source = sourceByKey[rawKey];
+    if (!source) continue;
+    const normalized = normalizeSource(source);
+    if (!normalized) continue;
+    const identity = sourceIdentity(normalized);
+    if (seen.has(identity)) continue;
+    seen.add(identity);
+    sources.push(normalized);
+    if (sources.length === SUMMARY_V2_CAPS.sourcesPerFinding) break;
+  }
+  return sources;
+}
+
+const EXPLICIT_GAP_PATTERN =
+  /\b(unknown|unclear|unconfirmed|not documented|not captured|not established|not specified|missing (?:evidence|detail|information|step|steps)|insufficient evidence|needs? clarification|open question|no evidence|no source)\b/i;
+
+export function isExplicitMissingEvidenceFinding(
+  title: string,
+  body: string,
+): boolean {
+  return EXPLICIT_GAP_PATTERN.test(`${title} ${body}`);
+}
+
+function normalizeFinding(
+  rawValue: unknown,
+  sourceByKey: SummarySourceKeyMap,
+  sectionKey: string,
+): SummaryFinding | null {
+  const raw = asRecord(rawValue);
+  if (!raw) return null;
+  const title = normalizeInlineText(
+    raw.title,
+    SUMMARY_V2_CAPS.findingTitleChars,
+  );
+  const body = normalizeBlockText(raw.body, SUMMARY_V2_CAPS.findingBodyChars);
+  if (!title || !body) return null;
+
+  const requestedEvidenceLevel = raw.evidenceLevel;
+  if (
+    requestedEvidenceLevel !== "corroborated" &&
+    requestedEvidenceLevel !== "single_source" &&
+    requestedEvidenceLevel !== "inferred_gap"
+  ) {
+    return null;
+  }
+
+  const sources = resolveSources(raw.sourceKeys, sourceByKey);
+  if (sources.length === 0) {
+    if (
+      requestedEvidenceLevel !== "inferred_gap" ||
+      !isExplicitMissingEvidenceFinding(title, body)
+    ) {
+      return null;
+    }
+  }
+
+  const evidenceLevel: SummaryEvidenceLevel =
+    requestedEvidenceLevel === "inferred_gap"
+      ? "inferred_gap"
+      : sources.length >= 2
+        ? "corroborated"
+        : "single_source";
+  const identity = `${sectionKey}|${normalizedSemanticText(title)}|${sources
+    .map(sourceIdentity)
+    .sort()
+    .join("|")}`;
+  return {
+    // IDs are derived after source resolution so duplicate or unstable IDs
+    // returned by a model can never leak into UI keys or persistence.
+    id: `${sectionKey}-${stableHash(identity)}`,
+    title,
+    body,
+    evidenceLevel,
+    supportCount: sources.length,
+    sources,
+  };
+}
+
+function normalizeFindingGroup(
+  value: unknown,
+  sourceByKey: SummarySourceKeyMap,
+  sectionKey: string,
+  cap: number,
+): SummaryFinding[] {
+  if (!Array.isArray(value)) return [];
+  const findings: SummaryFinding[] = [];
+  const seen = new Set<string>();
+  for (const raw of value) {
+    const finding = normalizeFinding(raw, sourceByKey, sectionKey);
+    if (!finding) continue;
+    const dedupeKey = `${normalizedSemanticText(finding.title)}|${finding.sources
+      .map(sourceIdentity)
+      .sort()
+      .join("|")}`;
+    if (seen.has(dedupeKey)) continue;
+    seen.add(dedupeKey);
+    findings.push(finding);
+    if (findings.length === cap) break;
+  }
+  return findings;
+}
+
+function normalizeCoverage(value: SummaryCoverage): SummaryCoverage | null {
+  if (
+    !Number.isFinite(value.includedSources) ||
+    !Number.isFinite(value.totalEligibleSources)
+  ) {
+    return null;
+  }
+  const totalEligibleSources = Math.max(
+    0,
+    Math.floor(value.totalEligibleSources),
+  );
+  const includedSources = Math.min(
+    totalEligibleSources,
+    Math.max(0, Math.floor(value.includedSources)),
+  );
+  const uniqueContributors =
+    value.uniqueContributors === undefined
+      ? undefined
+      : Number.isFinite(value.uniqueContributors)
+        ? Math.min(
+            includedSources,
+            Math.max(0, Math.floor(value.uniqueContributors)),
+          )
+        : undefined;
+  return {
+    includedSources,
+    totalEligibleSources,
+    ...(uniqueContributors === undefined ? {} : { uniqueContributors }),
+    complete:
+      value.complete === true && includedSources === totalEligibleSources,
+  };
+}
+
+function normalizeProvenance(
+  value: SummaryProvenance,
+): SummaryProvenance | null {
+  const sourceSnapshotHash = normalizeInlineText(value.sourceSnapshotHash, 256);
+  const promptVersion = normalizeInlineText(value.promptVersion, 120);
+  const provider = normalizeInlineText(value.provider, 160);
+  const model = normalizeInlineText(value.model, 200);
+  if (
+    !sourceSnapshotHash ||
+    !promptVersion ||
+    !provider ||
+    !model ||
+    !Number.isFinite(value.generatedAt)
+  ) {
+    return null;
+  }
+  return {
+    sourceSnapshotHash,
+    generatedAt: Math.max(0, Math.floor(value.generatedAt)),
+    promptVersion,
+    provider,
+    model,
+  };
+}
+
+function normalizeArtifactBase(
+  value: unknown,
+  context: SummaryNormalizationContext,
+) {
+  const raw = asRecord(value);
+  if (!raw) return null;
+  const headline = normalizeInlineText(
+    raw.headline,
+    SUMMARY_V2_CAPS.headlineChars,
+  );
+  const executiveBrief = normalizeBlockText(
+    raw.executiveBrief,
+    SUMMARY_V2_CAPS.executiveBriefChars,
+  );
+  const coverage = normalizeCoverage(context.coverage);
+  const provenance = normalizeProvenance(context.provenance);
+  if (!headline || !executiveBrief || !coverage || !provenance) return null;
+  return { raw, headline, executiveBrief, coverage, provenance };
+}
+
+export function normalizeProcessOverviewArtifactV2(
+  value: unknown,
+  context: SummaryNormalizationContext,
+): ProcessOverviewArtifactV2 | null {
+  const base = normalizeArtifactBase(value, context);
+  if (!base) return null;
+  return {
+    schemaVersion: "v2",
+    sourceMode: "interview_evidence",
+    headline: base.headline,
+    executiveBrief: base.executiveBrief,
+    scope: normalizeFindingGroup(
+      base.raw.scope,
+      context.sourceByKey,
+      "scope",
+      SUMMARY_V2_CAPS.findingGroup,
+    ),
+    consensus: normalizeFindingGroup(
+      base.raw.consensus,
+      context.sourceByKey,
+      "consensus",
+      SUMMARY_V2_CAPS.findingGroup,
+    ),
+    variations: normalizeFindingGroup(
+      base.raw.variations,
+      context.sourceByKey,
+      "variation",
+      SUMMARY_V2_CAPS.findingGroup,
+    ),
+    gaps: normalizeFindingGroup(
+      base.raw.gaps,
+      context.sourceByKey,
+      "gap",
+      SUMMARY_V2_CAPS.findingGroup,
+    ),
+    notable: normalizeFindingGroup(
+      base.raw.notable,
+      context.sourceByKey,
+      "notable",
+      SUMMARY_V2_CAPS.findingGroup,
+    ),
+    coverage: base.coverage,
+    provenance: base.provenance,
+  };
+}
+
+export function normalizeDepartmentOverviewArtifactV2(
+  value: unknown,
+  context: SummaryNormalizationContext,
+): DepartmentOverviewArtifactV2 | null {
+  const base = normalizeArtifactBase(value, context);
+  if (!base) return null;
+  return {
+    schemaVersion: "v2",
+    sourceMode: "interview_evidence",
+    headline: base.headline,
+    executiveBrief: base.executiveBrief,
+    crossProcessDependencies: normalizeFindingGroup(
+      base.raw.crossProcessDependencies,
+      context.sourceByKey,
+      "cross-process-dependency",
+      SUMMARY_V2_CAPS.findingGroup,
+    ),
+    sharedPatterns: normalizeFindingGroup(
+      base.raw.sharedPatterns,
+      context.sourceByKey,
+      "shared-pattern",
+      SUMMARY_V2_CAPS.findingGroup,
+    ),
+    variationsAndTensions: normalizeFindingGroup(
+      base.raw.variationsAndTensions,
+      context.sourceByKey,
+      "variation-and-tension",
+      SUMMARY_V2_CAPS.findingGroup,
+    ),
+    gaps: normalizeFindingGroup(
+      base.raw.gaps,
+      context.sourceByKey,
+      "gap",
+      SUMMARY_V2_CAPS.findingGroup,
+    ),
+    notable: normalizeFindingGroup(
+      base.raw.notable,
+      context.sourceByKey,
+      "notable",
+      SUMMARY_V2_CAPS.findingGroup,
+    ),
+    coverage: base.coverage,
+    provenance: base.provenance,
+  };
+}
+
+export function normalizeFunctionOverviewArtifactV2(
+  value: unknown,
+  context: SummaryNormalizationContext,
+): FunctionOverviewArtifactV2 | null {
+  const base = normalizeArtifactBase(value, context);
+  if (!base) return null;
+  return {
+    schemaVersion: "v2",
+    sourceMode: "interview_evidence",
+    headline: base.headline,
+    executiveBrief: base.executiveBrief,
+    crossDepartmentDependencies: normalizeFindingGroup(
+      base.raw.crossDepartmentDependencies,
+      context.sourceByKey,
+      "cross-department-dependency",
+      SUMMARY_V2_CAPS.findingGroup,
+    ),
+    strategicPatterns: normalizeFindingGroup(
+      base.raw.strategicPatterns,
+      context.sourceByKey,
+      "strategic-pattern",
+      SUMMARY_V2_CAPS.findingGroup,
+    ),
+    variationsAndTensions: normalizeFindingGroup(
+      base.raw.variationsAndTensions,
+      context.sourceByKey,
+      "variation-and-tension",
+      SUMMARY_V2_CAPS.findingGroup,
+    ),
+    gaps: normalizeFindingGroup(
+      base.raw.gaps,
+      context.sourceByKey,
+      "gap",
+      SUMMARY_V2_CAPS.findingGroup,
+    ),
+    notable: normalizeFindingGroup(
+      base.raw.notable,
+      context.sourceByKey,
+      "notable",
+      SUMMARY_V2_CAPS.findingGroup,
+    ),
+    coverage: base.coverage,
+    provenance: base.provenance,
+  };
+}
+
+function escapeMarkdownLabel(value: string): string {
+  return value.replace(/([\\\[\]])/g, "\\$1");
+}
+
+function renderFinding(finding: SummaryFinding) {
+  const sourceLabels = finding.sources.map(
+    (source) => `[${escapeMarkdownLabel(source.label)}]`,
+  );
+  const sourceSuffix =
+    sourceLabels.length > 0 ? ` Sources: ${sourceLabels.join(", ")}.` : "";
+  return `- **${finding.title}** — ${finding.body}${sourceSuffix}`;
+}
+
+// Every group is a set of findings, never a sequence: ordered output would imply
+// a step order this artifact does not establish.
+function renderSection(
+  heading: string,
+  findings: SummaryFinding[],
+): string | null {
+  if (findings.length === 0) return null;
+  return `## ${heading}\n\n${findings.map(renderFinding).join("\n")}`;
+}
+
+export function renderSummaryV2AsLegacyMarkdown(
+  artifact: SummaryArtifactV2,
+): string {
+  const sections: Array<string | null> = [
+    `# ${artifact.headline}\n\n${artifact.executiveBrief}`,
+  ];
+  if ("scope" in artifact) {
+    sections.push(
+      renderSection("Scope and participants", artifact.scope),
+      renderSection("Agreements", artifact.consensus),
+      renderSection("Reported ways of working", artifact.variations),
+      renderSection("Knowledge gaps", artifact.gaps),
+      renderSection("Notable context", artifact.notable),
+    );
+  } else if ("crossProcessDependencies" in artifact) {
+    sections.push(
+      renderSection(
+        "Cross-process dependencies",
+        artifact.crossProcessDependencies,
+      ),
+      renderSection("Shared patterns", artifact.sharedPatterns),
+      renderSection(
+        "Variations and tensions",
+        artifact.variationsAndTensions,
+      ),
+      renderSection("Knowledge gaps", artifact.gaps),
+      renderSection("Notable context", artifact.notable),
+    );
+  } else {
+    sections.push(
+      renderSection(
+        "Cross-department dependencies",
+        artifact.crossDepartmentDependencies,
+      ),
+      renderSection("Strategic patterns", artifact.strategicPatterns),
+      renderSection(
+        "Variations and tensions",
+        artifact.variationsAndTensions,
+      ),
+      renderSection("Knowledge gaps", artifact.gaps),
+      renderSection("Notable context", artifact.notable),
+    );
+  }
+
+  const coverage = artifact.coverage;
+  sections.push(
+    `## Evidence coverage\n\n${coverage.includedSources} of ${coverage.totalEligibleSources} eligible sources included${
+      coverage.uniqueContributors === undefined
+        ? ""
+        : ` across ${coverage.uniqueContributors} contributors`
+    }. Coverage is ${coverage.complete ? "complete" : "partial"}.`,
+  );
+  return sections.filter((section): section is string => section !== null).join("\n\n");
+}
+
+export type SummaryCompatibilityRead =
+  | {
+      format: "v2";
+      artifact: SummaryArtifactV2;
+      markdown: string;
+    }
+  | { format: "legacy"; artifact: null; markdown: string }
+  | { format: "none"; artifact: null; markdown: null };
+
+/** Prefer a structured artifact and retain a deterministic Markdown projection. */
+export function readCompatibleSummary(input: {
+  summaryV2?: SummaryArtifactV2;
+  legacyMarkdown?: string | null;
+}): SummaryCompatibilityRead {
+  if (input.summaryV2) {
+    return {
+      format: "v2",
+      artifact: input.summaryV2,
+      markdown: renderSummaryV2AsLegacyMarkdown(input.summaryV2),
+    };
+  }
+  const legacyMarkdown = normalizeBlockText(
+    input.legacyMarkdown,
+    Number.MAX_SAFE_INTEGER,
+  );
+  return legacyMarkdown
+    ? { format: "legacy", artifact: null, markdown: legacyMarkdown }
+    : { format: "none", artifact: null, markdown: null };
+}
+
+export type SummaryListMetadata = {
+  format: "v2" | "legacy" | "none";
+  state:
+    | "missing"
+    | "current"
+    | "stale"
+    | "refreshing"
+    | "partial"
+    | "failed";
+  generatedAt: number | null;
+  coverage: {
+    includedSources: number;
+    totalEligibleSources: number;
+    complete: boolean;
+  } | null;
+};
+
+export function getSummaryListMetadata(input: {
+  summaryV2?: SummaryArtifactV2;
+  legacyMarkdown?: string | null;
+  legacyGeneratedAt?: number | null;
+  stale?: boolean;
+  refreshScheduledAt?: number;
+  lastRunState?: SummaryRunState;
+  lastRunCompletedAt?: number;
+  now?: number;
+}): SummaryListMetadata {
+  const generatedAt = input.summaryV2?.provenance.generatedAt ??
+    (input.legacyMarkdown?.trim() ? (input.legacyGeneratedAt ?? null) : null);
+  const now = input.now ?? Date.now();
+  const refreshing =
+    input.refreshScheduledAt !== undefined &&
+    now - input.refreshScheduledAt < 10 * 60_000;
+  const failed =
+    !refreshing &&
+    input.lastRunState === "failed" &&
+    (input.lastRunCompletedAt === undefined ||
+      generatedAt === null ||
+      input.lastRunCompletedAt >= generatedAt);
+
+  if (input.summaryV2) {
+    const coverage = input.summaryV2.coverage;
+    return {
+      format: "v2",
+      state: refreshing
+        ? "refreshing"
+        : failed
+          ? "failed"
+          : input.stale
+            ? "stale"
+            : coverage.complete
+              ? "current"
+              : "partial",
+      generatedAt,
+      coverage: {
+        includedSources: coverage.includedSources,
+        totalEligibleSources: coverage.totalEligibleSources,
+        complete: coverage.complete,
+      },
+    };
+  }
+  const hasLegacy = Boolean(input.legacyMarkdown?.trim());
+  return {
+    format: hasLegacy ? "legacy" : "none",
+    state: refreshing
+      ? "refreshing"
+      : failed
+        ? "failed"
+        : hasLegacy
+          ? input.stale
+            ? "stale"
+            : "current"
+          : "missing",
+    generatedAt,
+    coverage: null,
+  };
+}
+
+/**
+ * List queries use this projection so a future V2 artifact does not multiply
+ * the cost of hierarchy navigation. Existing legacy fields stay in place until
+ * their UI consumers migrate.
+ */
+export function toLightweightSummaryListRow<
+  T extends {
+    summaryV2?: SummaryArtifactV2;
+    summaryRegenScheduledAt?: number;
+    summaryV2LastRunState?: SummaryRunState;
+    summaryV2LastCompletedAt?: number;
+  },
+>(
+  row: T,
+  input: Omit<Parameters<typeof getSummaryListMetadata>[0], "summaryV2">,
+): Omit<T, "summaryV2"> & { summaryOverview: SummaryListMetadata } {
+  const { summaryV2, ...lightweight } = row;
+  return {
+    ...lightweight,
+    summaryOverview: getSummaryListMetadata({
+      ...input,
+      summaryV2,
+      refreshScheduledAt: row.summaryRegenScheduledAt,
+      lastRunState: row.summaryV2LastRunState,
+      lastRunCompletedAt: row.summaryV2LastCompletedAt,
+    }),
+  };
+}

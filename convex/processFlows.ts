@@ -46,6 +46,7 @@ import {
   flowNodeCategoryValidator,
   flowNodeDetailFields,
 } from "./schema";
+import { flowSummarySourceSnapshotValidator } from "./summaryV2";
 
 // ---------------------------------------------------------------------------
 // Response parsing shared by both generation stages.
@@ -424,6 +425,14 @@ export const getFlowGenerationData = internalQuery({
       throw new Error("Process not found in this organization");
     }
     const rollingSummary = process.rollingSummary ?? null;
+    const summarySourceSnapshot = process.summaryV2
+      ? {
+          sourceSnapshotHash:
+            process.summaryV2.provenance.sourceSnapshotHash,
+          summaryGeneratedAt: process.summaryV2.provenance.generatedAt,
+          summaryPromptVersion: process.summaryV2.provenance.promptVersion,
+        }
+      : null;
 
     // Bounded read. This used to `.collect()` every conversation row for the
     // process — full transcripts included — only to keep the `done` ones and
@@ -458,7 +467,11 @@ export const getFlowGenerationData = internalQuery({
         creationTime: c._creationTime,
       }));
 
-    return { rollingSummary, conversations: doneConversations };
+    return {
+      rollingSummary,
+      summarySourceSnapshot,
+      conversations: doneConversations,
+    };
   },
 });
 
@@ -728,6 +741,7 @@ export const saveFlowGraph = internalMutation({
     edges: v.array(v.object(flowEdgeFields)),
     criticalPath: v.array(v.string()),
     totalEstimatedDuration: v.optional(v.string()),
+    summarySourceSnapshot: v.optional(flowSummarySourceSnapshotValidator),
   },
   handler: async (ctx, args): Promise<Id<"processFlows"> | null> => {
     const flow = await ctx.db
@@ -755,6 +769,7 @@ export const saveFlowGraph = internalMutation({
       stale: false,
       generatedAt: now,
       conversationCount: args.conversationCount,
+      summarySourceSnapshot: args.summarySourceSnapshot,
       errorMessage: undefined,
       // Detail-bearing fields carry placeholders until their batch lands; the
       // read overlays real values from the child table.
@@ -1310,6 +1325,24 @@ export const markFlowStale = internalMutation({
     if (!flow || flow.status !== "ready") return;
 
     if (args.trigger === "summaryRebuilt") {
+      const process = await ctx.db.get(args.processId);
+      const generatedFromSnapshot = flow.summarySourceSnapshot;
+      const currentSnapshot = process?.summaryV2?.provenance;
+
+      // New flows carry an exact overview snapshot. Once both sides have it,
+      // compare hashes instead of falling back to conversation counts. Legacy
+      // rows keep the established count-based behavior until regenerated.
+      if (generatedFromSnapshot && currentSnapshot) {
+        if (
+          generatedFromSnapshot.sourceSnapshotHash ===
+          currentSnapshot.sourceSnapshotHash
+        ) {
+          return;
+        }
+        await ctx.db.patch(flow._id, { stale: true });
+        return;
+      }
+
       const done = await ctx.db
         .query("conversations")
         .withIndex("by_clerkOrgId_and_processId_and_status", (q) =>
@@ -1478,6 +1511,11 @@ export const generateGraphInternal = internalAction({
 
     const data: {
       rollingSummary: string | null;
+      summarySourceSnapshot: {
+        sourceSnapshotHash: string;
+        summaryGeneratedAt: number;
+        summaryPromptVersion: string;
+      } | null;
       conversations: Array<{
         contributorName: string;
         analysis: Record<string, unknown> | null;
@@ -1598,6 +1636,7 @@ export const generateGraphInternal = internalAction({
         edges: graph.edges,
         criticalPath: graph.criticalPath,
         totalEstimatedDuration: graph.totalEstimatedDuration,
+        summarySourceSnapshot: data.summarySourceSnapshot ?? undefined,
       },
     );
     // Null means another run took ownership while this one was generating.

@@ -11,7 +11,6 @@ export type ProcessPdfDownloadArgs = {
   processName: string;
   functionName: string;
   departmentName: string;
-  summary: string | null;
   contributorName: string | null;
   submittedByName: string | null;
   lastUpdatedAt: number | null;
@@ -28,9 +27,11 @@ function sanitizeFilename(name: string) {
 }
 
 /**
- * Generates a polished process report PDF on the client. The flow document is
- * fetched fresh at click time, and @react-pdf/renderer is dynamically imported
- * so it never ships in the main bundle.
+ * Generates a polished process report PDF on the client. The overview read model
+ * and the flow document are both fetched fresh at click time — the export reads
+ * exactly what the Overview tab and the clipboard read, including a
+ * `SUMMARY_V2` rollback to the legacy projection — and @react-pdf/renderer is
+ * dynamically imported so it never ships in the main bundle.
  */
 export function useProcessPdfDownload() {
   const convex = useConvex();
@@ -41,9 +42,14 @@ export function useProcessPdfDownload() {
       setIsDownloading(true);
       const toastId = toast.loading("Generating PDF…");
       try {
-        const flow = await convex.query(api.processFlows.getProcessFlow, {
-          processId: args.processId,
-        });
+        const [flow, overview] = await Promise.all([
+          convex.query(api.processFlows.getProcessFlow, {
+            processId: args.processId,
+          }),
+          convex.query(api.summaries.getOverview, {
+            entity: { kind: "process", processId: args.processId },
+          }),
+        ]);
         const { generateProcessPdfBlob } = await import(
           "./process-pdf-document"
         );
@@ -51,7 +57,13 @@ export function useProcessPdfDownload() {
           processName: args.processName,
           functionName: args.functionName,
           departmentName: args.departmentName,
-          summary: args.summary,
+          overview: {
+            state: overview.state,
+            content: overview.content,
+            lastSuccessfulGenerationAt: overview.lastSuccessfulGenerationAt,
+            flow: overview.flow,
+            insights: overview.insights,
+          },
           contributorName: args.contributorName,
           submittedByName: args.submittedByName,
           lastUpdatedAt: args.lastUpdatedAt,

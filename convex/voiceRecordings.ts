@@ -725,6 +725,10 @@ export const retryAudioProcessing = mutation({
       transcript: undefined,
       speakerLabels: undefined,
       summary: undefined,
+      processSummaryInput: undefined,
+      processSummaryInputHash: undefined,
+      processSummaryEvidenceV2: undefined,
+      processSummaryEvidenceV2Failure: undefined,
       title: undefined,
       analysis: undefined,
     });
@@ -932,15 +936,8 @@ export const analyzeVoiceRecordingInternal = internalAction({
         durationSeconds: recording.durationSeconds,
       });
 
-      await ctx.scheduler.runAfter(
-        0,
-        internal.postCall.generateConversationSummaryInput,
-        {
-          conversationId: args.conversationId,
-          clerkOrgId: args.clerkOrgId,
-        },
-      );
-      await ctx.runMutation(internal.postCall.requestProcessSummaryRegen, {
+      // Stale only — see markProcessSummaryStale.
+      await ctx.runMutation(internal.summaryEvidence.markProcessSummaryStale, {
         processId: recording.processId,
         clerkOrgId: args.clerkOrgId,
       });

@@ -202,6 +202,64 @@ export const verifyMembershipDirectoryBackfill = internalQuery({
   },
 });
 
+// --- Summary V2: drop pre-`scope` process artifacts ------------------------
+//
+// The process overview artifact replaced its ordered `stages` findings with
+// non-sequential `scope` findings (Product Decision 8). Renaming a required
+// field is breaking, so any deployment that generated artifacts under
+// `summary-v2-process-overview-v1` must clear them before the narrowed schema
+// can be pushed.
+//
+// Dropping rather than transforming is deliberate: stage findings describe a
+// sequence, and scope findings answer different questions (trigger, completion,
+// ownership, systems, dependencies). There is no honest mechanical rewrite —
+// the evidence has to be re-reduced. The legacy `rollingSummary` projection is
+// left in place, so each process keeps showing readable content until it
+// regenerates, and clearing `summaryV2SourceRevision` makes refresh-on-view
+// treat the row as awaiting backfill.
+//
+// Run with:
+//   npx convex run migrations:run '{"fn":"migrations:dropPreScopeProcessSummaries"}'
+//
+// Idempotent: rows already carrying `scope` are skipped.
+
+/** Reads an artifact of either generation without asserting the new shape. */
+function hasScopeFindings(artifact: unknown): boolean {
+  return Array.isArray((artifact as { scope?: unknown } | null)?.scope);
+}
+
+export const dropPreScopeProcessSummaries = migrations.define({
+  table: "processes",
+  migrateOne: async (ctx, doc) => {
+    if (!doc.summaryV2 || hasScopeFindings(doc.summaryV2)) return;
+    await ctx.db.patch(doc._id, {
+      summaryV2: undefined,
+      summaryV2SourceRevision: undefined,
+    });
+  },
+});
+
+// Run with:
+//   npx convex run migrations:verifyProcessSummaryScope
+//
+// Expect `preScopeArtifacts: 0` before restoring `schemaValidation` in
+// convex/schema.ts.
+export const verifyProcessSummaryScope = internalQuery({
+  args: {},
+  handler: async (ctx) => {
+    let total = 0;
+    let withArtifact = 0;
+    let preScopeArtifacts = 0;
+    for await (const process of ctx.db.query("processes")) {
+      total++;
+      if (!process.summaryV2) continue;
+      withArtifact++;
+      if (!hasScopeFindings(process.summaryV2)) preScopeArtifacts++;
+    }
+    return { total, withArtifact, preScopeArtifacts };
+  },
+});
+
 // ---------------------------------------------------------------------------
 // Dev → Prod migration (one-shot tenant move).
 //

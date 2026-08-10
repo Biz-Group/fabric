@@ -16,6 +16,20 @@ crons.interval(
   {},
 );
 
+crons.interval(
+  "reap stuck process summary generations",
+  { minutes: 5 },
+  internal.processSummaryV2.reapStuckProcessSummaryRuns,
+  {},
+);
+
+crons.interval(
+  "reap stuck hierarchy summary generations",
+  { minutes: 5 },
+  internal.hierarchySummaryV2.reapStuckHierarchySummaryRuns,
+  {},
+);
+
 // Ships dev-deployment AI usage rows to the prod sink so the platform console
 // can show one merged view. A no-op on the sink itself (USAGE_SINK_URL unset).
 // Deliberately not inline with the AI call: a cross-deployment request on the

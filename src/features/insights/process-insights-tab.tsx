@@ -7,6 +7,7 @@ import {
   AlertCircle,
   ArrowRight,
   ArrowRightLeft,
+  ArrowUpRight,
   BarChart3,
   Bot,
   Clock,
@@ -38,6 +39,7 @@ import {
 import {
   type FlowNode,
   type FlowEdge,
+  type ProcessFlow,
   type Confidence,
   type AutomationPotential,
   type HandoffItem,
@@ -61,8 +63,12 @@ type ProcessInsightsTabProps = {
   completedConversationCount: number;
   canGenerate: boolean;
   isActive: boolean;
-  onOpenProcessFlow: () => void;
+  onOpenProcessFlow: (nodeId?: string) => void;
 };
+
+type AutomationOpportunity = NonNullable<
+  ProcessFlow["insights"]["automationOpportunityDetails"]
+>[number];
 
 const CATEGORY_LABELS: Record<FlowNode["category"], string> = {
   start: "Start",
@@ -349,12 +355,47 @@ function NodeBadge({ node }: { node: FlowNode }) {
   );
 }
 
+export function FlowNodeLink({
+  nodeId,
+  label,
+  onOpenNode,
+  compact = false,
+}: {
+  nodeId: string;
+  label: string;
+  onOpenNode: (nodeId: string) => void;
+  compact?: boolean;
+}) {
+  return (
+    <button
+      type="button"
+      className={cn(
+        "org-focus-ring group inline-flex max-w-full items-center gap-1.5 text-left font-medium text-foreground transition-colors hover:text-org-accent",
+        compact
+          ? "min-h-7 rounded-full border px-2.5 py-1 text-xs"
+          : "min-h-8 rounded-md -ml-1 px-1 text-sm",
+      )}
+      onClick={() => onOpenNode(nodeId)}
+      aria-label={`Open ${label} in Process Flow`}
+      data-flow-node-id={nodeId}
+    >
+      <span className="min-w-0 break-words">{label}</span>
+      <ArrowUpRight
+        className="size-3.5 shrink-0 text-muted-foreground transition-transform group-hover:-translate-y-0.5 group-hover:translate-x-0.5 motion-reduce:transform-none"
+        aria-hidden="true"
+      />
+    </button>
+  );
+}
+
 function HandoffsSection({
   items,
   reportedCount,
+  onOpenNode,
 }: {
   items: HandoffItem[];
   reportedCount: number;
+  onOpenNode: (nodeId: string) => void;
 }) {
   return (
     <InsightSection
@@ -373,9 +414,11 @@ function HandoffsSection({
                   <p className="text-xs font-medium uppercase text-muted-foreground">
                     Source step
                   </p>
-                  <p className="mt-1 break-words text-sm font-medium">
-                    {item.source.label}
-                  </p>
+                  <FlowNodeLink
+                    nodeId={item.source.id}
+                    label={item.source.label}
+                    onOpenNode={onOpenNode}
+                  />
                   <p className="mt-1 break-words text-xs text-muted-foreground">
                     {actorList(item.source)}
                   </p>
@@ -385,9 +428,11 @@ function HandoffsSection({
                   <p className="text-xs font-medium uppercase text-muted-foreground">
                     Target step
                   </p>
-                  <p className="mt-1 break-words text-sm font-medium">
-                    {item.target.label}
-                  </p>
+                  <FlowNodeLink
+                    nodeId={item.target.id}
+                    label={item.target.label}
+                    onOpenNode={onOpenNode}
+                  />
                   <p className="mt-1 break-words text-xs text-muted-foreground">
                     {actorList(item.target)}
                   </p>
@@ -400,25 +445,16 @@ function HandoffsSection({
                   </p>
                   <PillList values={item.actors} />
                 </div>
-                <div className="flex flex-wrap gap-1.5 text-xs text-muted-foreground">
-                  <Badge variant="outline" className="h-auto whitespace-normal">
-                    {item.edge ? `Edge ${item.edge.id}` : "No edge id"}
-                  </Badge>
-                  <Badge variant="outline" className="h-auto whitespace-normal">
-                    Source node {item.source.id}
-                  </Badge>
-                  <Badge variant="outline" className="h-auto whitespace-normal">
-                    Target node {item.target.id}
-                  </Badge>
-                  {item.edge?.label && (
+                {item.edge?.label && (
+                  <div className="flex flex-wrap gap-1.5 text-xs text-muted-foreground">
                     <Badge
                       variant="outline"
                       className="h-auto whitespace-normal"
                     >
                       {item.edge.label}
                     </Badge>
-                  )}
-                </div>
+                  </div>
+                )}
               </div>
             </div>
           ))}
@@ -432,10 +468,12 @@ function ToolsSection({
   tools,
   heavyAreas,
   reportedToolCount,
+  onOpenNode,
 }: {
   tools: ToolUsage[];
   heavyAreas: HeavyArea[];
   reportedToolCount: number;
+  onOpenNode: (nodeId: string) => void;
 }) {
   return (
     <InsightSection
@@ -461,13 +499,13 @@ function ToolsSection({
                 </div>
                 <div className="mt-2 flex flex-wrap gap-1.5">
                   {tool.steps.map((step) => (
-                    <Badge
+                    <FlowNodeLink
                       key={`${tool.name}-${step.id}`}
-                      variant="outline"
-                      className="h-auto whitespace-normal break-words"
-                    >
-                      {step.label}
-                    </Badge>
+                      nodeId={step.id}
+                      label={step.label}
+                      onOpenNode={onOpenNode}
+                      compact
+                    />
                   ))}
                 </div>
               </div>
@@ -487,9 +525,11 @@ function ToolsSection({
             <div className="mt-3 space-y-2">
               {heavyAreas.slice(0, 6).map((area) => (
                 <div key={area.node.id} className="min-w-0">
-                  <p className="break-words text-sm font-medium">
-                    {area.node.label}
-                  </p>
+                  <FlowNodeLink
+                    nodeId={area.node.id}
+                    label={area.node.label}
+                    onOpenNode={onOpenNode}
+                  />
                   <p className="text-xs text-muted-foreground">
                     {pluralize(area.toolCount, "tool")} and{" "}
                     {pluralize(area.handoffSignals, "handoff signal")}
@@ -504,7 +544,13 @@ function ToolsSection({
   );
 }
 
-function BottlenecksSection({ nodes }: { nodes: FlowNode[] }) {
+function BottlenecksSection({
+  nodes,
+  onOpenNode,
+}: {
+  nodes: FlowNode[];
+  onOpenNode: (nodeId: string) => void;
+}) {
   return (
     <InsightSection
       icon={FileWarning}
@@ -518,9 +564,11 @@ function BottlenecksSection({ nodes }: { nodes: FlowNode[] }) {
           {nodes.map((node) => (
             <div key={node.id} className="rounded-lg border bg-muted/10 p-3">
               <div className="flex flex-wrap items-center gap-2">
-                <p className="min-w-0 break-words text-sm font-medium">
-                  {node.label}
-                </p>
+                <FlowNodeLink
+                  nodeId={node.id}
+                  label={node.label}
+                  onOpenNode={onOpenNode}
+                />
                 <NodeBadge node={node} />
                 <Badge
                   variant="outline"
@@ -555,16 +603,24 @@ function BottlenecksSection({ nodes }: { nodes: FlowNode[] }) {
 
 function AutomationSection({
   opportunities,
+  opportunityDetails,
   candidates,
+  allNodes,
+  onOpenNode,
 }: {
   opportunities: string[];
+  opportunityDetails?: AutomationOpportunity[];
   candidates: FlowNode[];
+  allNodes: FlowNode[];
+  onOpenNode: (nodeId: string) => void;
 }) {
+  const nodeMap = getNodeMap(allNodes);
+  const flowLevelCount = opportunityDetails?.length ?? opportunities.length;
   return (
     <InsightSection
       icon={Bot}
       title="Automation Opportunities"
-      count={pluralize(opportunities.length + candidates.length, "signal")}
+      count={pluralize(flowLevelCount + candidates.length, "signal")}
     >
       <div className="space-y-4">
         <div className="rounded-lg border bg-muted/10 p-3">
@@ -574,7 +630,45 @@ function AutomationSection({
             </p>
             <Badge variant="outline">Recommendation-only</Badge>
           </div>
-          {opportunities.length === 0 ? (
+          {opportunityDetails && opportunityDetails.length > 0 ? (
+            <div className="mt-3 space-y-3">
+              {opportunityDetails.map((opportunity) => (
+                <article
+                  key={`${opportunity.kind}:${opportunity.title}`}
+                  className="border-t pt-3 first:border-t-0 first:pt-0"
+                >
+                  <div className="flex flex-wrap items-center gap-2">
+                    <p className="text-sm font-medium">{opportunity.title}</p>
+                    <Badge variant="outline" className="capitalize">
+                      {opportunity.kind}
+                    </Badge>
+                  </div>
+                  <p className="mt-1.5 text-sm leading-6 text-muted-foreground">
+                    {opportunity.rationale}
+                  </p>
+                  {opportunity.expectedBenefit && (
+                    <p className="mt-1 text-xs text-muted-foreground">
+                      Expected benefit: {opportunity.expectedBenefit}
+                    </p>
+                  )}
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    {opportunity.nodeIds.map((nodeId) => {
+                      const node = nodeMap.get(nodeId);
+                      return node ? (
+                        <FlowNodeLink
+                          key={nodeId}
+                          nodeId={nodeId}
+                          label={node.label}
+                          onOpenNode={onOpenNode}
+                          compact
+                        />
+                      ) : null;
+                    })}
+                  </div>
+                </article>
+              ))}
+            </div>
+          ) : opportunities.length === 0 ? (
             <p className="mt-2 text-sm text-muted-foreground">
               No flow-level automation candidates are listed.
             </p>
@@ -590,9 +684,11 @@ function AutomationSection({
             {candidates.map((node) => (
               <div key={node.id} className="rounded-lg border bg-muted/10 p-3">
                 <div className="flex flex-wrap items-center gap-2">
-                  <p className="min-w-0 break-words text-sm font-medium">
-                    {node.label}
-                  </p>
+                  <FlowNodeLink
+                    nodeId={node.id}
+                    label={node.label}
+                    onOpenNode={onOpenNode}
+                  />
                   <Badge
                     variant="outline"
                     className={
@@ -603,12 +699,14 @@ function AutomationSection({
                     potential
                   </Badge>
                 </div>
-                <p className="mt-2 break-words text-sm text-muted-foreground">
-                  {node.description}
-                </p>
-                {node.tools.length > 0 && (
-                  <div className="mt-3">
-                    <PillList values={node.tools} variant="outline" />
+                {(node.tools.length > 0 || node.sources.length > 0) && (
+                  <div className="mt-3 space-y-2">
+                    {node.tools.length > 0 && (
+                      <PillList values={node.tools} variant="outline" />
+                    )}
+                    {node.sources.length > 0 && (
+                      <PillList values={node.sources} variant="outline" />
+                    )}
                   </div>
                 )}
               </div>
@@ -620,7 +718,13 @@ function AutomationSection({
   );
 }
 
-function TribalKnowledgeSection({ nodes }: { nodes: FlowNode[] }) {
+function TribalKnowledgeSection({
+  nodes,
+  onOpenNode,
+}: {
+  nodes: FlowNode[];
+  onOpenNode: (nodeId: string) => void;
+}) {
   return (
     <InsightSection
       icon={KeyRound}
@@ -634,9 +738,11 @@ function TribalKnowledgeSection({ nodes }: { nodes: FlowNode[] }) {
           {nodes.map((node) => (
             <div key={node.id} className="rounded-lg border bg-muted/10 p-3">
               <div className="flex flex-wrap items-center gap-2">
-                <p className="min-w-0 break-words text-sm font-medium">
-                  {node.label}
-                </p>
+                <FlowNodeLink
+                  nodeId={node.id}
+                  label={node.label}
+                  onOpenNode={onOpenNode}
+                />
                 <Badge
                   variant="outline"
                   className={CONFIDENCE_LABELS[node.confidence].className}
@@ -666,9 +772,11 @@ function TribalKnowledgeSection({ nodes }: { nodes: FlowNode[] }) {
 function DecisionPointsSection({
   nodes,
   edges,
+  onOpenNode,
 }: {
   nodes: FlowNode[];
   edges: FlowEdge[];
+  onOpenNode: (nodeId: string) => void;
 }) {
   const nodeMap = getNodeMap(nodes);
   const decisionNodes = nodes.filter((node) => node.category === "decision");
@@ -688,9 +796,11 @@ function DecisionPointsSection({
             return (
               <div key={node.id} className="rounded-lg border bg-muted/10 p-3">
                 <div className="flex flex-wrap items-center gap-2">
-                  <p className="min-w-0 break-words text-sm font-medium">
-                    {node.label}
-                  </p>
+                  <FlowNodeLink
+                    nodeId={node.id}
+                    label={node.label}
+                    onOpenNode={onOpenNode}
+                  />
                   <Badge
                     variant="outline"
                     className={CONFIDENCE_LABELS[node.confidence].className}
@@ -715,9 +825,18 @@ function DecisionPointsSection({
                             <p className="break-words font-medium">
                               {edge.label ?? edge.type}
                             </p>
-                            <p className="break-words text-xs text-muted-foreground">
-                              To {target?.label ?? edge.target}
-                            </p>
+                            {target ? (
+                              <FlowNodeLink
+                                nodeId={target.id}
+                                label={`To ${target.label}`}
+                                onOpenNode={onOpenNode}
+                                compact
+                              />
+                            ) : (
+                              <p className="break-words text-xs text-muted-foreground">
+                                To {edge.target}
+                              </p>
+                            )}
                           </div>
                           <Badge variant="outline" className="w-fit">
                             {edge.isHappyPath ? "Happy path" : "Exception path"}
@@ -740,10 +859,12 @@ function EvidenceCoverageSection({
   nodes,
   completedConversationCount,
   flowConversationCount,
+  onOpenNode,
 }: {
   nodes: FlowNode[];
   completedConversationCount: number;
   flowConversationCount: number;
+  onOpenNode: (nodeId: string) => void;
 }) {
   const counts = deriveConfidenceCounts(nodes);
   const allSources = uniqueStrings(nodes.flatMap((node) => node.sources));
@@ -798,9 +919,11 @@ function EvidenceCoverageSection({
               <div className="mt-3 space-y-2">
                 {lowConfidenceNodes.map((node) => (
                   <div key={node.id} className="min-w-0">
-                    <p className="break-words text-sm font-medium">
-                      {node.label}
-                    </p>
+                    <FlowNodeLink
+                      nodeId={node.id}
+                      label={node.label}
+                      onOpenNode={onOpenNode}
+                    />
                     <p className="break-words text-xs text-muted-foreground">
                       {node.sources.length > 0
                         ? node.sources.join(", ")
@@ -1071,9 +1194,10 @@ export function ProcessInsightsTab({
     flow.nodes.flatMap((node) => node.painPoints),
   );
   const nodeMap = getNodeMap(flow.nodes);
-  const criticalPathLabels = flow.insights.criticalPath.map(
-    (nodeId) => nodeMap.get(nodeId)?.label ?? nodeId,
-  );
+  const criticalPathNodes = flow.insights.criticalPath.flatMap((nodeId) => {
+    const node = nodeMap.get(nodeId);
+    return node ? [node] : [];
+  });
 
   return (
     <div className="min-h-full bg-muted/20">
@@ -1120,7 +1244,7 @@ export function ProcessInsightsTab({
               <Button
                 variant="outline"
                 className="gap-2"
-                onClick={onOpenProcessFlow}
+                onClick={() => onOpenProcessFlow()}
               >
                 <GitBranch className="size-4" aria-hidden />
                 View Flow
@@ -1270,31 +1394,47 @@ export function ProcessInsightsTab({
           <HandoffsSection
             items={handoffs}
             reportedCount={flow.insights.handoffCount}
+            onOpenNode={onOpenProcessFlow}
           />
           <ToolsSection
             tools={tools}
             heavyAreas={heavyAreas}
             reportedToolCount={flow.insights.toolCount}
+            onOpenNode={onOpenProcessFlow}
           />
         </div>
 
         <div className="grid gap-4 xl:grid-cols-2">
-          <BottlenecksSection nodes={bottlenecks} />
+          <BottlenecksSection
+            nodes={bottlenecks}
+            onOpenNode={onOpenProcessFlow}
+          />
           <AutomationSection
             opportunities={flow.insights.automationOpportunities}
+            opportunityDetails={flow.insights.automationOpportunityDetails}
             candidates={automationCandidates}
+            allNodes={flow.nodes}
+            onOpenNode={onOpenProcessFlow}
           />
         </div>
 
         <div className="grid gap-4 xl:grid-cols-2">
-          <TribalKnowledgeSection nodes={tribalKnowledgeNodes} />
-          <DecisionPointsSection nodes={flow.nodes} edges={flow.edges} />
+          <TribalKnowledgeSection
+            nodes={tribalKnowledgeNodes}
+            onOpenNode={onOpenProcessFlow}
+          />
+          <DecisionPointsSection
+            nodes={flow.nodes}
+            edges={flow.edges}
+            onOpenNode={onOpenProcessFlow}
+          />
         </div>
 
         <EvidenceCoverageSection
           nodes={flow.nodes}
           completedConversationCount={completedConversationCount}
           flowConversationCount={flow.conversationCount}
+          onOpenNode={onOpenProcessFlow}
         />
 
         {flow.insights.totalEstimatedDuration && (
@@ -1309,13 +1449,23 @@ export function ProcessInsightsTab({
           </div>
         )}
 
-        {flow.insights.criticalPath.length > 0 && (
+        {criticalPathNodes.length > 0 && (
           <div className="rounded-lg border bg-background p-3">
             <div className="mb-2 flex items-center gap-2 text-sm font-medium">
               <Workflow className="size-4 text-muted-foreground" aria-hidden />
               Critical path
             </div>
-            <PillList values={criticalPathLabels} variant="outline" />
+            <div className="flex flex-wrap gap-2">
+              {criticalPathNodes.map((node) => (
+                <FlowNodeLink
+                  key={node.id}
+                  nodeId={node.id}
+                  label={node.label}
+                  onOpenNode={onOpenProcessFlow}
+                  compact
+                />
+              ))}
+            </div>
           </div>
         )}
       </div>

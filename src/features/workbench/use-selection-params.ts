@@ -10,6 +10,7 @@ export const PARAM = {
   dept: "dept",
   proc: "proc",
   tab: "tab",
+  node: "node",
 } as const;
 
 export type SelectionParams = {
@@ -17,6 +18,7 @@ export type SelectionParams = {
   dept: Id<"departments"> | null;
   proc: Id<"processes"> | null;
   tab: number;
+  node: string | null;
 };
 
 // Tab index <-> URL token. Only the default Overview tab is omitted.
@@ -27,6 +29,9 @@ export function tabToParam(tab: number): string | null {
   return null;
 }
 export function paramToTab(value: string | null): number {
+  // `summary` was the original public token. Both it and the explicit
+  // `overview` alias continue to land on the renamed default surface.
+  if (value === null || value === "overview" || value === "summary") return 0;
   if (value === "conversations") return 1;
   if (value === "flow") return 2;
   if (value === "insights") return 3;
@@ -39,11 +44,13 @@ export function readSelectionParams(
   const fn = searchParams.get(PARAM.fn);
   const dept = searchParams.get(PARAM.dept);
   const proc = searchParams.get(PARAM.proc);
+  const tab = paramToTab(searchParams.get(PARAM.tab));
   return {
     fn: fn ? (fn as Id<"functions">) : null,
     dept: dept ? (dept as Id<"departments">) : null,
     proc: proc ? (proc as Id<"processes">) : null,
-    tab: paramToTab(searchParams.get(PARAM.tab)),
+    tab,
+    node: proc && tab === 2 ? searchParams.get(PARAM.node) : null,
   };
 }
 
@@ -68,6 +75,10 @@ export function buildSelectionQuery(
   setOrDelete(
     PARAM.tab,
     sel.fn && sel.dept && sel.proc ? tabToParam(sel.tab) : null,
+  );
+  setOrDelete(
+    PARAM.node,
+    sel.fn && sel.dept && sel.proc && sel.tab === 2 ? sel.node : null,
   );
 
   return params.toString();

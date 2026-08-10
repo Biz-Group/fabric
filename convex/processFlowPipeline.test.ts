@@ -49,6 +49,35 @@ const DETAIL = {
   painPoints: ["Queue is checked by hand"],
 };
 
+function processSummaryArtifact(
+  sourceSnapshotHash: string,
+): NonNullable<Doc<"processes">["summaryV2"]> {
+  return {
+    schemaVersion: "v2",
+    sourceMode: "interview_evidence",
+    headline: "Ticket requests move from intake to resolution",
+    executiveBrief: "A bounded test overview for flow freshness checks.",
+    scope: [],
+    consensus: [],
+    variations: [],
+    gaps: [],
+    notable: [],
+    coverage: {
+      includedSources: 2,
+      totalEligibleSources: 2,
+      uniqueContributors: 2,
+      complete: true,
+    },
+    provenance: {
+      sourceSnapshotHash,
+      generatedAt: 1_786_000_000_000,
+      promptVersion: "summary-v2-process-overview-v1",
+      provider: "test",
+      model: "test",
+    },
+  };
+}
+
 async function seedOrg(ctx: MutationCtx): Promise<Id<"processes">> {
   const userId = await ctx.db.insert("users", {
     tokenIdentifier: `${ISSUER}|member`,
@@ -238,6 +267,37 @@ describe("staged flow generation pipeline", () => {
       "resolve",
     ]);
     expect(flow?.conversationCount).toBe(2);
+  });
+
+  test("a successful graph save records optional summary snapshot provenance", async () => {
+    const t = harness();
+    const processId = await t.run(seedOrg);
+    const started = await t.mutation(
+      internal.processFlows.startFlowGeneration,
+      { processId, clerkOrgId: ORG },
+    );
+
+    await t.mutation(internal.processFlows.saveFlowGraph, {
+      processId,
+      clerkOrgId: ORG,
+      generationId: started.generationId,
+      conversationCount: 2,
+      nodes: GRAPH_NODES,
+      edges: GRAPH_EDGES,
+      criticalPath: ["intake", "triage"],
+      summarySourceSnapshot: {
+        sourceSnapshotHash: "sha256:overview-source",
+        summaryGeneratedAt: 1_786_000_000_000,
+        summaryPromptVersion: "summary-v2-process-overview-v1",
+      },
+    });
+
+    const flow = await readFlow(t, processId);
+    expect(flow?.summarySourceSnapshot).toEqual({
+      sourceSnapshotHash: "sha256:overview-source",
+      summaryGeneratedAt: 1_786_000_000_000,
+      summaryPromptVersion: "summary-v2-process-overview-v1",
+    });
   });
 
   test("a batch marks its nodes and recomputes the counters", async () => {
@@ -686,6 +746,53 @@ describe("staged flow generation pipeline", () => {
     expect(flow?.stale).toBe(false);
   });
 
+  test("new flows use the exact overview snapshot instead of conversation counts", async () => {
+    const t = harness();
+    const processId = await t.run(async (ctx) => {
+      const id = await seedOrg(ctx);
+      for (const name of ["Alice", "Bob"]) {
+        await ctx.db.insert("conversations", {
+          processId: id,
+          contributorName: name,
+          status: "done",
+          clerkOrgId: ORG,
+        });
+      }
+      await ctx.db.patch(id, { summaryV2: processSummaryArtifact("snapshot-a") });
+      return id;
+    });
+    const { processFlowId } = await startAndSaveGraph(t, processId);
+    await t.run(async (ctx) => {
+      await ctx.db.patch(processFlowId, {
+        conversationCount: 2,
+        summarySourceSnapshot: {
+          sourceSnapshotHash: "snapshot-a",
+          summaryGeneratedAt: 1_786_000_000_000,
+          summaryPromptVersion: "summary-v2-process-overview-v1",
+        },
+      });
+    });
+
+    await t.mutation(internal.processFlows.markFlowStale, {
+      processId,
+      clerkOrgId: ORG,
+      trigger: "summaryRebuilt",
+    });
+    expect((await readFlow(t, processId))?.stale).toBe(false);
+
+    await t.run(async (ctx) => {
+      await ctx.db.patch(processId, {
+        summaryV2: processSummaryArtifact("snapshot-b"),
+      });
+    });
+    await t.mutation(internal.processFlows.markFlowStale, {
+      processId,
+      clerkOrgId: ORG,
+      trigger: "summaryRebuilt",
+    });
+    expect((await readFlow(t, processId))?.stale).toBe(true);
+  });
+
   test("a new conversation does flag the flow as stale", async () => {
     const t = harness();
     const processId = await t.run(async (ctx) => {
@@ -901,6 +1008,7 @@ describe("reading a staged flow", () => {
       "Written inline by the old single call",
     );
   });
+
 });
 
 describe("watchdog", () => {

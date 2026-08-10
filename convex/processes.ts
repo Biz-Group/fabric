@@ -22,6 +22,8 @@ import {
   requireOrgMember,
   resolveOrgForAction,
 } from "./lib/orgAuth";
+import { toLightweightSummaryListRow } from "./summaryV2";
+import { withSummaryV2ReadGate } from "./lib/summaryV2Feature";
 import {
   derivePendingWorkStatus,
   getConversationCounts,
@@ -142,7 +144,21 @@ export const listByDepartment = query({
       .collect();
     // Order by the maintained `sortOrder` field (stable fallback to the
     // creation order from `.order("asc")` for equal values). See functions.list.
-    return docs.sort((a, b) => a.sortOrder - b.sortOrder);
+    return docs
+      .sort((a, b) => a.sortOrder - b.sortOrder)
+      .map((doc) =>
+        toLightweightSummaryListRow(withSummaryV2ReadGate(doc), {
+          legacyMarkdown: doc.rollingSummary,
+          legacyGeneratedAt: doc.summaryUpdatedAt,
+          stale:
+            doc.summaryStale === true ||
+            Boolean(
+              doc.summaryV2 &&
+                doc.summaryV2SourceRevision !==
+                  (doc.summaryEvidenceRevision ?? 0),
+            ),
+        }),
+      );
   },
 });
 
@@ -176,7 +192,17 @@ export const listAll = query({
         const dept = deptMap.get(p.departmentId);
         const functionId = dept?.functionId ?? null;
         return {
-          ...p,
+          ...toLightweightSummaryListRow(withSummaryV2ReadGate(p), {
+            legacyMarkdown: p.rollingSummary,
+            legacyGeneratedAt: p.summaryUpdatedAt,
+            stale:
+              p.summaryStale === true ||
+              Boolean(
+                p.summaryV2 &&
+                  p.summaryV2SourceRevision !==
+                    (p.summaryEvidenceRevision ?? 0),
+              ),
+          }),
           departmentName: dept?.name ?? "Unknown",
           functionId,
           functionName: functionId
@@ -230,6 +256,29 @@ export const getWorkbench = query({
           q.eq("clerkOrgId", caller.orgId).eq("processId", args.processId),
         )
         .first()) ?? null;
+    let summaryRun = process.summaryV2RunId
+      ? await ctx.db.get(process.summaryV2RunId)
+      : null;
+    if (!summaryRun) {
+      const terminalRuns: Doc<"summaryRuns">[] = [];
+      for (const state of ["succeeded", "partial", "failed"] as const) {
+        const latest = await ctx.db
+          .query("summaryRuns")
+          .withIndex(
+            "by_clerkOrgId_and_entityKey_and_state_and_createdAt",
+            (q) =>
+              q
+                .eq("clerkOrgId", caller.orgId)
+                .eq("entityKey", `process:${process._id}`)
+                .eq("state", state),
+          )
+          .order("desc")
+          .first();
+        if (latest) terminalRuns.push(latest);
+      }
+      terminalRuns.sort((a, b) => b.createdAt - a.createdAt);
+      summaryRun = terminalRuns[0] ?? null;
+    }
 
     const conversationCounts = getConversationCounts(conversations);
     const pendingWorkStatus = derivePendingWorkStatus(conversationCounts);
@@ -271,6 +320,22 @@ export const getWorkbench = query({
         description: process.description ?? null,
         descriptionSafetyStatus: process.descriptionSafetyStatus ?? null,
         rollingSummary: process.rollingSummary ?? null,
+        // The structured artifact is deliberately NOT returned here. Every
+        // overview surface reads it through `summaries.getOverview`, which
+        // applies the `SUMMARY_V2` rollback and per-tenant gates; returning it
+        // raw from the workbench query would serve it to a tenant the rollout
+        // has not reached and would survive a rollback.
+        summaryRun: summaryRun
+          ? {
+              generationId: summaryRun.generationId,
+              state: summaryRun.state,
+              progress: summaryRun.progress,
+              error: summaryRun.error ?? null,
+              coverage: summaryRun.sourceSnapshot,
+              createdAt: summaryRun.createdAt,
+              completedAt: summaryRun.completedAt ?? null,
+            }
+          : null,
         // When a summary regeneration is in flight, so the UI can show it is
         // working. A rebuild schedules background work and returns
         // immediately, and on a process whose conversations predate the map
@@ -534,8 +599,14 @@ export const updateInternal = internalMutation({
       if (previousDepartment && (remaining.length === 0 || !hasSummaries)) {
         await ctx.db.patch(proc.departmentId, {
           summary: undefined,
+          summaryV2: undefined,
           summaryUpdatedAt: undefined,
           summaryStale: undefined,
+          summarySourceRevision:
+            (previousDepartment.summarySourceRevision ?? 0) + 1,
+          ...(previousDepartment.summaryV2GenerationId
+            ? { summaryRegenRequestedAgain: true }
+            : {}),
         });
         await ctx.runMutation(
           internal.summariesHelpers.markFunctionSummaryStale,
@@ -553,6 +624,11 @@ export const updateInternal = internalMutation({
         {
           departmentId: args.departmentId!,
         },
+      );
+    } else if (proc.name !== args.name) {
+      await ctx.runMutation(
+        internal.summariesHelpers.markDepartmentSummaryStale,
+        { departmentId: proc.departmentId },
       );
     }
   },
@@ -652,8 +728,13 @@ export const remove = mutation({
     if (department && (remaining.length === 0 || !hasSummaries)) {
       await ctx.db.patch(departmentId, {
         summary: undefined,
+        summaryV2: undefined,
         summaryUpdatedAt: undefined,
         summaryStale: undefined,
+        summarySourceRevision: (department.summarySourceRevision ?? 0) + 1,
+        ...(department.summaryV2GenerationId
+          ? { summaryRegenRequestedAgain: true }
+          : {}),
       });
       await ctx.runMutation(
         internal.summariesHelpers.markFunctionSummaryStale,

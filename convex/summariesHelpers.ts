@@ -24,7 +24,13 @@ export const markFunctionSummaryStale = internalMutation({
   handler: async (ctx, args) => {
     const fn = await ctx.db.get(args.functionId);
     if (!fn) return;
-    await ctx.db.patch(args.functionId, { summaryStale: true });
+    await ctx.db.patch(args.functionId, {
+      summaryStale: true,
+      summarySourceRevision: (fn.summarySourceRevision ?? 0) + 1,
+      ...(fn.summaryV2GenerationId
+        ? { summaryRegenRequestedAgain: true }
+        : {}),
+    });
   },
 });
 
@@ -33,7 +39,13 @@ export const markDepartmentSummaryStale = internalMutation({
   handler: async (ctx, args) => {
     const dept = await ctx.db.get(args.departmentId);
     if (!dept) return;
-    await ctx.db.patch(args.departmentId, { summaryStale: true });
+    await ctx.db.patch(args.departmentId, {
+      summaryStale: true,
+      summarySourceRevision: (dept.summarySourceRevision ?? 0) + 1,
+      ...(dept.summaryV2GenerationId
+        ? { summaryRegenRequestedAgain: true }
+        : {}),
+    });
     await ctx.runMutation(
       internal.summariesHelpers.markFunctionSummaryStale,
       { functionId: dept.functionId },
@@ -53,6 +65,7 @@ export const saveDepartmentSummary = internalMutation({
   handler: async (ctx, args) => {
     await ctx.db.patch(args.departmentId, {
       summary: args.summary,
+      summaryV2: undefined,
       summaryUpdatedAt: Date.now(),
       summaryStale: false,
     });
@@ -67,6 +80,7 @@ export const saveFunctionSummary = internalMutation({
   handler: async (ctx, args) => {
     await ctx.db.patch(args.functionId, {
       summary: args.summary,
+      summaryV2: undefined,
       summaryUpdatedAt: Date.now(),
       summaryStale: false,
     });

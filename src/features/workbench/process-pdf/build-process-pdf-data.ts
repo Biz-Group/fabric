@@ -16,7 +16,20 @@ import {
   type ToolUsage,
   type HeavyArea,
 } from "@/features/insights/insights-derivations";
-import { isFlowRenderable } from "@/lib/flow-status";
+import { flowStage, isFlowRenderable, type FlowStage } from "@/lib/flow-status";
+import {
+  evidenceStrengthLabel,
+  OVERVIEW_STATE_META,
+  surfaceReadinessLabel,
+  type OverviewState,
+  type SurfaceReadiness,
+} from "@/features/overview/overview-view-model";
+import type {
+  ProcessOverviewArtifactV2,
+  SummaryArtifactV2,
+  SummaryEvidenceLevel,
+  SummaryFinding,
+} from "../../../../convex/summaryV2";
 
 // Node dimensions / layout params mirror use-process-flow-layout.ts so the PDF
 // diagram matches what users see in the app.
@@ -34,11 +47,27 @@ export type NodeBox = {
 
 export type StepNode = FlowNode & { number: number };
 
+/**
+ * The overview half of `summaries.getOverview`. The report reads the same
+ * structured artifact — and the same deterministic Markdown fallback — that the
+ * Overview tab and the clipboard read, so all three tell one story.
+ */
+export type ProcessOverviewInput = {
+  state: OverviewState;
+  content:
+    | { format: "v2"; artifact: SummaryArtifactV2; markdown: string }
+    | { format: "legacy"; artifact: null; markdown: string }
+    | { format: "none"; artifact: null; markdown: null };
+  lastSuccessfulGenerationAt: number | null;
+  flow: SurfaceReadiness;
+  insights: SurfaceReadiness;
+};
+
 export type ProcessPdfInput = {
   processName: string;
   functionName: string;
   departmentName: string;
-  summary: string | null;
+  overview: ProcessOverviewInput;
   contributorName: string | null;
   /** Set only when the latest conversation was recorded on the contributor's behalf. */
   submittedByName: string | null;
@@ -52,6 +81,53 @@ export type ProcessPdfInput = {
 
 export type Metric = { label: string; value: string; detail: string };
 
+export type PdfFinding = {
+  id: string;
+  title: string;
+  body: string;
+  evidenceLevel: SummaryEvidenceLevel;
+  /** Same wording as the in-app evidence chip. */
+  evidenceLabel: string;
+  /** Resolved source labels; empty only for an explicit evidence gap. */
+  sources: string[];
+};
+
+export type PdfOverviewSection = {
+  key: string;
+  title: string;
+  findings: PdfFinding[];
+  empty: string;
+};
+
+export type PdfOverviewCoverage = {
+  includedSources: number;
+  totalEligibleSources: number;
+  uniqueContributors: number | null;
+  complete: boolean;
+};
+
+export type PdfOverview = {
+  state: OverviewState;
+  stateLabel: string;
+  sourceMode: string;
+  generatedAt: number | null;
+  /** Present whenever a readable structured artifact exists. */
+  structured: {
+    headline: string;
+    brief: string;
+    coverage: PdfOverviewCoverage;
+    sections: PdfOverviewSection[];
+  } | null;
+  /**
+   * Markdown for a V1-only row, or for a `SUMMARY_V2` rollback that hides an
+   * artifact the database still holds. Null once `structured` is present.
+   */
+  legacyMarkdown: string | null;
+  /** Navigation-only readiness, worded exactly as the in-app footer. */
+  flowReadiness: string;
+  insightsReadiness: string;
+};
+
 export type ProcessPdfData = {
   processName: string;
   functionName: string;
@@ -61,9 +137,15 @@ export type ProcessPdfData = {
   submittedByName: string | null;
   lastUpdatedAt: number | null;
   generatedAt: number;
-  summary: string | null;
+  overview: PdfOverview;
 
   flowStatus: "ready" | "generating" | "failed" | "none";
+  /**
+   * How far generation actually got. `status: "ready"` lands minutes before the
+   * step details, so the report explains the wait from the stage rather than
+   * claiming a flow whose steps are still blank.
+   */
+  flowStage: FlowStage | "none";
   flowGeneratedAt: number | null;
   flowStale: boolean;
   flowConversationCount: number;
@@ -138,6 +220,104 @@ function computeNodeOrder(nodes: FlowNode[], edges: FlowEdge[]): NodeBox[] {
   });
 }
 
+function isProcessArtifact(
+  artifact: SummaryArtifactV2,
+): artifact is ProcessOverviewArtifactV2 {
+  return "scope" in artifact;
+}
+
+function toPdfFinding(finding: SummaryFinding): PdfFinding {
+  return {
+    id: finding.id,
+    title: finding.title,
+    body: finding.body,
+    evidenceLevel: finding.evidenceLevel,
+    evidenceLabel: evidenceStrengthLabel(
+      finding.evidenceLevel,
+      finding.supportCount,
+    ),
+    sources: finding.sources.map((source) => source.label),
+  };
+}
+
+// Section order, headings, and empty copy mirror the Overview tab and the
+// deterministic Markdown projection that Copy produces, so a reader who has seen
+// one recognizes the others. No group is a sequence: step order is stated once,
+// by the Process Flow section.
+function overviewSections(
+  artifact: ProcessOverviewArtifactV2,
+): PdfOverviewSection[] {
+  return [
+    {
+      key: "scope",
+      title: "Scope and participants",
+      findings: artifact.scope.map(toPdfFinding),
+      empty:
+        "The current evidence does not establish the trigger, completion, or ownership of this process.",
+    },
+    {
+      key: "variations",
+      title: "Reported ways of working",
+      findings: artifact.variations.map(toPdfFinding),
+      empty: "No material variation is visible in the current evidence set.",
+    },
+    {
+      key: "consensus",
+      title: "Agreements",
+      findings: artifact.consensus.map(toPdfFinding),
+      empty: "No cross-conversation agreement has been established yet.",
+    },
+    {
+      key: "gaps",
+      title: "Knowledge gaps and tensions",
+      findings: artifact.gaps.map(toPdfFinding),
+      empty: "No explicit knowledge gap is recorded in the current overview.",
+    },
+    {
+      key: "notable",
+      title: "Notable context",
+      findings: artifact.notable.map(toPdfFinding),
+      empty: "No additional context has been elevated from the current evidence.",
+    },
+  ];
+}
+
+function buildOverview(input: ProcessOverviewInput): PdfOverview {
+  // A department or function artifact can never reach a process report, but the
+  // read model is one union — narrow rather than assume.
+  const artifact =
+    input.content.format === "v2" && isProcessArtifact(input.content.artifact)
+      ? input.content.artifact
+      : null;
+
+  return {
+    state: input.state,
+    stateLabel: OVERVIEW_STATE_META[input.state].label,
+    sourceMode: artifact
+      ? "Interview evidence"
+      : input.content.format === "none"
+        ? "Awaiting evidence"
+        : "Legacy summary",
+    generatedAt: input.lastSuccessfulGenerationAt,
+    structured: artifact
+      ? {
+          headline: artifact.headline,
+          brief: artifact.executiveBrief,
+          coverage: {
+            includedSources: artifact.coverage.includedSources,
+            totalEligibleSources: artifact.coverage.totalEligibleSources,
+            uniqueContributors: artifact.coverage.uniqueContributors ?? null,
+            complete: artifact.coverage.complete,
+          },
+          sections: overviewSections(artifact),
+        }
+      : null,
+    legacyMarkdown: artifact ? null : (input.content.markdown ?? null),
+    flowReadiness: surfaceReadinessLabel(input.flow),
+    insightsReadiness: surfaceReadinessLabel(input.insights),
+  };
+}
+
 export function buildProcessPdfData(input: ProcessPdfInput): ProcessPdfData {
   const { flow } = input;
   // `isFlowRenderable` rather than `status === "ready"`: the graph lands minutes
@@ -173,8 +353,9 @@ export function buildProcessPdfData(input: ProcessPdfInput): ProcessPdfData {
     submittedByName: input.submittedByName,
     lastUpdatedAt: input.lastUpdatedAt,
     generatedAt: input.generatedAt,
-    summary: input.summary,
+    overview: buildOverview(input.overview),
     flowStatus: flow?.status ?? "none",
+    flowStage: flow ? flowStage(flow) : "none",
     flowGeneratedAt: flow?.generatedAt ?? null,
     flowStale: flow?.stale ?? false,
     flowConversationCount: flow?.conversationCount ?? 0,

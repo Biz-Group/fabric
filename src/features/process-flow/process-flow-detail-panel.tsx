@@ -9,6 +9,7 @@ import {
   Users,
   Monitor,
   MessageSquareWarning,
+  MessageSquareText,
   ShieldAlert,
   ArrowRight,
   ArrowLeft,
@@ -21,7 +22,7 @@ import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
 import { CATEGORY_CONFIG } from "./process-flow-nodes";
 import type { ReadFlowNode } from "./use-process-flow-layout";
-import type { Doc } from "../../../convex/_generated/dataModel";
+import type { Doc, Id } from "../../../convex/_generated/dataModel";
 
 type FlowEdge = Doc<"processFlows">["edges"][number];
 type FlowNode = ReadFlowNode;
@@ -32,6 +33,7 @@ interface ProcessFlowDetailPanelProps {
   allNodes: FlowNode[];
   onClose: () => void;
   onNavigate: (nodeId: string) => void;
+  onOpenConversation?: (conversationId: Id<"conversations">) => void;
   /** Re-requests this step's description. Absent for viewers. */
   onRetryDetail?: () => void | Promise<void>;
   isRetryingDetail?: boolean;
@@ -80,6 +82,7 @@ export function ProcessFlowDetailPanel({
   allNodes,
   onClose,
   onNavigate,
+  onOpenConversation,
   onRetryDetail,
   isRetryingDetail = false,
 }: ProcessFlowDetailPanelProps) {
@@ -96,6 +99,14 @@ export function ProcessFlowDetailPanel({
   const incomingEdges = edges.filter((e) => e.target === node.id);
   const outgoingEdges = edges.filter((e) => e.source === node.id);
   const nodeMap = new Map(allNodes.map((n) => [n.id, n]));
+  const linkedSources = new Set(
+    onOpenConversation
+      ? (node.sourceConversations ?? []).map((source) => source.source)
+      : [],
+  );
+  const unlinkedSources = node.sources.filter(
+    (source) => !linkedSources.has(source),
+  );
 
   const automationInfo = AUTOMATION_LABELS[node.automationPotential];
   const confidenceInfo = CONFIDENCE_LABELS[node.confidence];
@@ -305,16 +316,40 @@ export function ProcessFlowDetailPanel({
           {/* Sources */}
           {node.sources.length > 0 && (
             <Section icon={Users} title="Sources">
-              <ul className="space-y-0.5">
-                {node.sources.map((src, i) => (
-                  <li
-                    key={i}
-                    className="break-words text-xs text-muted-foreground"
+              <div className="space-y-1">
+                {onOpenConversation &&
+                  node.sourceConversations?.map((source) => (
+                    <button
+                      type="button"
+                      key={source.conversationId}
+                      className="org-focus-ring group flex min-h-8 w-full min-w-0 items-center gap-2 rounded-md px-2 py-1 text-left text-xs text-muted-foreground transition-colors hover:bg-org-accent-subtle hover:text-foreground"
+                      onClick={() =>
+                        onOpenConversation(source.conversationId)
+                      }
+                      aria-label={`Open source conversation: ${source.source}`}
+                    >
+                      <MessageSquareText
+                        className="size-3.5 shrink-0 text-org-accent"
+                        aria-hidden="true"
+                      />
+                      <span className="min-w-0 flex-1 break-words">
+                        {source.source}
+                      </span>
+                      <ArrowRight
+                        className="size-3 shrink-0 opacity-0 transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100"
+                        aria-hidden="true"
+                      />
+                    </button>
+                  ))}
+                {unlinkedSources.map((source) => (
+                  <p
+                    key={source}
+                    className="break-words px-2 text-xs text-muted-foreground"
                   >
-                    {src}
-                  </li>
+                    {source}
+                  </p>
                 ))}
-              </ul>
+              </div>
             </Section>
           )}
 

@@ -33,6 +33,7 @@ type Env = {
   readonly FOUNDRY_SAFETY_DEPLOYMENT: string | undefined;
   readonly FOUNDRY_SYNTHESIS_BACKEND: "claude" | "gpt5mini" | undefined;
   readonly OPENROUTER_API_KEY: string | undefined;
+  readonly SUMMARY_V2: string | undefined;
   readonly USAGE_DEPLOYMENT_LABEL: "prod" | "dev" | undefined;
   readonly USAGE_SINK_SECRET: string | undefined;
   readonly USAGE_SINK_URL: string | undefined;
