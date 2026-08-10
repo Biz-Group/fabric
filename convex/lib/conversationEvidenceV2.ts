@@ -25,6 +25,12 @@ export type ConversationEvidenceNormalizationMetadata = {
   model: string;
 };
 
+/**
+ * The schema caps are ceilings, not targets, and the model cannot see the token
+ * budget that has to hold its answer — so the prompt states the shape of an
+ * economical answer in words. Without this, faithful extraction reads the caps
+ * as an invitation and writes until it is cut off.
+ */
 const CONVERSATION_EVIDENCE_V2_SYSTEM_PROMPT = `You extract one contributor's account of a business process into structured evidence for later synthesis.
 
 Faithfulness rules:
@@ -32,9 +38,25 @@ Faithfulness rules:
 - Preserve uncertainty, disagreement, optional paths, and reported variations.
 - Keep steps in the order described. If the order is uncertain, state that in the step body.
 - Distinguish actors, tools, handoffs/dependencies, variations, friction, and uncertainties.
-- Use short, specific statements. Empty arrays are valid when evidence is absent.
 - Echo the sourceKey from the request exactly.
-- Return only the required tool call.`;
+- Return only the required tool call.
+
+Output budget — the schema limits are ceilings for unusually rich interviews, not targets:
+- Merge related actions into one step instead of splitting every sentence. Most accounts need well under ${SUMMARY_V2_CAPS.conversationSteps} steps.
+- Keep each step body to one or two sentences of what happened, typically under 200 characters. Do not restate the title or quote the transcript.
+- List only distinct items in each array — names and short phrases, not sentences. Most arrays hold a handful of items; empty arrays are valid when evidence is absent.
+- Nothing is scored on length. A complete, compact answer is the requirement; a cut-off answer is discarded entirely.`;
+
+/**
+ * Appended on the one retry after a truncated first attempt. The transcript
+ * genuinely carried more than the budget holds, so this asks for the same
+ * evidence at lower resolution rather than repeating a doomed request.
+ */
+const CONVERSATION_EVIDENCE_V2_CONCISE_SUFFIX = `
+
+Retry after a truncated response: your previous answer exceeded the output budget and was discarded. Return the same evidence more compactly — cover at most ${Math.ceil(
+  SUMMARY_V2_CAPS.conversationSteps / 2,
+)} steps by merging closely related actions, hold every step body to one sentence, and keep each array to its most significant few items. Losing detail is acceptable; being cut off again is not.`;
 
 export const CONVERSATION_EVIDENCE_V2_SCHEMA: AIJsonSchema = {
   type: "object",
@@ -154,20 +176,29 @@ export function buildConversationEvidenceV2Request(args: {
   conversationId: string;
   contributorName: string;
   transcript: EvidenceTranscriptMessage[] | null;
+  /** Second attempt after a truncated first one. See the suffix above. */
+  concise?: boolean;
 }): AIRequest {
   const sourceKey = conversationEvidenceSourceKey(args.conversationId);
   const budget = SUMMARY_V2_AI_BUDGETS.conversationEvidence;
   return {
     capability: "synthesis",
     operation: CONVERSATION_EVIDENCE_V2_OPERATION,
-    system: CONVERSATION_EVIDENCE_V2_SYSTEM_PROMPT,
+    system: args.concise
+      ? `${CONVERSATION_EVIDENCE_V2_SYSTEM_PROMPT}${CONVERSATION_EVIDENCE_V2_CONCISE_SUFFIX}`
+      : CONVERSATION_EVIDENCE_V2_SYSTEM_PROMPT,
     user: `Source key: ${sourceKey}\nContributor: ${args.contributorName}\n\nTranscript:\n${formatConversationEvidenceTranscript(
       args.transcript,
       args.contributorName,
     )}`,
     maxTokens: budget.maxTokens,
     timeoutMs: budget.timeoutMs,
-    maxRetries: budget.maxRetries,
+    // The retry spends no transport retries of its own. Both attempts share one
+    // action, and 2 x (1 + budget.maxRetries) x timeoutMs must stay inside the
+    // 10-minute action ceiling: 4 x 120s = 480s does, 6 x 120s = 720s does not.
+    // A provider that is failing transport-wise already consumed its retries on
+    // the first attempt; the next refresh picks the conversation up again.
+    maxRetries: args.concise ? 0 : budget.maxRetries,
     temperature: 0,
     tool: {
       name: CONVERSATION_EVIDENCE_V2_TOOL_NAME,

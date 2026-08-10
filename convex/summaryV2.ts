@@ -5,7 +5,12 @@ import { type Infer, v } from "convex/values";
  * prompt or strict tool contract changes; never reinterpret an existing ID.
  */
 export const SUMMARY_V2_PROMPT_VERSIONS = {
-  conversationEvidence: "summary-v2-conversation-evidence-v1",
+  // v2 restated the evidence output budget in the prompt and tightened the
+  // strict tool caps. v1 invited up to ~28k tokens of JSON on a 1,536-token
+  // budget, so any conversation with real content truncated and produced no
+  // evidence at all. Re-extraction is required, and wanted: every v1 row that
+  // truncated has nothing stored.
+  conversationEvidence: "summary-v2-conversation-evidence-v2",
   // v2 replaced the ordered stage timeline with non-sequential scope and
   // participant findings. Process Flow owns step order; two independently
   // generated sequences over the same transcripts always disagreed.
@@ -15,7 +20,15 @@ export const SUMMARY_V2_PROMPT_VERSIONS = {
   legacyMarkdown: "summary-v2-legacy-markdown-v2",
 } as const;
 
-/** Bounded persistence and prompt-output limits locked in Phase 0. */
+/**
+ * Bounded persistence and prompt-output limits locked in Phase 0.
+ *
+ * The `conversation*` caps are the strict tool contract for evidence
+ * extraction, so they are also an output-size *request*: a model asked for 40
+ * steps of 800 characters will try to deliver them. Keep them proportional to
+ * `SUMMARY_V2_AI_BUDGETS.conversationEvidence.maxTokens` — see
+ * `conversationEvidenceMaxOutputTokens()` below, which is asserted in tests.
+ */
 export const SUMMARY_V2_CAPS = {
   findingGroup: 8,
   sourcesPerFinding: 8,
@@ -24,18 +37,69 @@ export const SUMMARY_V2_CAPS = {
   findingBodyChars: 1_200,
   executiveBriefChars: 1_800,
   sourceLabelChars: 120,
-  conversationSteps: 40,
-  conversationEvidenceGroup: 20,
+  conversationSteps: 18,
+  conversationEvidenceGroup: 10,
   conversationStepTitleChars: 120,
-  conversationStepBodyChars: 800,
-  conversationEvidenceItemChars: 500,
+  conversationStepBodyChars: 400,
+  conversationEvidenceItemChars: 200,
   reduceChunkSources: 20,
 } as const;
 
-/** Initial request budgets; generation phases consume these constants later. */
+/** Conservative characters-per-token for dense, escaped JSON tool arguments. */
+const JSON_CHARS_PER_TOKEN = 3.5;
+
+/** The six flat string arrays in the evidence contract. */
+const CONVERSATION_EVIDENCE_GROUP_COUNT = 6;
+
+/**
+ * Output tokens the evidence schema demands if the model fills every cap.
+ *
+ * This is the check that was missing when the stage shipped: nothing compared
+ * the size of the contract against the budget that has to hold it. A truncated
+ * call is billed work that produces nothing — extraction throws rather than
+ * persist half an evidence document — so the contract cannot be allowed to
+ * outgrow the budget again.
+ */
+export function conversationEvidenceMaxOutputTokens(): number {
+  const caps = SUMMARY_V2_CAPS;
+  // Per step: `{"title":"…","body":"…"},` — 30 chars of JSON scaffolding.
+  const stepChars =
+    caps.conversationSteps *
+    (caps.conversationStepTitleChars + caps.conversationStepBodyChars + 30);
+  const groupChars =
+    CONVERSATION_EVIDENCE_GROUP_COUNT *
+    caps.conversationEvidenceGroup *
+    (caps.conversationEvidenceItemChars + 5);
+  return Math.ceil((stepChars + groupChars + 200) / JSON_CHARS_PER_TOKEN);
+}
+
+/**
+ * How far `conversationEvidenceMaxOutputTokens()` may exceed the budget.
+ *
+ * Not 1.0, because the caps are per-item ceilings that real content never
+ * saturates — no contributor supplies 18 four-hundred-character steps *and* ten
+ * items in all six groups — and holding the worst case under budget would mean
+ * discarding detail from every ordinary interview to insure against one
+ * extreme. Truncation on that extreme is recoverable: extraction retries once
+ * with a tightened instruction. The shipped configuration was 18x, which is not
+ * an extreme, it is a routine failure.
+ */
+export const CONVERSATION_EVIDENCE_CAP_BUDGET_RATIO = 2;
+
+/**
+ * Initial request budgets; generation phases consume these constants later.
+ *
+ * `conversationEvidence` was 1,536 tokens against a schema that invited ~28k.
+ * A 16-minute interview (4.7k input tokens) came back `stop_reason:
+ * "max_tokens"` at exactly 1,536 output tokens in 19s of a 120s allowance:
+ * budget-bound, with 6x the clock to spare. The budget is now the most the
+ * 120s timeout supports at the worst measured throughput
+ * (`maxTokensForTimeout(120_000)` = 3,770), and the caps above were cut to
+ * match it.
+ */
 export const SUMMARY_V2_AI_BUDGETS = {
   conversationEvidence: {
-    maxTokens: 1_536,
+    maxTokens: 3_584,
     timeoutMs: 120_000,
     maxRetries: 2,
   },

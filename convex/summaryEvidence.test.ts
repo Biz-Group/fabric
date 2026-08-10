@@ -175,6 +175,43 @@ describe("conversation evidence generation", () => {
     });
   });
 
+  test("retries a truncated extraction once, more concisely, and saves that", async () => {
+    configureFoundry();
+    const t = convexTest(schema, modules);
+    const { conversationId } = await t.run((ctx) => seed(ctx));
+    const truncated = stubClaude(conversationId, "truncated");
+    const valid = stubClaude(conversationId);
+    const bodies: string[] = [];
+    const fetchMock = vi.fn(async (_url: string, init: RequestInit) => {
+      bodies.push(String(init.body));
+      return bodies.length === 1 ? truncated() : valid();
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await t.action(
+      internal.summaryEvidence.generateConversationSummaryEvidenceV2,
+      { conversationId, clerkOrgId: ORG, generationId: "generation-retry" },
+    );
+
+    expect(result).toBe("saved");
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    // Only the retry carries the tightening instruction, and it forgoes its own
+    // transport retries so both attempts fit one action's clock.
+    expect(bodies[0]).not.toContain("Retry after a truncated response");
+    expect(bodies[1]).toContain("Retry after a truncated response");
+
+    const stored = await t.run(async (ctx) => ({
+      conversation: await ctx.db.get(conversationId),
+      usage: await ctx.db.query("aiUsageEvents").collect(),
+    }));
+    expect(stored.conversation?.processSummaryEvidenceV2).toMatchObject({
+      actors: ["Alice", "Finance"],
+    });
+    expect(stored.conversation?.processSummaryEvidenceV2Failure).toBeUndefined();
+    // The discarded attempt was still billed, so it must still be on the ledger.
+    expect(stored.usage.map((row) => row.status)).toEqual(["truncated", "ok"]);
+  });
+
   test.each([
     ["truncated" as const, "truncated"],
     ["malformed" as const, "invalid_output"],

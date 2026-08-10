@@ -1,17 +1,21 @@
 import { describe, expect, test } from "vitest";
 import { Id } from "./_generated/dataModel";
 import {
+  conversationEvidenceMaxOutputTokens,
+  CONVERSATION_EVIDENCE_CAP_BUDGET_RATIO,
   getSummaryListMetadata,
   normalizeDepartmentOverviewArtifactV2,
   normalizeFunctionOverviewArtifactV2,
   normalizeProcessOverviewArtifactV2,
   readCompatibleSummary,
   renderSummaryV2AsLegacyMarkdown,
+  SUMMARY_V2_AI_BUDGETS,
   SUMMARY_V2_CAPS,
   SUMMARY_V2_PROMPT_VERSIONS,
   type SummaryNormalizationContext,
   type SummarySourceKeyMap,
 } from "./summaryV2";
+import { isWithinTimeBudget } from "./lib/aiProvider";
 import { normalizeProcessSummaryEvidenceV2 } from "./lib/conversationEvidenceV2";
 import {
   longProcessFixture,
@@ -96,10 +100,11 @@ function processPayload(overrides: Record<string, unknown> = {}) {
 describe("Summary V2 contracts and normalizers", () => {
   test("locks prompt versions and configured caps", () => {
     expect(SUMMARY_V2_PROMPT_VERSIONS).toEqual({
-      conversationEvidence: "summary-v2-conversation-evidence-v1",
+      // v2: the output budget is stated in the prompt and the caps were cut to
+      // fit it. Bumped because every v1 extraction of a substantial interview
+      // truncated and stored nothing.
+      conversationEvidence: "summary-v2-conversation-evidence-v2",
       // v2: the ordered stage timeline became non-sequential scope findings.
-      // The evidence version is deliberately unchanged — no transcript needs
-      // re-extraction for an overview contract change.
       processOverview: "summary-v2-process-overview-v2",
       departmentOverview: "summary-v2-department-overview-v1",
       functionOverview: "summary-v2-function-overview-v1",
@@ -111,10 +116,28 @@ describe("Summary V2 contracts and normalizers", () => {
       findingTitleChars: 120,
       findingBodyChars: 1_200,
       executiveBriefChars: 1_800,
-      conversationSteps: 40,
-      conversationEvidenceGroup: 20,
+      conversationSteps: 18,
+      conversationEvidenceGroup: 10,
+      conversationStepBodyChars: 400,
+      conversationEvidenceItemChars: 200,
       reduceChunkSources: 20,
     });
+  });
+
+  test("keeps the evidence contract inside the budget that has to hold it", () => {
+    const budget = SUMMARY_V2_AI_BUDGETS.conversationEvidence;
+
+    // The regression this pins: 1,536 tokens against a ~28k-token contract, so
+    // any interview with real content came back `stop_reason: "max_tokens"` and
+    // was discarded. Widening a cap now fails here instead of in production.
+    expect(conversationEvidenceMaxOutputTokens()).toBeLessThanOrEqual(
+      budget.maxTokens * CONVERSATION_EVIDENCE_CAP_BUDGET_RATIO,
+    );
+
+    // And the budget must still be spendable inside its own timeout: the two
+    // ceilings are independent, and raising tokens to fix truncation is only a
+    // fix if the call can generate them before the clock runs out.
+    expect(isWithinTimeBudget(budget.maxTokens, budget.timeoutMs)).toBe(true);
   });
 
   test("rejects malformed artifacts and keeps empty sections explicit", () => {

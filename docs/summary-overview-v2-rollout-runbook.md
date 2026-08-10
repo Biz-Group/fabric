@@ -188,7 +188,7 @@ Watch for, and investigate before proceeding:
 
 | Signal | Threshold | Why it matters |
 | --- | --- | --- |
-| `truncated > 0` on any stage | any | A truncated call is billed work that produced nothing usable; the token budget is too small for that content. |
+| `truncated > 0` on any stage | any | A truncated call is billed work that produced nothing usable; the token budget is too small for that content. On the evidence stage a truncation is followed by one automatic concise retry, so a `truncated` row with an `ok` row for the same conversation cost double but still produced evidence — investigate the size of the ask, not the outcome. Two `truncated` rows for one conversation is a real loss. |
 | p95 latency within 20% of the stage timeout | evidence 120s, chunk 150s, final 120s | Near misses become failures under load. |
 | `costPerCallMicroUsd` more than 2× the internal baseline | per stage | Prompt or evidence growth that will not scale to a larger tenant. |
 | `truncatedSample: true` | any | The report hit its row limit; raise `rowLimitPerOperation` before trusting the totals. |

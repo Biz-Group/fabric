@@ -168,27 +168,50 @@ export async function generateEvidenceForConversation(
   }
 
   try {
-    const request = buildConversationEvidenceV2Request({
-      conversationId,
-      contributorName: conversation.contributorName,
-      transcript: conversation.transcript,
-    });
-    const completion = await meteredCompletion(
-      ctx,
-      {
-        clerkOrgId,
-        entityType: "conversation",
-        entityId: conversationId,
-        entityLabel: conversation.contributorName,
-        runId: generationId,
-      },
-      request,
-    );
-    assertCompletionNotTruncated(
-      completion,
-      CONVERSATION_EVIDENCE_V2_OPERATION,
-      SUMMARY_V2_AI_BUDGETS.conversationEvidence.maxTokens,
-    );
+    const extract = async (concise: boolean) => {
+      const request = buildConversationEvidenceV2Request({
+        conversationId,
+        contributorName: conversation.contributorName,
+        transcript: conversation.transcript,
+        concise,
+      });
+      const result = await meteredCompletion(
+        ctx,
+        {
+          clerkOrgId,
+          entityType: "conversation",
+          entityId: conversationId,
+          entityLabel: conversation.contributorName,
+          runId: generationId,
+        },
+        request,
+      );
+      assertCompletionNotTruncated(
+        result,
+        CONVERSATION_EVIDENCE_V2_OPERATION,
+        SUMMARY_V2_AI_BUDGETS.conversationEvidence.maxTokens,
+      );
+      return result;
+    };
+
+    // One retry at lower resolution. A contributor whose interview overruns the
+    // budget would otherwise be dropped from the overview entirely, and with a
+    // single-contributor process that is the whole refresh.
+    let completion;
+    try {
+      completion = await extract(false);
+    } catch (error) {
+      if (!(error instanceof AITruncationError)) throw error;
+      console.warn(
+        "Conversation evidence truncated; retrying once more concisely",
+        {
+          conversationId,
+          maxTokens: SUMMARY_V2_AI_BUDGETS.conversationEvidence.maxTokens,
+        },
+      );
+      completion = await extract(true);
+    }
+
     const evidence = normalizeProcessSummaryEvidenceV2(
       completion.toolInput,
       conversationEvidenceSourceKey(conversationId),
