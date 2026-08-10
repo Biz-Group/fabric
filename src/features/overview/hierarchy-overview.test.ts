@@ -194,7 +194,7 @@ describe("HierarchyOverviewContent", () => {
     const html = renderDepartment();
 
     expect(html).toContain("Overview");
-    expect(html).toContain("Child coverage");
+    expect(html).toContain("Process Coverage");
     expect(html).toContain("4 of 6 eligible processes");
     expect(html).toContain("67% covered");
     expect(html).toContain("Cross-process dependencies");

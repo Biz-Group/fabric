@@ -176,7 +176,7 @@ function ChildCoverageLedger({
             id={`${entityKind}-child-coverage`}
             className="text-xl font-semibold tracking-tight sm:text-2xl"
           >
-            Child coverage
+            Process Coverage
           </h2>
           <p className="mt-2 max-w-2xl text-sm leading-6 text-muted-foreground">
             {coverage
