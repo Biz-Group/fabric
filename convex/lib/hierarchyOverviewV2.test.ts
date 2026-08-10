@@ -12,7 +12,9 @@ import {
   updateHierarchySnapshotHashState,
 } from "./hierarchyOverviewV2";
 import {
+  HIERARCHY_OVERVIEW_SECTION_CAPS,
   SUMMARY_V2_AI_BUDGETS,
+  SUMMARY_V2_CAPS,
   SUMMARY_V2_PROMPT_VERSIONS,
   type DepartmentOverviewArtifactV2,
   type ProcessOverviewArtifactV2,
@@ -86,6 +88,58 @@ describe("Hierarchy Overview V2 contracts", () => {
     ]);
   });
 
+  test("both rollup schemas request the rollup caps, not the process caps", () => {
+    // The shipped bug: these schemas reused `findingGroup: 8` and
+    // `findingBodyChars: 1_200`, which asks for ~17.9k output tokens. Asserted
+    // on both so a future section added to one cannot quietly inherit the
+    // wider process contract.
+    for (const schema of [
+      DEPARTMENT_OVERVIEW_V2_SCHEMA,
+      FUNCTION_OVERVIEW_V2_SCHEMA,
+    ]) {
+      const properties = schema.properties as Record<
+        string,
+        Record<string, unknown>
+      >;
+      expect(properties.executiveBrief.maxLength).toBe(
+        HIERARCHY_OVERVIEW_SECTION_CAPS.briefChars,
+      );
+      const sections = Object.keys(properties).filter(
+        (key) => key !== "headline" && key !== "executiveBrief",
+      );
+      expect(sections).toHaveLength(5);
+      for (const key of sections) {
+        expect(properties[key].maxItems).toBe(
+          HIERARCHY_OVERVIEW_SECTION_CAPS.group,
+        );
+        const items = properties[key].items as {
+          properties: Record<string, Record<string, unknown>>;
+        };
+        expect(items.properties.body.maxLength).toBe(
+          HIERARCHY_OVERVIEW_SECTION_CAPS.bodyChars,
+        );
+        expect(items.properties.body.maxLength).toBeLessThan(
+          SUMMARY_V2_CAPS.findingBodyChars,
+        );
+      }
+    }
+  });
+
+  test("the rollup prompt states the output budget it enforces", () => {
+    // Restating the budget in the prompt is half the v2 fix; the schema caps
+    // alone did not stop the model from writing past them.
+    const request = buildDepartmentOverviewRequest({
+      departmentName: "Service",
+      sources: [
+        { key: "P1", label: "Handle request", state: "current", artifact: processArtifact },
+      ],
+    });
+    expect(request.system).toContain("Output budget");
+    expect(request.system).toContain(
+      `at most ${HIERARCHY_OVERVIEW_SECTION_CAPS.group} findings per section`,
+    );
+  });
+
   test("both final reducers use the locked deterministic budget", () => {
     const department = buildDepartmentOverviewRequest({
       departmentName: "Service",
@@ -104,9 +158,9 @@ describe("Hierarchy Overview V2 contracts", () => {
       [fn, FUNCTION_OVERVIEW_V2_TOOL],
     ] as const) {
       expect(request).toMatchObject({
-        maxTokens: SUMMARY_V2_AI_BUDGETS.finalReduce.maxTokens,
-        timeoutMs: SUMMARY_V2_AI_BUDGETS.finalReduce.timeoutMs,
-        maxRetries: SUMMARY_V2_AI_BUDGETS.finalReduce.maxRetries,
+        maxTokens: SUMMARY_V2_AI_BUDGETS.hierarchyFinalReduce.maxTokens,
+        timeoutMs: SUMMARY_V2_AI_BUDGETS.hierarchyFinalReduce.timeoutMs,
+        maxRetries: SUMMARY_V2_AI_BUDGETS.hierarchyFinalReduce.maxRetries,
         temperature: 0,
         tool: { name: toolName },
       });

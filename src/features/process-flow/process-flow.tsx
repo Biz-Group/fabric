@@ -21,6 +21,11 @@ import {
   Sparkles,
   RefreshCw,
   BarChart3,
+  Bot,
+  ArrowRightLeft,
+  Wrench,
+  Clock,
+  AlertTriangle,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -464,23 +469,12 @@ function ProcessFlowInner({
         )}
       </div>
 
-      <div className="flex shrink-0 flex-wrap items-center justify-between gap-2 border-t border-border bg-background px-4 py-2 text-xs text-muted-foreground">
-        <span className="flex min-w-0 items-center gap-2">
-          <BarChart3 className="size-3.5 shrink-0" aria-hidden="true" />
-          <span className="truncate">
-            Bottlenecks, risks, and opportunities are analyzed in Insights.
-          </span>
-        </span>
-        <Button
-          type="button"
-          variant="ghost"
-          size="sm"
-          className="org-focus-ring h-7 shrink-0 px-2 text-xs"
-          onClick={onOpenInsights}
-        >
-          Open Insights
-        </Button>
-      </div>
+      {/* Insights bar at bottom */}
+      <InsightsBar
+        insights={flow.insights}
+        nodeCount={flow.nodes.length}
+        onOpenInsights={onOpenInsights}
+      />
     </Wrapper>
   );
 }
@@ -539,6 +533,101 @@ function EmptyState({
           Record at least one conversation first.
         </p>
       )}
+    </div>
+  );
+}
+
+function InsightsBar({
+  insights,
+  nodeCount,
+  onOpenInsights,
+}: {
+  insights: {
+    totalEstimatedDuration?: string;
+    handoffCount: number;
+    toolCount: number;
+    automationOpportunities: string[];
+    automationOpportunitiesSource?: "ai" | "derived";
+    topBottlenecks: string[];
+  };
+  nodeCount: number;
+  onOpenInsights: () => void;
+}) {
+  // "recommended automations", not "automation opportunities": this is the
+  // flow-level analysed list, a handful of multi-step recommendations. The
+  // Insights tab's Automation tile is a different measure — one entry per step
+  // whose automationPotential is above none — so it reads far higher on the same
+  // flow. Wording them alike made the two look like the same count disagreeing.
+  //
+  // The insights stage failing leaves behind placeholders that merely look
+  // automatable. Absent means a legacy row from before the field existed, which
+  // the Insights tab also reads as analysed — only an explicit "derived" is a
+  // known-unreviewed list, and it must not be called a recommendation.
+  const automationUnreviewed =
+    insights.automationOpportunitiesSource === "derived";
+  const automationCount = insights.automationOpportunities.length;
+
+  return (
+    <div className="shrink-0 border-t border-border bg-muted/30 px-4 py-2">
+      <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-1 text-xs text-muted-foreground">
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
+          <span className="flex items-center gap-1">
+            <BarChart3 className="h-3 w-3" />
+            {nodeCount} steps
+          </span>
+          {insights.totalEstimatedDuration && (
+            <span className="flex items-center gap-1">
+              <Clock className="h-3 w-3" />
+              {insights.totalEstimatedDuration}
+            </span>
+          )}
+          <span className="flex items-center gap-1">
+            <ArrowRightLeft className="h-3 w-3" />
+            {insights.handoffCount} handoff
+            {insights.handoffCount !== 1 ? "s" : ""}
+          </span>
+          <span className="flex items-center gap-1">
+            <Wrench className="h-3 w-3" />
+            {insights.toolCount} tool{insights.toolCount !== 1 ? "s" : ""}
+          </span>
+          {insights.topBottlenecks.length > 0 && (
+            <span className="flex items-center gap-1 text-red-600 dark:text-red-400">
+              <AlertTriangle className="h-3 w-3" />
+              {insights.topBottlenecks.length} bottleneck
+              {insights.topBottlenecks.length !== 1 ? "s" : ""}
+            </span>
+          )}
+          {automationCount > 0 && (
+            <span
+              className={cn(
+                "flex items-center gap-1",
+                automationUnreviewed
+                  ? "text-muted-foreground"
+                  : "text-green-600 dark:text-green-400",
+              )}
+              title={
+                automationUnreviewed
+                  ? "Automation was not analysed for this run — these are steps that looked automatable, not reviewed recommendations."
+                  : undefined
+              }
+            >
+              <Bot className="h-3 w-3" />
+              {automationCount}{" "}
+              {automationUnreviewed ? "possible" : "recommended"} automation
+              {automationCount !== 1 ? "s" : ""}
+            </span>
+          )}
+        </div>
+        <Button
+          type="button"
+          variant="ghost"
+          size="sm"
+          className="org-focus-ring h-7 shrink-0 px-2 text-xs"
+          onClick={onOpenInsights}
+        >
+          Open Insights
+        </Button>
+      </div>
     </div>
   );
 }

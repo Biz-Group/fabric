@@ -604,29 +604,34 @@ function BottlenecksSection({
 function AutomationSection({
   opportunities,
   opportunityDetails,
+  flowLevelCount,
   candidates,
   allNodes,
   onOpenNode,
 }: {
   opportunities: string[];
   opportunityDetails?: AutomationOpportunity[];
+  /** Same value the Automation tile and the Process Flow bottom bar show. */
+  flowLevelCount: number;
   candidates: FlowNode[];
   allNodes: FlowNode[];
   onOpenNode: (nodeId: string) => void;
 }) {
   const nodeMap = getNodeMap(allNodes);
-  const flowLevelCount = opportunityDetails?.length ?? opportunities.length;
+  // Reported apart, never summed: a flow-level recommendation cites the steps it
+  // covers, so most of them are already counted among the node-level candidates.
+  // Adding the two produced a total larger than the number of distinct findings.
   return (
     <InsightSection
       icon={Bot}
       title="Automation Opportunities"
-      count={pluralize(flowLevelCount + candidates.length, "signal")}
+      count={`${flowLevelCount} recommended · ${pluralize(candidates.length, "candidate")}`}
     >
       <div className="space-y-4">
         <div className="rounded-lg border bg-muted/10 p-3">
           <div className="flex flex-wrap items-center gap-2">
             <p className="text-xs font-medium uppercase text-muted-foreground">
-              Flow-level candidates
+              Recommended automations
             </p>
             <Badge variant="outline">Recommendation-only</Badge>
           </div>
@@ -670,7 +675,7 @@ function AutomationSection({
             </div>
           ) : opportunities.length === 0 ? (
             <p className="mt-2 text-sm text-muted-foreground">
-              No flow-level automation candidates are listed.
+              No automation recommendations are listed.
             </p>
           ) : (
             <BulletList items={opportunities} className="mt-2" />
@@ -1181,6 +1186,14 @@ export function ProcessInsightsTab({
   const heavyAreas = deriveHeavyAreas(flow.nodes, handoffs);
   const bottlenecks = deriveBottlenecks(flow);
   const automationCandidates = deriveAutomationCandidates(flow.nodes);
+  // The flow-level count the Process Flow bottom bar shows, computed once here so
+  // the tile and the section badge cannot drift from each other or from the bar.
+  // `automationOpportunities` is the field to read: `deriveFlowInsights` fills it
+  // 1:1 from `automationOpportunityDetails` when the analysis ran, and from the
+  // automatable-looking steps when it did not, so it is always populated.
+  const flowLevelAutomationCount = flow.insights.automationOpportunities.length;
+  const automationUnreviewed =
+    flow.insights.automationOpportunitiesSource === "derived";
   const tribalKnowledgeNodes = flow.nodes.filter(
     (node) => node.isTribalKnowledge,
   );
@@ -1378,9 +1391,13 @@ export function ProcessInsightsTab({
           />
           <MetricTile
             icon={Bot}
-            label="Automation"
-            value={automationCandidates.length}
-            detail="Node-level candidates above none"
+            label="Automations"
+            value={flowLevelAutomationCount}
+            detail={
+              automationUnreviewed
+                ? "Possible only — not analysed"
+                : "Recommended automations"
+            }
           />
           <MetricTile
             icon={ShieldAlert}
@@ -1412,6 +1429,7 @@ export function ProcessInsightsTab({
           <AutomationSection
             opportunities={flow.insights.automationOpportunities}
             opportunityDetails={flow.insights.automationOpportunityDetails}
+            flowLevelCount={flowLevelAutomationCount}
             candidates={automationCandidates}
             allNodes={flow.nodes}
             onOpenNode={onOpenProcessFlow}

@@ -1221,7 +1221,7 @@ export const generateHierarchyFinal = internalAction({
         isDepartment
           ? DEPARTMENT_OVERVIEW_V2_OPERATION
           : FUNCTION_OVERVIEW_V2_OPERATION,
-        SUMMARY_V2_AI_BUDGETS.finalReduce.maxTokens,
+        SUMMARY_V2_AI_BUDGETS.hierarchyFinalReduce.maxTokens,
       );
       const coverage: SummaryCoverage = {
         includedSources: loaded.sourceSnapshot.includedSources,

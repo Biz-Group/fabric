@@ -1,5 +1,6 @@
 import type { AIJsonSchema, AIRequest } from "./aiProvider";
 import {
+  HIERARCHY_OVERVIEW_SECTION_CAPS,
   SUMMARY_V2_AI_BUDGETS,
   SUMMARY_V2_CAPS,
   type DepartmentOverviewArtifactV2,
@@ -18,7 +19,10 @@ const findingSchema = {
   required: ["title", "body", "evidenceLevel", "sourceKeys"],
   properties: {
     title: { type: "string", maxLength: SUMMARY_V2_CAPS.findingTitleChars },
-    body: { type: "string", maxLength: SUMMARY_V2_CAPS.findingBodyChars },
+    body: {
+      type: "string",
+      maxLength: HIERARCHY_OVERVIEW_SECTION_CAPS.bodyChars,
+    },
     evidenceLevel: {
       type: "string",
       enum: ["corroborated", "single_source", "inferred_gap"],
@@ -43,14 +47,14 @@ function overviewSchema(sectionNames: readonly string[]): AIJsonSchema {
       },
       executiveBrief: {
         type: "string",
-        maxLength: SUMMARY_V2_CAPS.executiveBriefChars,
+        maxLength: HIERARCHY_OVERVIEW_SECTION_CAPS.briefChars,
       },
       ...Object.fromEntries(
         sectionNames.map((name) => [
           name,
           {
             type: "array",
-            maxItems: SUMMARY_V2_CAPS.findingGroup,
+            maxItems: HIERARCHY_OVERVIEW_SECTION_CAPS.group,
             items: findingSchema,
           },
         ]),
@@ -91,7 +95,13 @@ Evidence rules:
 - Preserve disagreements rather than selecting a canonical account.
 - Never claim measured frequency, throughput, conformance, rework rate, or timing.
 - Treat partial child artifacts as incomplete reported knowledge and do not fill their gaps.
-- Return only the required tool call.`;
+- Return only the required tool call.
+
+Output budget — the schema limits are ceilings for unusually broad rollups, not targets:
+- Return at most ${HIERARCHY_OVERVIEW_SECTION_CAPS.group} findings per section, and fewer whenever the children do not support that many. Empty sections are valid and are preferred over padding.
+- Keep each finding body to one or two sentences, typically under 300 characters. Make the cross-child point once; do not restate the title or recap a child's own summary.
+- The executive brief is one short paragraph, not a digest of the findings below it.
+- Nothing is scored on length. A complete, compact answer is the requirement; a cut-off answer is discarded entirely and the refresh fails.`;
 
 export type DepartmentOverviewPromptSource = {
   key: string;
@@ -174,9 +184,9 @@ function request(args: {
     operation: args.operation,
     system: HIERARCHY_OVERVIEW_SYSTEM_PROMPT,
     user: `${args.entityLabel}\n${args.sourceLabel}:\n${JSON.stringify(args.sources)}`,
-    maxTokens: SUMMARY_V2_AI_BUDGETS.finalReduce.maxTokens,
-    timeoutMs: SUMMARY_V2_AI_BUDGETS.finalReduce.timeoutMs,
-    maxRetries: SUMMARY_V2_AI_BUDGETS.finalReduce.maxRetries,
+    maxTokens: SUMMARY_V2_AI_BUDGETS.hierarchyFinalReduce.maxTokens,
+    timeoutMs: SUMMARY_V2_AI_BUDGETS.hierarchyFinalReduce.timeoutMs,
+    maxRetries: SUMMARY_V2_AI_BUDGETS.hierarchyFinalReduce.maxRetries,
     temperature: 0,
     tool: {
       name: args.toolName,

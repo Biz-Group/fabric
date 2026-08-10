@@ -4,6 +4,8 @@ import {
   conversationEvidenceMaxOutputTokens,
   CONVERSATION_EVIDENCE_CAP_BUDGET_RATIO,
   getSummaryListMetadata,
+  hierarchyOverviewMaxOutputTokens,
+  HIERARCHY_OVERVIEW_CAP_BUDGET_RATIO,
   normalizeDepartmentOverviewArtifactV2,
   normalizeFunctionOverviewArtifactV2,
   normalizeProcessOverviewArtifactV2,
@@ -106,8 +108,11 @@ describe("Summary V2 contracts and normalizers", () => {
       conversationEvidence: "summary-v2-conversation-evidence-v2",
       // v2: the ordered stage timeline became non-sequential scope findings.
       processOverview: "summary-v2-process-overview-v2",
-      departmentOverview: "summary-v2-department-overview-v1",
-      functionOverview: "summary-v2-function-overview-v1",
+      // v2: the rollups moved off the process caps and onto their own, and the
+      // output budget is stated in the prompt. Bumped because every department
+      // with more than one child process truncated under v1.
+      departmentOverview: "summary-v2-department-overview-v2",
+      functionOverview: "summary-v2-function-overview-v2",
       legacyMarkdown: "summary-v2-legacy-markdown-v2",
     });
     expect(SUMMARY_V2_CAPS).toMatchObject({
@@ -116,6 +121,9 @@ describe("Summary V2 contracts and normalizers", () => {
       findingTitleChars: 120,
       findingBodyChars: 1_200,
       executiveBriefChars: 1_800,
+      hierarchyFindingGroup: 5,
+      hierarchyFindingBodyChars: 700,
+      hierarchyExecutiveBriefChars: 1_600,
       conversationSteps: 18,
       conversationEvidenceGroup: 10,
       conversationStepBodyChars: 400,
@@ -138,6 +146,38 @@ describe("Summary V2 contracts and normalizers", () => {
     // ceilings are independent, and raising tokens to fix truncation is only a
     // fix if the call can generate them before the clock runs out.
     expect(isWithinTimeBudget(budget.maxTokens, budget.timeoutMs)).toBe(true);
+  });
+
+  test("keeps the rollup contract inside the budget that has to hold it", () => {
+    const budget = SUMMARY_V2_AI_BUDGETS.hierarchyFinalReduce;
+
+    // The regression this pins: the rollups reused the process caps — five
+    // sections of eight 1,200-character findings, ~17.9k tokens — against
+    // `finalReduce`'s 3,072. Compensation (5 processes) and Talent Development
+    // (10) both truncated on both attempts and stored nothing, while the two
+    // departments that succeeded had one child each and still spent 76-83% of
+    // the budget. Widening a hierarchy cap now fails here instead of in prod.
+    expect(hierarchyOverviewMaxOutputTokens()).toBeLessThanOrEqual(
+      budget.maxTokens * HIERARCHY_OVERVIEW_CAP_BUDGET_RATIO,
+    );
+
+    expect(isWithinTimeBudget(budget.maxTokens, budget.timeoutMs)).toBe(true);
+
+    // The rollup timeout is the one long enough to collide with the 10-minute
+    // Convex action ceiling, and the timeout is per attempt. Prompt paging and
+    // the save mutation share the same action, so leave real headroom.
+    expect((1 + budget.maxRetries) * budget.timeoutMs).toBeLessThanOrEqual(
+      480_000,
+    );
+
+    // A rollup carries the widest schema of the three reduce stages, so it must
+    // never again be the one with the smallest budget.
+    expect(budget.maxTokens).toBeGreaterThan(
+      SUMMARY_V2_AI_BUDGETS.finalReduce.maxTokens,
+    );
+    expect(budget.maxTokens).toBeGreaterThan(
+      SUMMARY_V2_AI_BUDGETS.chunkReduce.maxTokens,
+    );
   });
 
   test("rejects malformed artifacts and keeps empty sections explicit", () => {
@@ -310,6 +350,68 @@ describe("Summary V2 contracts and normalizers", () => {
     );
     expect(fn?.crossDepartmentDependencies[0].sources[0].kind).toBe(
       "department",
+    );
+  });
+
+  test("clamps rollup artifacts to the rollup caps, not the process caps", () => {
+    const oversized = "x".repeat(4_000);
+    const overfilled = Array.from({ length: 20 }, (_, index) => ({
+      ...rawFinding(`Dependency ${index}`, ["P1"]),
+      body: oversized,
+    }));
+    const department = normalizeDepartmentOverviewArtifactV2(
+      {
+        headline: oversized,
+        executiveBrief: oversized,
+        crossProcessDependencies: overfilled,
+        sharedPatterns: [],
+        variationsAndTensions: [],
+        gaps: [],
+        notable: Array.from({ length: 20 }, (_, index) =>
+          rawFinding(`Notable ${index}`, ["P1"]),
+        ),
+      },
+      context({
+        provenance: {
+          ...context().provenance,
+          promptVersion: SUMMARY_V2_PROMPT_VERSIONS.departmentOverview,
+        },
+      }),
+    );
+
+    // A model that ignores the schema must still land inside the persisted
+    // contract, and inside the *rollup* one — the process caps would let five
+    // sections of eight 1,200-character findings through.
+    expect(department?.executiveBrief).toHaveLength(
+      SUMMARY_V2_CAPS.hierarchyExecutiveBriefChars,
+    );
+    expect(department?.crossProcessDependencies).toHaveLength(
+      SUMMARY_V2_CAPS.hierarchyFindingGroup,
+    );
+    expect(department?.crossProcessDependencies[0].body).toHaveLength(
+      SUMMARY_V2_CAPS.hierarchyFindingBodyChars,
+    );
+    expect(department?.notable).toHaveLength(
+      SUMMARY_V2_CAPS.hierarchyFindingGroup,
+    );
+
+    // And the process overview keeps its own wider caps.
+    const process = normalizeProcessOverviewArtifactV2(
+      processPayload({
+        executiveBrief: oversized,
+        scope: Array.from({ length: 20 }, (_, index) => ({
+          ...rawFinding(`Stage ${index}`),
+          body: oversized,
+        })),
+      }),
+      context(),
+    );
+    expect(process?.executiveBrief).toHaveLength(
+      SUMMARY_V2_CAPS.executiveBriefChars,
+    );
+    expect(process?.scope).toHaveLength(SUMMARY_V2_CAPS.findingGroup);
+    expect(process?.scope[0].body).toHaveLength(
+      SUMMARY_V2_CAPS.findingBodyChars,
     );
   });
 

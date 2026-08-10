@@ -15,8 +15,13 @@ export const SUMMARY_V2_PROMPT_VERSIONS = {
   // participant findings. Process Flow owns step order; two independently
   // generated sequences over the same transcripts always disagreed.
   processOverview: "summary-v2-process-overview-v2",
-  departmentOverview: "summary-v2-department-overview-v1",
-  functionOverview: "summary-v2-function-overview-v1",
+  // v2 restated the rollup output budget in the prompt and moved both rollup
+  // schemas onto their own tighter caps. v1 reused the process caps — five
+  // sections of eight 1,200-character findings, ~17.9k tokens of contract — on
+  // a 3,072-token budget, so any department with more than one child process
+  // truncated and stored nothing.
+  departmentOverview: "summary-v2-department-overview-v2",
+  functionOverview: "summary-v2-function-overview-v2",
   legacyMarkdown: "summary-v2-legacy-markdown-v2",
 } as const;
 
@@ -28,6 +33,14 @@ export const SUMMARY_V2_PROMPT_VERSIONS = {
  * steps of 800 characters will try to deliver them. Keep them proportional to
  * `SUMMARY_V2_AI_BUDGETS.conversationEvidence.maxTokens` — see
  * `conversationEvidenceMaxOutputTokens()` below, which is asserted in tests.
+ *
+ * The `hierarchy*` caps are the same kind of request for the department and
+ * function rollups. They are separate from `findingGroup` / `findingBodyChars`
+ * because the two contracts answer to different budgets and different input:
+ * the process overview reduces raw interview evidence one process at a time,
+ * while a rollup reduces N child artifacts that are already summaries. Sharing
+ * one set of caps is what put a ~17.9k-token contract on the smallest budget
+ * of the three reduce stages.
  */
 export const SUMMARY_V2_CAPS = {
   findingGroup: 8,
@@ -37,6 +50,9 @@ export const SUMMARY_V2_CAPS = {
   findingBodyChars: 1_200,
   executiveBriefChars: 1_800,
   sourceLabelChars: 120,
+  hierarchyFindingGroup: 5,
+  hierarchyFindingBodyChars: 700,
+  hierarchyExecutiveBriefChars: 1_600,
   conversationSteps: 18,
   conversationEvidenceGroup: 10,
   conversationStepTitleChars: 120,
@@ -50,6 +66,13 @@ const JSON_CHARS_PER_TOKEN = 3.5;
 
 /** The six flat string arrays in the evidence contract. */
 const CONVERSATION_EVIDENCE_GROUP_COUNT = 6;
+
+/**
+ * Finding sections in each rollup schema — `crossProcessDependencies`,
+ * `sharedPatterns`, `variationsAndTensions`, `gaps`, `notable` for a
+ * department, and the function schema's equivalents.
+ */
+const HIERARCHY_OVERVIEW_SECTION_COUNT = 5;
 
 /**
  * Output tokens the evidence schema demands if the model fills every cap.
@@ -87,6 +110,55 @@ export function conversationEvidenceMaxOutputTokens(): number {
 export const CONVERSATION_EVIDENCE_CAP_BUDGET_RATIO = 2;
 
 /**
+ * Output tokens the department and function rollup schemas demand if the model
+ * fills every cap. Both share `overviewSchema()`, so one number covers both.
+ *
+ * This is the check `conversationEvidenceMaxOutputTokens()` got and the rollup
+ * stage did not. The configuration it rules out is the one that shipped: the
+ * process caps (five sections of eight findings at 1,200 characters, ~17.9k
+ * tokens) against `finalReduce`'s 3,072, which is 5.8x. Measured against that,
+ * a department of five processes truncated on both attempts and stored
+ * nothing, and departments of one child spent 76-83% of the budget — so the
+ * ceiling was not merely exceeded at the extreme, it was exceeded by two
+ * children.
+ */
+export function hierarchyOverviewMaxOutputTokens(): number {
+  const caps = SUMMARY_V2_CAPS;
+  // Per finding: `{"title":"…","body":"…","evidenceLevel":"corroborated",
+  // "sourceKeys":["P12",…]},` — 90 chars of JSON scaffolding and key names,
+  // the longest enum value, and the source-key array at its cap.
+  const findingChars =
+    caps.findingTitleChars +
+    caps.hierarchyFindingBodyChars +
+    "corroborated".length +
+    caps.sourcesPerFinding * 8 +
+    90;
+  const sectionChars =
+    HIERARCHY_OVERVIEW_SECTION_COUNT *
+    caps.hierarchyFindingGroup *
+    findingChars;
+  return Math.ceil(
+    (sectionChars +
+      caps.headlineChars +
+      caps.hierarchyExecutiveBriefChars +
+      200) /
+      JSON_CHARS_PER_TOKEN,
+  );
+}
+
+/**
+ * How far `hierarchyOverviewMaxOutputTokens()` may exceed its budget.
+ *
+ * Same reasoning as `CONVERSATION_EVIDENCE_CAP_BUDGET_RATIO`, and the same
+ * value: the caps are per-item ceilings, and no real rollup fills five
+ * sections with five 700-character findings each. Unlike evidence extraction,
+ * a truncated rollup is not retried into a tightened prompt — the retry reuses
+ * the same prompt at temperature 0 — so the headroom here is the only thing
+ * standing between a wide contract and a deterministic failure.
+ */
+export const HIERARCHY_OVERVIEW_CAP_BUDGET_RATIO = 2;
+
+/**
  * Initial request budgets; generation phases consume these constants later.
  *
  * `conversationEvidence` was 1,536 tokens against a schema that invited ~28k.
@@ -105,7 +177,45 @@ export const SUMMARY_V2_AI_BUDGETS = {
   },
   chunkReduce: { maxTokens: 4_096, timeoutMs: 150_000, maxRetries: 2 },
   finalReduce: { maxTokens: 3_072, timeoutMs: 120_000, maxRetries: 2 },
+  /**
+   * The department and function rollups reduce child artifacts rather than raw
+   * evidence, and they were the one stage running the widest schema on the
+   * smallest budget: `finalReduce`'s 3,072 tokens, which is *less* than
+   * `chunkReduce` gets for a narrower contract.
+   *
+   * 5,632 is the most a 180s timeout supports at the worst measured throughput
+   * (`maxTokensForTimeout(180_000)` = 5,720). `maxRetries` drops to 1 because
+   * the ceiling is per attempt: 2 x 180s = 360s leaves room under the 10-minute
+   * Convex action limit, where 3 x 180s = 540s would not once prompt paging is
+   * counted. Transient provider failures are still covered — the run-level
+   * retry in `failHierarchyFinal` reschedules a fresh action.
+   */
+  hierarchyFinalReduce: {
+    maxTokens: 5_632,
+    timeoutMs: 180_000,
+    maxRetries: 1,
+  },
 } as const;
+
+/** Per-artifact section caps, so the schema and the normalizer cannot drift. */
+export type OverviewSectionCaps = {
+  readonly group: number;
+  readonly bodyChars: number;
+  readonly briefChars: number;
+};
+
+const PROCESS_OVERVIEW_SECTION_CAPS: OverviewSectionCaps = {
+  group: SUMMARY_V2_CAPS.findingGroup,
+  bodyChars: SUMMARY_V2_CAPS.findingBodyChars,
+  briefChars: SUMMARY_V2_CAPS.executiveBriefChars,
+};
+
+/** Exported so `overviewSchema()` requests exactly what normalization keeps. */
+export const HIERARCHY_OVERVIEW_SECTION_CAPS: OverviewSectionCaps = {
+  group: SUMMARY_V2_CAPS.hierarchyFindingGroup,
+  bodyChars: SUMMARY_V2_CAPS.hierarchyFindingBodyChars,
+  briefChars: SUMMARY_V2_CAPS.hierarchyExecutiveBriefChars,
+};
 
 export const summaryEvidenceLevelValidator = v.union(
   v.literal("corroborated"),
@@ -576,6 +686,7 @@ function normalizeFinding(
   rawValue: unknown,
   sourceByKey: SummarySourceKeyMap,
   sectionKey: string,
+  bodyChars: number,
 ): SummaryFinding | null {
   const raw = asRecord(rawValue);
   if (!raw) return null;
@@ -583,7 +694,7 @@ function normalizeFinding(
     raw.title,
     SUMMARY_V2_CAPS.findingTitleChars,
   );
-  const body = normalizeBlockText(raw.body, SUMMARY_V2_CAPS.findingBodyChars);
+  const body = normalizeBlockText(raw.body, bodyChars);
   if (!title || !body) return null;
 
   const requestedEvidenceLevel = raw.evidenceLevel;
@@ -631,13 +742,18 @@ function normalizeFindingGroup(
   value: unknown,
   sourceByKey: SummarySourceKeyMap,
   sectionKey: string,
-  cap: number,
+  caps: OverviewSectionCaps,
 ): SummaryFinding[] {
   if (!Array.isArray(value)) return [];
   const findings: SummaryFinding[] = [];
   const seen = new Set<string>();
   for (const raw of value) {
-    const finding = normalizeFinding(raw, sourceByKey, sectionKey);
+    const finding = normalizeFinding(
+      raw,
+      sourceByKey,
+      sectionKey,
+      caps.bodyChars,
+    );
     if (!finding) continue;
     const dedupeKey = `${normalizedSemanticText(finding.title)}|${finding.sources
       .map(sourceIdentity)
@@ -646,7 +762,7 @@ function normalizeFindingGroup(
     if (seen.has(dedupeKey)) continue;
     seen.add(dedupeKey);
     findings.push(finding);
-    if (findings.length === cap) break;
+    if (findings.length === caps.group) break;
   }
   return findings;
 }
@@ -712,6 +828,7 @@ function normalizeProvenance(
 function normalizeArtifactBase(
   value: unknown,
   context: SummaryNormalizationContext,
+  caps: OverviewSectionCaps,
 ) {
   const raw = asRecord(value);
   if (!raw) return null;
@@ -721,7 +838,7 @@ function normalizeArtifactBase(
   );
   const executiveBrief = normalizeBlockText(
     raw.executiveBrief,
-    SUMMARY_V2_CAPS.executiveBriefChars,
+    caps.briefChars,
   );
   const coverage = normalizeCoverage(context.coverage);
   const provenance = normalizeProvenance(context.provenance);
@@ -733,7 +850,8 @@ export function normalizeProcessOverviewArtifactV2(
   value: unknown,
   context: SummaryNormalizationContext,
 ): ProcessOverviewArtifactV2 | null {
-  const base = normalizeArtifactBase(value, context);
+  const caps = PROCESS_OVERVIEW_SECTION_CAPS;
+  const base = normalizeArtifactBase(value, context, caps);
   if (!base) return null;
   return {
     schemaVersion: "v2",
@@ -744,31 +862,31 @@ export function normalizeProcessOverviewArtifactV2(
       base.raw.scope,
       context.sourceByKey,
       "scope",
-      SUMMARY_V2_CAPS.findingGroup,
+      caps,
     ),
     consensus: normalizeFindingGroup(
       base.raw.consensus,
       context.sourceByKey,
       "consensus",
-      SUMMARY_V2_CAPS.findingGroup,
+      caps,
     ),
     variations: normalizeFindingGroup(
       base.raw.variations,
       context.sourceByKey,
       "variation",
-      SUMMARY_V2_CAPS.findingGroup,
+      caps,
     ),
     gaps: normalizeFindingGroup(
       base.raw.gaps,
       context.sourceByKey,
       "gap",
-      SUMMARY_V2_CAPS.findingGroup,
+      caps,
     ),
     notable: normalizeFindingGroup(
       base.raw.notable,
       context.sourceByKey,
       "notable",
-      SUMMARY_V2_CAPS.findingGroup,
+      caps,
     ),
     coverage: base.coverage,
     provenance: base.provenance,
@@ -779,7 +897,8 @@ export function normalizeDepartmentOverviewArtifactV2(
   value: unknown,
   context: SummaryNormalizationContext,
 ): DepartmentOverviewArtifactV2 | null {
-  const base = normalizeArtifactBase(value, context);
+  const caps = HIERARCHY_OVERVIEW_SECTION_CAPS;
+  const base = normalizeArtifactBase(value, context, caps);
   if (!base) return null;
   return {
     schemaVersion: "v2",
@@ -790,31 +909,31 @@ export function normalizeDepartmentOverviewArtifactV2(
       base.raw.crossProcessDependencies,
       context.sourceByKey,
       "cross-process-dependency",
-      SUMMARY_V2_CAPS.findingGroup,
+      caps,
     ),
     sharedPatterns: normalizeFindingGroup(
       base.raw.sharedPatterns,
       context.sourceByKey,
       "shared-pattern",
-      SUMMARY_V2_CAPS.findingGroup,
+      caps,
     ),
     variationsAndTensions: normalizeFindingGroup(
       base.raw.variationsAndTensions,
       context.sourceByKey,
       "variation-and-tension",
-      SUMMARY_V2_CAPS.findingGroup,
+      caps,
     ),
     gaps: normalizeFindingGroup(
       base.raw.gaps,
       context.sourceByKey,
       "gap",
-      SUMMARY_V2_CAPS.findingGroup,
+      caps,
     ),
     notable: normalizeFindingGroup(
       base.raw.notable,
       context.sourceByKey,
       "notable",
-      SUMMARY_V2_CAPS.findingGroup,
+      caps,
     ),
     coverage: base.coverage,
     provenance: base.provenance,
@@ -825,7 +944,8 @@ export function normalizeFunctionOverviewArtifactV2(
   value: unknown,
   context: SummaryNormalizationContext,
 ): FunctionOverviewArtifactV2 | null {
-  const base = normalizeArtifactBase(value, context);
+  const caps = HIERARCHY_OVERVIEW_SECTION_CAPS;
+  const base = normalizeArtifactBase(value, context, caps);
   if (!base) return null;
   return {
     schemaVersion: "v2",
@@ -836,31 +956,31 @@ export function normalizeFunctionOverviewArtifactV2(
       base.raw.crossDepartmentDependencies,
       context.sourceByKey,
       "cross-department-dependency",
-      SUMMARY_V2_CAPS.findingGroup,
+      caps,
     ),
     strategicPatterns: normalizeFindingGroup(
       base.raw.strategicPatterns,
       context.sourceByKey,
       "strategic-pattern",
-      SUMMARY_V2_CAPS.findingGroup,
+      caps,
     ),
     variationsAndTensions: normalizeFindingGroup(
       base.raw.variationsAndTensions,
       context.sourceByKey,
       "variation-and-tension",
-      SUMMARY_V2_CAPS.findingGroup,
+      caps,
     ),
     gaps: normalizeFindingGroup(
       base.raw.gaps,
       context.sourceByKey,
       "gap",
-      SUMMARY_V2_CAPS.findingGroup,
+      caps,
     ),
     notable: normalizeFindingGroup(
       base.raw.notable,
       context.sourceByKey,
       "notable",
-      SUMMARY_V2_CAPS.findingGroup,
+      caps,
     ),
     coverage: base.coverage,
     provenance: base.provenance,
