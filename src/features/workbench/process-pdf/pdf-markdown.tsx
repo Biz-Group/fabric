@@ -1,6 +1,7 @@
 import { Fragment } from "react";
 import { Text, View } from "@react-pdf/renderer";
 import type { Style } from "@react-pdf/types";
+import { splitEmphasisRuns } from "@/lib/inline-emphasis";
 import { COLORS } from "./pdf-theme";
 
 type TextStyle = Style | Style[];
@@ -9,33 +10,27 @@ type TextStyle = Style | Style[];
 // It mirrors the subset that markdown-summary.tsx renders on the web:
 // `##`/`###` headings, `**bold**`, unordered (`-`/`*`) and ordered (`1.`)
 // lists, and paragraphs. Anything fancier degrades gracefully to plain text.
+// Emphasis is split by the shared parser the web overview uses, so the same
+// words come out bold on screen and in the report.
+const parseInline = splitEmphasisRuns;
 
-type InlineRun = { text: string; bold: boolean };
-
-function parseInline(text: string): InlineRun[] {
-  const runs: InlineRun[] = [];
-  const regex = /\*\*([^*]+)\*\*|__([^_]+)__/g;
-  let lastIndex = 0;
-  let match: RegExpExecArray | null;
-  while ((match = regex.exec(text)) !== null) {
-    if (match.index > lastIndex) {
-      runs.push({ text: text.slice(lastIndex, match.index), bold: false });
-    }
-    runs.push({ text: match[1] ?? match[2] ?? "", bold: true });
-    lastIndex = regex.lastIndex;
-  }
-  if (lastIndex < text.length) {
-    runs.push({ text: text.slice(lastIndex), bold: false });
-  }
-  return runs.length > 0 ? runs : [{ text, bold: false }];
-}
-
-function InlineText({ text, style }: { text: string; style?: TextStyle }) {
+/**
+ * A single paragraph of text with its `**bold**` spans emphasized. Exported
+ * because the structured overview brief is one such paragraph and must not
+ * print its markers.
+ */
+export function InlineText({
+  text,
+  style,
+}: {
+  text: string;
+  style?: TextStyle;
+}) {
   return (
     <Text style={style}>
       {parseInline(text).map((run, i) => (
         <Fragment key={i}>
-          {run.bold ? (
+          {run.emphasized ? (
             <Text style={{ fontFamily: "Helvetica-Bold", color: COLORS.ink }}>
               {run.text}
             </Text>
@@ -156,7 +151,7 @@ export function PdfMarkdown({ content }: { content: string }) {
                     {ordered ? `${j + 1}.  ` : "•  "}
                   </Text>
                   {parseInline(item).map((run, k) =>
-                    run.bold ? (
+                    run.emphasized ? (
                       <Text
                         key={k}
                         style={{ fontFamily: "Helvetica-Bold", color: COLORS.ink }}

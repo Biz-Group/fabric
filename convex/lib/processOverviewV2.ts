@@ -98,6 +98,12 @@ The scope section carries the orientation facts the flow graph cannot state at p
 - Which systems or records the work runs on.
 - What the process depends on upstream or feeds downstream.
 
+Executive brief emphasis:
+- Write executiveBrief as prose, then mark its load-bearing facts with markdown bold: **like this**.
+- Emphasize what a reader must not miss: the systems or records the work runs on, the owning roles, the thresholds and rules that decide an outcome, and the tension the accounts disagree about.
+- Emphasize two to six spans of one to five words each. Never bold a whole sentence, a whole clause, or hedging language.
+- Bold belongs to executiveBrief only. Use no other markdown anywhere, and never bold inside headline, finding titles, or finding bodies.
+
 Evidence rules:
 - Every factual finding must cite one or more supplied source keys.
 - Use corroborated only when at least two distinct contributors support the finding.

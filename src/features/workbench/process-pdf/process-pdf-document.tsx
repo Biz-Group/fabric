@@ -15,7 +15,7 @@ import {
   OVERVIEW_STATE_TONES,
   s,
 } from "./pdf-theme";
-import { PdfMarkdown } from "./pdf-markdown";
+import { InlineText, PdfMarkdown } from "./pdf-markdown";
 import { FlowDiagramPdf } from "./flow-diagram-pdf";
 import {
   buildProcessPdfData,
@@ -501,9 +501,10 @@ function OverviewSectionPdf({ data }: { data: ProcessPdfData }) {
         >
           {overview.structured.headline}
         </Text>
-        <Text style={[s.body, { marginBottom: 12 }]}>
-          {overview.structured.brief}
-        </Text>
+        <InlineText
+          text={overview.structured.brief}
+          style={[s.body, { marginBottom: 12 }]}
+        />
         {overview.structured.sections.map((section) => (
           <OverviewFindingGroup key={section.key} section={section} />
         ))}

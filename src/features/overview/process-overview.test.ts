@@ -172,6 +172,21 @@ describe("ProcessOverviewContent", () => {
     if (state === "failed") expect(html).toContain("provider was unavailable");
   });
 
+  it("leads with the overview and keeps status detail one tap away", () => {
+    const html = renderOverview(overview());
+    const heading = html.indexOf('id="process-overview-brief"');
+    const statusChip = html.indexOf("Partial coverage");
+    const brief = html.indexOf(artifact.executiveBrief);
+    const evidence = html.indexOf("Conversations included");
+
+    expect(heading).toBeGreaterThan(-1);
+    expect(heading).toBeLessThan(statusChip);
+    expect(statusChip).toBeLessThan(brief);
+    expect(brief).toBeLessThan(evidence);
+    expect(html).toContain('id="process-overview-brief-status-detail" hidden=""');
+    expect(html).not.toContain("mb-8 flex items-start gap-3 border-l-2");
+  });
+
   it("presents evidence coverage, scope, variations, agreement, and gaps", () => {
     const html = renderOverview(overview());
 

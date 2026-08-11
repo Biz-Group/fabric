@@ -89,6 +89,42 @@ export function overviewActionHint(
     : `A contributor or admin can ${action.toLowerCase()}.`;
 }
 
+export function overviewProgressText(
+  progress: { completed: number; total: number } | null | undefined,
+  unit?: string,
+): string | null {
+  if (!progress) return null;
+  return `${Math.min(progress.completed, progress.total)} of ${progress.total}${
+    unit ? ` ${unit}` : ""
+  } complete`;
+}
+
+/**
+ * The explanation behind the status chip. The overview itself leads the page, so
+ * this text is disclosed on demand rather than printed as a banner above the
+ * content. `null` means the state needs no explanation — the chip stays a plain
+ * label. `failed` is excluded on purpose: an error carries its own message and
+ * stays visible instead of being collapsed.
+ */
+export function overviewStatusDetail(
+  state: OverviewState,
+  progress: { completed: number; total: number } | null | undefined,
+  unit: string | undefined,
+  canRefresh: boolean,
+): string | null {
+  if (state !== "stale" && state !== "partial" && state !== "missing") {
+    return null;
+  }
+  const progressText = overviewProgressText(progress, unit);
+  return [
+    OVERVIEW_STATE_META[state].description,
+    progressText ? `${progressText}.` : null,
+    overviewActionHint(state, canRefresh),
+  ]
+    .filter(Boolean)
+    .join(" ");
+}
+
 export function refreshActionLabel(
   state: OverviewState,
   hasContent: boolean,

@@ -316,6 +316,30 @@ describe("release gate: no unsupported measured language", () => {
       expect(prompt).toMatch(/conformance/i);
     }
   });
+
+  test("emphasis cannot hide a phrase from the gate", () => {
+    // A marker dropped inside a banned phrase must not split it out of the
+    // pattern, and the reported match is the phrase the reader sees.
+    expect(
+      detectMeasuredLanguage("Approvals take **3 days** on average."),
+    ).toEqual(detectMeasuredLanguage("Approvals take 3 days on average."));
+    expect(
+      detectMeasuredLanguage("The **cycle time** is reported by the team."),
+    ).toContainEqual(
+      expect.objectContaining({ ruleId: "throughput", match: "cycle time" }),
+    );
+  });
+
+  test("every generation prompt scopes emphasis to the executive brief", () => {
+    for (const prompt of [
+      PROCESS_OVERVIEW_SYSTEM_PROMPT,
+      HIERARCHY_OVERVIEW_SYSTEM_PROMPT,
+    ]) {
+      expect(prompt).toContain("**like this**");
+      expect(prompt).toMatch(/executiveBrief only/);
+      expect(prompt).toMatch(/never bold inside headline/i);
+    }
+  });
 });
 
 describe("release gate: no critical labelled fact is lost", () => {

@@ -5,6 +5,8 @@ import {
   OVERVIEW_STATE_META,
   overviewActionHint,
   overviewCopyText,
+  overviewProgressText,
+  overviewStatusDetail,
   refreshActionLabel,
   surfaceReadinessLabel,
 } from "./overview-view-model";
@@ -74,6 +76,35 @@ describe("overview presentation rules", () => {
     expect(overviewActionHint("current", true)).toBeNull();
     expect(overviewActionHint("refreshing", true)).toBeNull();
     expect(overviewActionHint("failed", true)).toBeNull();
+  });
+
+  it("discloses a status explanation only for states a reader can act on", () => {
+    expect(
+      overviewStatusDetail("partial", { completed: 1, total: 1 }, "processes", true),
+    ).toBe(
+      "The overview is useful, but not every eligible source was included. 1 of 1 processes complete. Rebuild the overview when you are ready.",
+    );
+    expect(overviewStatusDetail("stale", null, undefined, false)).toBe(
+      "New evidence has been recorded since this overview was generated. The previous overview is shown until it is rebuilt. A contributor or admin can rebuild the overview.",
+    );
+    // Current and refreshing explain themselves; failed keeps its own visible
+    // alert rather than hiding an error behind a chip.
+    expect(overviewStatusDetail("current", null, undefined, true)).toBeNull();
+    expect(overviewStatusDetail("refreshing", null, undefined, true)).toBeNull();
+    expect(overviewStatusDetail("failed", null, undefined, true)).toBeNull();
+  });
+
+  it("formats rollup progress against the unit being rolled up", () => {
+    expect(overviewProgressText({ completed: 2, total: 4 }, "processes")).toBe(
+      "2 of 4 processes complete",
+    );
+    expect(overviewProgressText({ completed: 3, total: 4 })).toBe(
+      "3 of 4 complete",
+    );
+    expect(overviewProgressText({ completed: 9, total: 4 })).toBe(
+      "4 of 4 complete",
+    );
+    expect(overviewProgressText(null)).toBeNull();
   });
 
   it("chooses an action label from state and content availability", () => {

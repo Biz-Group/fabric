@@ -1,9 +1,12 @@
-import type { ReactNode } from "react";
+"use client";
+
+import { Fragment, useState, type ReactNode } from "react";
 import {
   AlertTriangle,
   ArrowUpRight,
   Check,
   CheckCircle2,
+  ChevronDown,
   CircleDashed,
   Clock3,
   Copy,
@@ -14,12 +17,14 @@ import {
 } from "lucide-react";
 import type { Id } from "../../../convex/_generated/dataModel";
 import { Button } from "@/components/ui/button";
+import { splitEmphasisRuns } from "@/lib/inline-emphasis";
 import { cn } from "@/lib/utils";
 import {
   evidenceStrengthLabel,
   formatGeneratedTime,
   OVERVIEW_STATE_META,
-  overviewActionHint,
+  overviewProgressText,
+  overviewStatusDetail,
   refreshActionLabel,
   type EvidenceLevel,
   type OverviewState,
@@ -72,25 +77,98 @@ const STATE_ICONS = {
   failed: AlertTriangle,
 } satisfies Record<OverviewState, typeof CircleDashed>;
 
-export function OverviewStateBadge({ state }: { state: OverviewState }) {
+/**
+ * The lifecycle chip. When the state carries an explanation it becomes a
+ * disclosure button instead of growing into a banner — the detail stays one tap
+ * away rather than pushing the overview itself down the page.
+ */
+export function OverviewStateBadge({
+  state,
+  expandable = false,
+  expanded = false,
+  controls,
+  onToggle,
+}: {
+  state: OverviewState;
+  expandable?: boolean;
+  expanded?: boolean;
+  controls?: string;
+  onToggle?: () => void;
+}) {
   const Icon = STATE_ICONS[state];
-  return (
-    <span
-      className={cn(
-        "inline-flex min-h-6 items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs font-medium",
-        STATE_STYLES[state],
-      )}
-      aria-label={`Overview status: ${OVERVIEW_STATE_META[state].label}`}
-    >
+  const label = OVERVIEW_STATE_META[state].label;
+  const chipClass = cn(
+    "inline-flex min-h-6 items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs font-medium",
+    STATE_STYLES[state],
+  );
+  const body = (
+    <>
       <Icon
         className={cn(
-          "size-3.5",
+          "size-3.5 shrink-0",
           state === "refreshing" && "animate-spin motion-reduce:animate-none",
         )}
         aria-hidden="true"
       />
-      {OVERVIEW_STATE_META[state].label}
-    </span>
+      {label}
+      {expandable && (
+        <ChevronDown
+          className={cn(
+            "size-3 shrink-0 opacity-70 transition-transform motion-reduce:transition-none",
+            expanded && "rotate-180",
+          )}
+          aria-hidden="true"
+        />
+      )}
+    </>
+  );
+
+  if (!expandable) {
+    return (
+      <span className={chipClass} aria-label={`Overview status: ${label}`}>
+        {body}
+      </span>
+    );
+  }
+
+  return (
+    <button
+      type="button"
+      onClick={onToggle}
+      aria-expanded={expanded}
+      aria-controls={controls}
+      aria-label={`Overview status: ${label}`}
+      title={expanded ? "Hide status detail" : "Show status detail"}
+      className={cn(
+        chipClass,
+        "org-focus-ring min-h-8 cursor-pointer transition-opacity hover:opacity-80 sm:min-h-7",
+      )}
+    >
+      {body}
+    </button>
+  );
+}
+
+/**
+ * Generated prose with its load-bearing facts emphasized. The generator marks
+ * the spans — a reader scanning the brief sees the systems, roles, and
+ * thresholds it turns on without reading every sentence. Emphasis inherits the
+ * surrounding size and only lifts weight and colour, so it reads as stress
+ * inside the paragraph rather than a second heading level.
+ */
+export function EmphasizedText({ value }: { value: string }) {
+  return (
+    <>
+      {splitEmphasisRuns(value).map((run, index) =>
+        run.emphasized ? (
+          <strong key={index} className="font-semibold text-foreground">
+            {run.text}
+          </strong>
+        ) : (
+          <Fragment key={index}>{run.text}</Fragment>
+        ),
+      )}
+    </>
   );
 }
 
@@ -109,187 +187,183 @@ export function OverviewGeneratedTime({ value }: { value: number | null }) {
   );
 }
 
-export function OverviewProvenance({
-  sourceMode,
-  generatedAt,
-}: {
-  sourceMode: string;
-  generatedAt: number | null;
-}) {
+function OverviewAlert({ children }: { children: ReactNode }) {
   return (
-    <div
-      className="flex flex-wrap items-center gap-x-3 gap-y-2 text-xs text-muted-foreground"
-      aria-label="Overview provenance"
+    <p
+      role="alert"
+      className="mt-4 border-l-2 border-destructive bg-destructive/10 px-4 py-3 text-sm leading-6"
     >
-      <span className="inline-flex min-h-6 items-center rounded-full border px-2.5 py-1 font-medium">
-        {sourceMode}
-      </span>
-      <OverviewGeneratedTime value={generatedAt} />
-    </div>
+      {children}
+    </p>
   );
 }
 
-export function OverviewControlHeader({
+/**
+ * The top of every overview surface: the overview itself leads, and the
+ * lifecycle chip, provenance, and actions ride one compact line under the
+ * heading. Everything that used to sit above the content as chips, a banner,
+ * and a button row is either in that line or disclosed from the chip, so the
+ * reader reaches the actual overview in the first screen on any viewport.
+ */
+export function OverviewLead({
+  id,
+  title = "Overview",
   state,
   hasContent,
-  sourceMode,
   generatedAt,
   progress,
   progressUnit,
   canRefresh,
   refreshPending,
+  refreshError,
+  error,
   copyState,
   onCopy,
   onRefresh,
+  children,
 }: {
+  id: string;
+  title?: string;
   state: OverviewState;
   hasContent: boolean;
-  sourceMode: string;
   generatedAt: number | null;
   progress?: { completed: number; total: number } | null;
   progressUnit?: string;
   canRefresh: boolean;
   refreshPending: boolean;
+  refreshError?: string | null;
+  error: { message: string; retryable: boolean } | null;
   copyState: OverviewCopyState;
   onCopy: () => void;
   onRefresh: () => void;
+  children: ReactNode;
 }) {
-  const progressText =
-    state === "refreshing" && progress
-      ? `${Math.min(progress.completed, progress.total)} of ${progress.total}${
-          progressUnit ? ` ${progressUnit}` : ""
-        } complete`
-      : null;
+  const [detailOpen, setDetailOpen] = useState(false);
+  const detailId = `${id}-status-detail`;
+  const detail = overviewStatusDetail(state, progress, progressUnit, canRefresh);
+  // The timestamp only says something once an overview has been generated.
+  const liveProgress =
+    state === "refreshing" ? overviewProgressText(progress, progressUnit) : null;
+  const showRefresh = canRefresh && state !== "refreshing";
+  const actionLabel = refreshActionLabel(state, hasContent);
 
   return (
-    <header className={cn("pb-5", generatedAt !== null && "sm:pb-7")}>
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div
-          className="flex min-w-0 flex-wrap items-center gap-2.5"
-          role={state === "refreshing" ? "status" : undefined}
-          aria-live={state === "refreshing" ? "polite" : undefined}
+    <section aria-labelledby={id} className="pb-8 sm:pb-10">
+      <div className="flex items-center justify-between gap-3">
+        <h2
+          id={id}
+          className="min-w-0 text-2xl font-semibold tracking-tight sm:text-3xl"
         >
-          <OverviewStateBadge state={state} />
-          {progressText && (
-            <span className="text-xs text-muted-foreground">
-              {progressText}
-            </span>
-          )}
-        </div>
-        <div className="flex flex-wrap items-center justify-end gap-2">
-          {hasContent && (
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              className="org-focus-ring gap-1.5"
-              disabled={copyState === "copying"}
-              onClick={onCopy}
-            >
-              {copyState === "copied" ? (
-                <Check className="size-3.5" aria-hidden="true" />
-              ) : (
-                <Copy className="size-3.5" aria-hidden="true" />
-              )}
-              {copyState === "copied"
-                ? "Copied"
-                : copyState === "failed"
-                  ? "Copy failed"
-                  : "Copy"}
-            </Button>
-          )}
-          {canRefresh && state !== "refreshing" && (
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              className="org-focus-ring gap-1.5"
-              disabled={refreshPending}
-              onClick={onRefresh}
-            >
-              {refreshPending ? (
-                <Loader2
-                  className="size-3.5 animate-spin motion-reduce:animate-none"
-                  aria-hidden="true"
-                />
-              ) : (
-                <RefreshCw className="size-3.5" aria-hidden="true" />
-              )}
-              {refreshActionLabel(state, hasContent)}
-            </Button>
-          )}
-        </div>
-      </div>
-      {generatedAt !== null && (
-        <div className="mt-4">
-          <OverviewProvenance sourceMode={sourceMode} generatedAt={generatedAt} />
-        </div>
-      )}
-    </header>
-  );
-}
-
-export function OverviewLifecycleNotice({
-  state,
-  progress,
-  error,
-  progressUnit,
-  canRefresh = false,
-}: {
-  state: OverviewState;
-  progress: { completed: number; total: number } | null;
-  error: { message: string; retryable: boolean } | null;
-  progressUnit?: string;
-  canRefresh?: boolean;
-}) {
-  if (state === "current" || state === "refreshing") return null;
-  const actionHint = overviewActionHint(state, canRefresh);
-  const progressText = progress
-    ? `${Math.min(progress.completed, progress.total)} of ${progress.total}${
-        progressUnit ? ` ${progressUnit}` : ""
-      } complete`
-    : null;
-  const role = state === "failed" ? "alert" : "status";
-
-  return (
-    <div
-      role={role}
-      aria-live="polite"
-      className={cn(
-        "mb-8 flex items-start gap-3 border-l-2 px-4 py-3 text-sm",
-        (state === "stale" || state === "partial") &&
-          "border-amber-500 bg-amber-50/70 text-amber-950 dark:bg-amber-500/10 dark:text-amber-100",
-        state === "failed" &&
-          "border-destructive bg-destructive/10 text-foreground",
-        state === "missing" &&
-          "border-border bg-muted/50 text-muted-foreground",
-      )}
-    >
-      <span
-        className={cn(
-          "mt-1 size-2 shrink-0 rounded-full",
-          state === "failed" ? "bg-destructive" : "bg-amber-500",
-          state === "missing" && "bg-muted-foreground",
+          {title}
+        </h2>
+        {(hasContent || showRefresh) && (
+          <div className="flex shrink-0 items-center gap-1.5">
+            {hasContent && (
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="org-focus-ring h-9 px-3 sm:h-7 sm:px-2.5"
+                disabled={copyState === "copying"}
+                onClick={onCopy}
+                aria-label={
+                  copyState === "copied" ? "Overview copied" : "Copy overview"
+                }
+              >
+                {copyState === "copied" ? (
+                  <Check className="size-4 sm:size-3.5" aria-hidden="true" />
+                ) : (
+                  <Copy className="size-4 sm:size-3.5" aria-hidden="true" />
+                )}
+                <span className="hidden sm:inline">
+                  {copyState === "copied"
+                    ? "Copied"
+                    : copyState === "failed"
+                      ? "Copy failed"
+                      : "Copy"}
+                </span>
+              </Button>
+            )}
+            {showRefresh && (
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="org-focus-ring h-9 px-3 sm:h-7 sm:px-2.5"
+                disabled={refreshPending}
+                onClick={onRefresh}
+                aria-label={actionLabel}
+              >
+                {refreshPending ? (
+                  <Loader2
+                    className="size-4 animate-spin motion-reduce:animate-none sm:size-3.5"
+                    aria-hidden="true"
+                  />
+                ) : (
+                  <RefreshCw className="size-4 sm:size-3.5" aria-hidden="true" />
+                )}
+                {/* An empty overview needs a legible call to action, so its
+                    label survives on narrow viewports. */}
+                <span className={cn(hasContent && "hidden sm:inline")}>
+                  {actionLabel}
+                </span>
+              </Button>
+            )}
+          </div>
         )}
-        aria-hidden="true"
-      />
-      <div>
-        <p className="font-medium">{OVERVIEW_STATE_META[state].label}</p>
-        <p className="mt-0.5 leading-6 text-current/75">
-          {OVERVIEW_STATE_META[state].description}
-          {progressText ? ` ${progressText}.` : ""}
-          {actionHint ? ` ${actionHint}` : ""}
-        </p>
-        {state === "failed" && error && (
-          <p className="mt-1 text-xs text-current/70">
-            {error.message}
-            {error.retryable
-              ? " A contributor can retry this refresh."
-              : ""}
+      </div>
+
+      <div
+        role="status"
+        aria-live="polite"
+        className="mt-3 flex flex-wrap items-center gap-x-2.5 gap-y-2"
+      >
+        <OverviewStateBadge
+          state={state}
+          expandable={detail !== null}
+          expanded={detailOpen}
+          controls={detailId}
+          onToggle={() => setDetailOpen((open) => !open)}
+        />
+        {(liveProgress || generatedAt !== null) && (
+          <p className="min-w-0 text-xs text-muted-foreground">
+            {liveProgress}
+            {liveProgress && generatedAt !== null && (
+              <span aria-hidden="true"> · </span>
+            )}
+            {generatedAt !== null && (
+              <time dateTime={new Date(generatedAt).toISOString()}>
+                {formatGeneratedTime(generatedAt)}
+              </time>
+            )}
           </p>
         )}
       </div>
-    </div>
+
+      {detail && (
+        <p
+          id={detailId}
+          hidden={!detailOpen}
+          className={cn(
+            "mt-3 max-w-2xl border-l-2 px-4 py-2 text-sm leading-6 text-muted-foreground",
+            state === "missing" ? "border-border" : "border-amber-500",
+          )}
+        >
+          {detail}
+        </p>
+      )}
+
+      {state === "failed" && (
+        <OverviewAlert>
+          {OVERVIEW_STATE_META.failed.description}
+          {error ? ` ${error.message}` : ""}
+          {error?.retryable ? " A contributor can retry this refresh." : ""}
+        </OverviewAlert>
+      )}
+      {refreshError && <OverviewAlert>{refreshError}</OverviewAlert>}
+
+      {children ? <div className="mt-6 sm:mt-7">{children}</div> : null}
+    </section>
   );
 }
 

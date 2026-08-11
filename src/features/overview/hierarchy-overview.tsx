@@ -3,21 +3,15 @@
 import { useState } from "react";
 import { useMutation } from "convex/react";
 import type { FunctionReturnType } from "convex/server";
-import {
-  ArrowUpRight,
-  Building2,
-  FileText,
-  GitBranch,
-  Loader2,
-} from "lucide-react";
+import { ArrowUpRight, Building2, FileText, GitBranch } from "lucide-react";
 import { api } from "../../../convex/_generated/api";
 import type { Id } from "../../../convex/_generated/dataModel";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
+  EmphasizedText,
   FindingRows,
-  OverviewControlHeader,
   OverviewGeneratedTime,
-  OverviewLifecycleNotice,
+  OverviewLead,
   OverviewSection,
   OverviewStateBadge,
   type OverviewCopyState,
@@ -113,15 +107,20 @@ function HierarchyOverviewLoading() {
       className="mx-auto w-full max-w-5xl space-y-8 px-4 py-8 sm:px-6 lg:px-8"
       aria-label="Loading hierarchy overview"
     >
-      <div className="flex items-center justify-between gap-4">
-        <Skeleton className="h-7 w-28 rounded-full" />
-        <Skeleton className="h-8 w-48" />
+      <div className="space-y-3">
+        <div className="flex items-center justify-between gap-4">
+          <Skeleton className="h-9 w-40" />
+          <Skeleton className="h-9 w-36 sm:h-7" />
+        </div>
+        <Skeleton className="h-6 w-64 rounded-full" />
       </div>
-      <Skeleton className="h-5 w-56" />
-      <div className="space-y-3 border-y py-8">
-        <Skeleton className="h-7 w-52" />
+      <div className="space-y-3">
         <Skeleton className="h-5 w-full max-w-3xl" />
         <Skeleton className="h-5 w-4/5 max-w-2xl" />
+      </div>
+      <div className="space-y-3 border-y py-8">
+        <Skeleton className="h-7 w-52" />
+        <Skeleton className="h-5 w-full max-w-2xl" />
       </div>
       <div className="space-y-2">
         {Array.from({ length: 4 }).map((_, index) => (
@@ -358,50 +357,58 @@ export function HierarchyOverviewContent({
       className="mx-auto w-full max-w-5xl px-4 pb-6 pt-7 sm:px-6 sm:pt-10 lg:px-8"
       aria-label={`${entityLabel} overview`}
     >
-      <OverviewControlHeader
+      <OverviewLead
+        id={`${entity.kind}-overview-brief`}
         state={overview.state}
         hasContent={hasContent}
-        sourceMode={
-          artifact
-            ? "Interview evidence rollup"
-            : hasContent
-              ? "Legacy summary"
-              : "Awaiting child evidence"
-        }
         generatedAt={overview.lastSuccessfulGenerationAt}
         progress={overview.progress}
         progressUnit={childLabel}
         canRefresh={canRefresh}
         refreshPending={refreshPending}
+        refreshError={refreshError}
+        error={overview.error}
         copyState={copyState}
         onCopy={() => void handleCopy()}
         onRefresh={onRefresh}
-      />
-
-      {refreshError && (
-        <div
-          role="alert"
-          className="mb-6 border-l-2 border-destructive bg-destructive/10 px-4 py-3 text-sm"
-        >
-          {refreshError}
-        </div>
-      )}
-      <OverviewLifecycleNotice
-        state={overview.state}
-        progress={overview.progress}
-        error={overview.error}
-        canRefresh={canRefresh}
-        progressUnit={childLabel}
-      />
+      >
+        {artifact ? (
+          <p className="max-w-3xl text-base leading-8 text-foreground/75 sm:text-lg">
+            <EmphasizedText value={artifact.executiveBrief} />
+          </p>
+        ) : hasContent ? (
+          <div className="max-w-3xl">
+            <p className="mb-5 text-xs leading-5 text-muted-foreground">
+              Compatibility view · This overview predates structured child
+              coverage and evidence links. It remains readable while Fabric
+              transitions to the evidence-backed format.
+            </p>
+            <div className="border-l-2 border-border pl-5 sm:pl-7">
+              <MarkdownSummary content={overview.content.markdown ?? ""} />
+            </div>
+          </div>
+        ) : (
+          <div className="border-y py-14 text-center">
+            <FileText
+              className="mx-auto size-7 text-muted-foreground"
+              aria-hidden="true"
+            />
+            <h3 className="mt-4 text-lg font-semibold">
+              {overview.state === "refreshing"
+                ? `Building the first ${entityLabel} overview`
+                : `No ${entityLabel} overview yet`}
+            </h3>
+            <p className="mx-auto mt-2 max-w-md text-sm leading-6 text-muted-foreground">
+              {overview.state === "refreshing"
+                ? `Fabric is rolling up the available ${childLabel}. You can leave this page while it runs.`
+                : `Current child overviews will be combined here when sufficient ${childLabel} are documented.`}
+            </p>
+          </div>
+        )}
+      </OverviewLead>
 
       {artifact ? (
         <>
-          <OverviewSection id={`${entity.kind}-overview-brief`} title="Overview">
-            <p className="max-w-3xl text-base leading-8 text-foreground/75 sm:text-lg">
-              {artifact.executiveBrief}
-            </p>
-          </OverviewSection>
-
           <ChildCoverageLedger
             entityKind={entity.kind}
             coverage={artifact.coverage}
@@ -479,64 +486,14 @@ export function HierarchyOverviewContent({
             onOpenDepartment={onOpenDepartment}
           />
         </>
-      ) : hasContent ? (
-        <>
-          <OverviewSection
-            id={`${entity.kind}-legacy-overview`}
-            title="Compatibility view"
-            description="This overview predates structured child coverage and evidence links. It remains readable while Fabric transitions to the evidence-backed format."
-          >
-            <div className="max-w-3xl border-l-2 border-border pl-5 sm:pl-7">
-              <MarkdownSummary content={overview.content.markdown ?? ""} />
-            </div>
-          </OverviewSection>
-          <ChildCoverageLedger
-            entityKind={entity.kind}
-            coverage={null}
-            childSummaries={childSummaries}
-            onOpenProcess={onOpenProcess}
-            onOpenDepartment={onOpenDepartment}
-          />
-        </>
       ) : (
-        <>
-          <section
-            className="border-y py-16 text-center"
-            aria-labelledby={`${entity.kind}-missing-overview`}
-          >
-            {overview.state === "refreshing" ? (
-              <Loader2
-                className="mx-auto size-6 animate-spin text-org-accent motion-reduce:animate-none"
-                aria-hidden="true"
-              />
-            ) : (
-              <FileText
-                className="mx-auto size-7 text-muted-foreground"
-                aria-hidden="true"
-              />
-            )}
-            <h2
-              id={`${entity.kind}-missing-overview`}
-              className="mt-4 text-lg font-semibold"
-            >
-              {overview.state === "refreshing"
-                ? `Building the first ${entityLabel} overview`
-                : `No ${entityLabel} overview yet`}
-            </h2>
-            <p className="mx-auto mt-2 max-w-md text-sm leading-6 text-muted-foreground">
-              {overview.state === "refreshing"
-                ? `Fabric is rolling up the available ${childLabel}. You can leave this page while it runs.`
-                : `Current child overviews will be combined here when sufficient ${childLabel} are documented.`}
-            </p>
-          </section>
-          <ChildCoverageLedger
-            entityKind={entity.kind}
-            coverage={null}
-            childSummaries={childSummaries}
-            onOpenProcess={onOpenProcess}
-            onOpenDepartment={onOpenDepartment}
-          />
-        </>
+        <ChildCoverageLedger
+          entityKind={entity.kind}
+          coverage={null}
+          childSummaries={childSummaries}
+          onOpenProcess={onOpenProcess}
+          onOpenDepartment={onOpenDepartment}
+        />
       )}
 
       {description && (
@@ -662,7 +619,7 @@ export function HierarchyOverviewCompactContent({
         )}
       </div>
       <p className="mt-4 line-clamp-5 text-sm leading-6 text-muted-foreground">
-        {preview}
+        <EmphasizedText value={preview} />
       </p>
       <div className="mt-4">
         <OverviewGeneratedTime value={overview.lastSuccessfulGenerationAt} />

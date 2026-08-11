@@ -14,14 +14,19 @@ export const SUMMARY_V2_PROMPT_VERSIONS = {
   // v2 replaced the ordered stage timeline with non-sequential scope and
   // participant findings. Process Flow owns step order; two independently
   // generated sequences over the same transcripts always disagreed.
-  processOverview: "summary-v2-process-overview-v2",
+  // v3 asks the brief to emphasize its load-bearing facts with `**bold**` so a
+  // reader can scan it. Stored v2 artifacts stay valid and simply render
+  // unemphasized until they are next rebuilt.
+  processOverview: "summary-v2-process-overview-v3",
   // v2 restated the rollup output budget in the prompt and moved both rollup
   // schemas onto their own tighter caps. v1 reused the process caps — five
   // sections of eight 1,200-character findings, ~17.9k tokens of contract — on
   // a 3,072-token budget, so any department with more than one child process
   // truncated and stored nothing.
-  departmentOverview: "summary-v2-department-overview-v2",
-  functionOverview: "summary-v2-function-overview-v2",
+  // v3 adds the same executive-brief emphasis instruction as the process
+  // overview.
+  departmentOverview: "summary-v2-department-overview-v3",
+  functionOverview: "summary-v2-function-overview-v3",
   legacyMarkdown: "summary-v2-legacy-markdown-v2",
 } as const;
 
@@ -612,6 +617,72 @@ function normalizeBlockText(value: unknown, maxChars: number): string | null {
   return normalized.slice(0, maxChars).trim();
 }
 
+/** Plain-text field: emphasis the prompt forbade here is dropped, not shown. */
+function normalizePlainInlineText(
+  value: unknown,
+  maxChars: number,
+): string | null {
+  const normalized = normalizeInlineText(value, maxChars);
+  if (normalized === null) return null;
+  return stripEmphasisMarkers(normalized).trim() || null;
+}
+
+/** Plain-text block field, same rule as `normalizePlainInlineText`. */
+function normalizePlainBlockText(
+  value: unknown,
+  maxChars: number,
+): string | null {
+  const normalized = normalizeBlockText(value, maxChars);
+  if (normalized === null) return null;
+  return stripEmphasisMarkers(normalized).trim() || null;
+}
+
+/** The one field allowed to keep emphasis, provided it is renderable. */
+function normalizeEmphasizedBlockText(
+  value: unknown,
+  maxChars: number,
+): string | null {
+  const normalized = normalizeBlockText(value, maxChars);
+  if (normalized === null) return null;
+  return normalizeEmphasis(normalized).trim() || null;
+}
+
+const EMPHASIS_MARKER = /\*\*/g;
+
+/** Removing markup leaves gaps behind; close them without touching newlines. */
+function tidySpacing(value: string): string {
+  return value
+    .replace(/[ \t]{2,}/g, " ")
+    .replace(/[ \t]+\n/g, "\n")
+    .trim();
+}
+
+/**
+ * `**bold**` is generated for the executive brief only. Every other string in
+ * an artifact is rendered as plain text — finding rows, PDF text nodes, the
+ * headline — where a marker would show as literal asterisks, so it is removed
+ * at the boundary rather than trusted to the prompt.
+ */
+export function stripEmphasisMarkers(value: string): string {
+  return tidySpacing(value.replace(EMPHASIS_MARKER, ""));
+}
+
+/**
+ * Emphasis that survives storage has to be renderable. Truncating the brief at
+ * its character cap can cut a `**` pair in half, and an empty `****` span
+ * renders as asterisks too, so both are dropped: the words are kept and only
+ * the unusable markup goes.
+ */
+function normalizeEmphasis(value: string): string {
+  const withoutEmptySpans = value.replace(/\*{4,}/g, "");
+  const markers = withoutEmptySpans.match(EMPHASIS_MARKER)?.length ?? 0;
+  if (markers % 2 === 0) return tidySpacing(withoutEmptySpans);
+  const orphan = withoutEmptySpans.lastIndexOf("**");
+  return tidySpacing(
+    `${withoutEmptySpans.slice(0, orphan)}${withoutEmptySpans.slice(orphan + 2)}`,
+  );
+}
+
 function normalizedSemanticText(value: string): string {
   return (
     value
@@ -690,11 +761,11 @@ function normalizeFinding(
 ): SummaryFinding | null {
   const raw = asRecord(rawValue);
   if (!raw) return null;
-  const title = normalizeInlineText(
+  const title = normalizePlainInlineText(
     raw.title,
     SUMMARY_V2_CAPS.findingTitleChars,
   );
-  const body = normalizeBlockText(raw.body, bodyChars);
+  const body = normalizePlainBlockText(raw.body, bodyChars);
   if (!title || !body) return null;
 
   const requestedEvidenceLevel = raw.evidenceLevel;
@@ -832,11 +903,11 @@ function normalizeArtifactBase(
 ) {
   const raw = asRecord(value);
   if (!raw) return null;
-  const headline = normalizeInlineText(
+  const headline = normalizePlainInlineText(
     raw.headline,
     SUMMARY_V2_CAPS.headlineChars,
   );
-  const executiveBrief = normalizeBlockText(
+  const executiveBrief = normalizeEmphasizedBlockText(
     raw.executiveBrief,
     caps.briefChars,
   );

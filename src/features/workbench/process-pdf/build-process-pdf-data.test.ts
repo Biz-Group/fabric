@@ -327,6 +327,27 @@ describe("process report rendering", () => {
     expect(html).not.toContain("Process Summary");
   });
 
+  it("prints brief emphasis as bold type instead of markers", () => {
+    const html = render({
+      overview: overviewInput({
+        content: {
+          format: "v2",
+          artifact: {
+            ...artifact,
+            executiveBrief:
+              "Intake runs on **the shared queue** and needs **two approvals**.",
+          },
+          markdown: "# Requests move from intake to verified resolution",
+        },
+      }),
+    });
+
+    expect(html).toContain("the shared queue");
+    expect(html).toContain("two approvals");
+    expect(html).toContain("Helvetica-Bold");
+    expect(html).not.toContain("**");
+  });
+
   it("states no sequence of its own and says where the order lives", () => {
     const html = render();
 

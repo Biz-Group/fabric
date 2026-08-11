@@ -14,6 +14,7 @@
 
 import {
   isExplicitMissingEvidenceFinding,
+  stripEmphasisMarkers,
   type SummaryArtifactV2,
   type SummaryCoverage,
   type SummaryFinding,
@@ -298,10 +299,14 @@ export type MeasuredLanguageMatch = {
 };
 
 export function detectMeasuredLanguage(
-  text: string,
+  rawText: string,
   location = "text",
 ): MeasuredLanguageMatch[] {
   const matches: MeasuredLanguageMatch[] = [];
+  // Scored on what the reader reads. The executive brief may carry `**bold**`,
+  // and a marker dropped inside a phrase ("cycle **time** of 3 days") would
+  // otherwise split it out of every pattern below.
+  const text = stripEmphasisMarkers(rawText);
   for (const rule of MEASURED_LANGUAGE_RULES) {
     // A fresh RegExp per call keeps the shared `g` rules free of `lastIndex`
     // carry-over between artifacts.

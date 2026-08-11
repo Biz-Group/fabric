@@ -19,10 +19,10 @@ import type { Id } from "../../../convex/_generated/dataModel";
 import { Skeleton } from "@/components/ui/skeleton";
 import { MarkdownSummary } from "@/features/workbench/markdown-summary";
 import {
+  EmphasizedText,
   FindingRows,
-  OverviewControlHeader,
-  OverviewLifecycleNotice,
   OverviewGeneratedTime,
+  OverviewLead,
   OverviewSection,
   OverviewStateBadge,
   type OverviewCopyState,
@@ -59,9 +59,12 @@ function isProcessArtifact(
 function ProcessOverviewLoading() {
   return (
     <div className="mx-auto max-w-5xl px-4 py-8 sm:px-6 lg:px-8" aria-label="Loading overview">
-      <div className="space-y-4 border-b pb-8">
-        <Skeleton className="h-6 w-28 rounded-full" />
-        <Skeleton className="h-12 w-4/5 max-w-2xl" />
+      <div className="space-y-4 pb-8">
+        <div className="flex items-center justify-between gap-4">
+          <Skeleton className="h-9 w-40" />
+          <Skeleton className="h-9 w-36 sm:h-7" />
+        </div>
+        <Skeleton className="h-6 w-64 rounded-full" />
         <Skeleton className="h-5 w-full max-w-3xl" />
         <Skeleton className="h-5 w-3/4 max-w-2xl" />
       </div>
@@ -278,46 +281,59 @@ export function ProcessOverviewContent({
       className="mx-auto w-full max-w-5xl px-4 pb-4 pt-7 sm:px-6 sm:pt-10 lg:px-8"
       aria-label="Process overview"
     >
-      <OverviewControlHeader
+      <OverviewLead
+        id="process-overview-brief"
         state={overview.state}
         hasContent={hasContent}
-        sourceMode={
-          structuredArtifact
-            ? "Interview evidence"
-            : hasContent
-              ? "Legacy summary"
-              : "Awaiting evidence"
-        }
         generatedAt={overview.lastSuccessfulGenerationAt}
         progress={overview.progress}
         canRefresh={canRefresh}
         refreshPending={refreshPending}
+        refreshError={refreshError}
+        error={overview.error}
         copyState={copyState}
         onCopy={() => void handleCopy()}
         onRefresh={onRefresh}
-      />
-
-      {refreshError && (
-        <div role="alert" className="mb-6 border-l-2 border-destructive bg-destructive/10 px-4 py-3 text-sm">
-          {refreshError}
-        </div>
-      )}
-      <OverviewLifecycleNotice
-        state={overview.state}
-        progress={overview.progress}
-        error={overview.error}
-        canRefresh={canRefresh}
-      />
+      >
+        {structuredArtifact ? (
+          brief && (
+            <p className="max-w-3xl text-base leading-8 text-foreground/75 sm:text-lg">
+              <EmphasizedText value={brief} />
+            </p>
+          )
+        ) : hasContent ? (
+          <div className="max-w-3xl">
+            <p className="mb-5 text-xs leading-5 text-muted-foreground">
+              Compatibility view · This overview predates structured evidence
+              links. It remains readable while Fabric transitions to the
+              evidence-backed format.
+            </p>
+            <div className="border-l-2 border-border pl-5 sm:pl-7">
+              <MarkdownSummary content={overview.content.markdown ?? ""} />
+            </div>
+          </div>
+        ) : (
+          <div className="border-y py-14 text-center">
+            <FileText
+              className="mx-auto size-7 text-muted-foreground"
+              aria-hidden="true"
+            />
+            <h3 className="mt-4 text-lg font-semibold">
+              {overview.state === "refreshing"
+                ? "Overview will appear here"
+                : "No overview yet"}
+            </h3>
+            <p className="mx-auto mt-2 max-w-md text-sm leading-6 text-muted-foreground">
+              {overview.state === "refreshing"
+                ? "You can continue working while Fabric prepares it in the background."
+                : "Complete a process conversation to establish the first evidence-backed overview."}
+            </p>
+          </div>
+        )}
+      </OverviewLead>
 
       {structuredArtifact ? (
         <>
-          {brief && (
-            <OverviewSection id="process-overview-brief" title="Overview">
-              <p className="max-w-3xl text-base leading-8 text-foreground/75 sm:text-lg">
-                {brief}
-              </p>
-            </OverviewSection>
-          )}
           <EvidenceStrip artifact={structuredArtifact} />
 
           <OverviewSection
@@ -386,29 +402,7 @@ export function ProcessOverviewContent({
             />
           </OverviewSection>
         </>
-      ) : hasContent ? (
-        <OverviewSection
-          id="legacy-process-overview"
-          title="Compatibility view"
-          description="This overview predates structured evidence links. It remains readable while Fabric transitions to the evidence-backed format."
-        >
-          <div className="max-w-3xl border-l-2 border-border pl-5 sm:pl-7">
-            <MarkdownSummary content={overview.content.markdown ?? ""} />
-          </div>
-        </OverviewSection>
-      ) : (
-        <section className="border-y py-16 text-center" aria-labelledby="missing-overview-title">
-          <FileText className="mx-auto size-7 text-muted-foreground" aria-hidden="true" />
-          <h2 id="missing-overview-title" className="mt-4 text-lg font-semibold">
-            {overview.state === "refreshing" ? "Overview will appear here" : "No overview yet"}
-          </h2>
-          <p className="mx-auto mt-2 max-w-md text-sm leading-6 text-muted-foreground">
-            {overview.state === "refreshing"
-              ? "You can continue working while Fabric prepares it in the background."
-              : "Complete a process conversation to establish the first evidence-backed overview."}
-          </p>
-        </section>
-      )}
+      ) : null}
 
       <ReadinessFooter
         overview={overview}
@@ -505,7 +499,7 @@ export function ProcessOverviewCompactPreview({
         )}
       </div>
       <p className="mt-4 line-clamp-5 text-sm leading-6 text-muted-foreground">
-        {preview}
+        <EmphasizedText value={preview} />
       </p>
       <div className="mt-4">
         <OverviewGeneratedTime value={overview.lastSuccessfulGenerationAt} />

@@ -107,12 +107,14 @@ describe("Summary V2 contracts and normalizers", () => {
       // truncated and stored nothing.
       conversationEvidence: "summary-v2-conversation-evidence-v2",
       // v2: the ordered stage timeline became non-sequential scope findings.
-      processOverview: "summary-v2-process-overview-v2",
+      // v3: the brief emphasizes its load-bearing facts with `**bold**`.
+      processOverview: "summary-v2-process-overview-v3",
       // v2: the rollups moved off the process caps and onto their own, and the
       // output budget is stated in the prompt. Bumped because every department
       // with more than one child process truncated under v1.
-      departmentOverview: "summary-v2-department-overview-v2",
-      functionOverview: "summary-v2-function-overview-v2",
+      // v3: same brief emphasis instruction as the process overview.
+      departmentOverview: "summary-v2-department-overview-v3",
+      functionOverview: "summary-v2-function-overview-v3",
       legacyMarkdown: "summary-v2-legacy-markdown-v2",
     });
     expect(SUMMARY_V2_CAPS).toMatchObject({
@@ -289,6 +291,56 @@ describe("Summary V2 contracts and normalizers", () => {
       SUMMARY_V2_CAPS.findingBodyChars,
     );
     expect(artifact?.notable).toHaveLength(SUMMARY_V2_CAPS.findingGroup);
+  });
+
+  test("keeps brief emphasis renderable and strips it everywhere else", () => {
+    const artifact = normalizeProcessOverviewArtifactV2(
+      processPayload({
+        headline: "Requests are **checked** before approval",
+        executiveBrief:
+          "Intake runs on **the shared queue** and approval needs **two signatures**.",
+        scope: [
+          {
+            ...rawFinding("Requests arrive from the **shared queue**"),
+            body: "The **queue** is the system of record for intake.",
+          },
+        ],
+      }),
+      context(),
+    );
+
+    // The brief is the one field a reader sees emphasized.
+    expect(artifact?.executiveBrief).toBe(
+      "Intake runs on **the shared queue** and approval needs **two signatures**.",
+    );
+    // Everywhere else renders as plain text, so markers are removed, not shown.
+    expect(artifact?.headline).toBe("Requests are checked before approval");
+    expect(artifact?.scope[0].title).toBe(
+      "Requests arrive from the shared queue",
+    );
+    expect(artifact?.scope[0].body).toBe(
+      "The queue is the system of record for intake.",
+    );
+  });
+
+  test("drops emphasis the character cap cut in half", () => {
+    const filler = "y".repeat(SUMMARY_V2_CAPS.executiveBriefChars - 12);
+    const artifact = normalizeProcessOverviewArtifactV2(
+      processPayload({
+        // The closing marker falls beyond the cap, so the opening one would be
+        // left rendering as literal asterisks.
+        executiveBrief: `${filler} **truncated emphasis**`,
+      }),
+      context(),
+    );
+    const empty = normalizeProcessOverviewArtifactV2(
+      processPayload({ executiveBrief: "An **** empty span is not emphasis." }),
+      context(),
+    );
+
+    expect(artifact?.executiveBrief).not.toContain("**");
+    expect(artifact?.executiveBrief).toContain("truncated");
+    expect(empty?.executiveBrief).toBe("An empty span is not emphasis.");
   });
 
   test("derives evidence strength from unique resolved sources", () => {

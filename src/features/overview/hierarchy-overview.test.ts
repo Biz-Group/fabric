@@ -206,6 +206,47 @@ describe("HierarchyOverviewContent", () => {
     expect(html).not.toContain(departmentArtifact.headline);
   });
 
+  it("leads with the overview and keeps status detail one tap away", () => {
+    const html = renderDepartment();
+    const heading = html.indexOf('id="department-overview-brief"');
+    const statusChip = html.indexOf("Partial coverage");
+    const brief = html.indexOf(departmentArtifact.executiveBrief);
+    const ledger = html.indexOf("Process Coverage");
+
+    // Heading, then a single status line, then the overview itself — no banner,
+    // chip stack, or button row in front of the content.
+    expect(heading).toBeGreaterThan(-1);
+    expect(heading).toBeLessThan(statusChip);
+    expect(statusChip).toBeLessThan(brief);
+    expect(brief).toBeLessThan(ledger);
+    expect(html).toContain(
+      'id="department-overview-brief-status-detail" hidden=""',
+    );
+    expect(html).toContain('aria-expanded="false"');
+    // Icon-only controls on narrow viewports still name themselves.
+    expect(html).toContain('aria-label="Copy overview"');
+    expect(html).toContain('aria-label="Refresh overview"');
+  });
+
+  it("emphasizes the load-bearing facts the generator marked in the brief", () => {
+    const html = renderDepartment(
+      overview({ kind: "department", departmentId }, {
+        ...departmentArtifact,
+        executiveBrief:
+          "Intake runs on **the shared queue** and fulfilment needs **two approvals**.",
+      }),
+    );
+
+    expect(html).toContain(
+      '<strong class="font-semibold text-foreground">the shared queue</strong>',
+    );
+    expect(html).toContain(
+      '<strong class="font-semibold text-foreground">two approvals</strong>',
+    );
+    // Markers are formatting, never content.
+    expect(html).not.toContain("**");
+  });
+
   it("shows every current child state without pretending missing children were included", () => {
     const html = renderDepartment();
 
