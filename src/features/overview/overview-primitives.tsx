@@ -26,6 +26,7 @@ import {
   overviewProgressText,
   overviewStatusDetail,
   refreshActionLabel,
+  refreshUnavailableReason,
   type EvidenceLevel,
   type OverviewState,
 } from "@/features/overview/overview-view-model";
@@ -214,6 +215,7 @@ export function OverviewLead({
   progress,
   progressUnit,
   canRefresh,
+  refreshAvailable,
   refreshPending,
   refreshError,
   error,
@@ -230,6 +232,7 @@ export function OverviewLead({
   progress?: { completed: number; total: number } | null;
   progressUnit?: string;
   canRefresh: boolean;
+  refreshAvailable: boolean;
   refreshPending: boolean;
   refreshError?: string | null;
   error: { message: string; retryable: boolean } | null;
@@ -246,6 +249,14 @@ export function OverviewLead({
     state === "refreshing" ? overviewProgressText(progress, progressUnit) : null;
   const showRefresh = canRefresh && state !== "refreshing";
   const actionLabel = refreshActionLabel(state, hasContent);
+  // Kept visible but inert: a rebuild that would spend a full generation on
+  // evidence the overview already contains says so where it is pressed, rather
+  // than disappearing and leaving the reader to wonder where it went.
+  const unavailableReason = refreshUnavailableReason(
+    state,
+    refreshAvailable,
+    progressUnit,
+  );
 
   return (
     <section aria-labelledby={id} className="pb-8 sm:pb-10">
@@ -290,9 +301,14 @@ export function OverviewLead({
                 variant="outline"
                 size="sm"
                 className="org-focus-ring h-9 px-3 sm:h-7 sm:px-2.5"
-                disabled={refreshPending}
+                disabled={refreshPending || !refreshAvailable}
                 onClick={onRefresh}
-                aria-label={actionLabel}
+                title={unavailableReason ?? undefined}
+                aria-label={
+                  unavailableReason
+                    ? `${actionLabel}. ${unavailableReason}`
+                    : actionLabel
+                }
               >
                 {refreshPending ? (
                   <Loader2

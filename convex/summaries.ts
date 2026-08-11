@@ -29,8 +29,10 @@ import {
   readCompatibleSummary,
   renderSummaryV2AsLegacyMarkdown,
   summaryEntityRefValidator,
+  type SummaryCompatibilityRead,
   type SummaryEntityRef,
   type SummaryOverviewResponse,
+  type SummaryOverviewState,
 } from "./summaryV2";
 import { requestProcessEvidenceRefreshForOrg } from "./summaryEvidence";
 import {
@@ -239,8 +241,8 @@ function insightsGenerationStatus(flow: Doc<"processFlows"> | null) {
 function deriveOverviewState(
   owner: SummaryOwner,
   run: Doc<"summaryRuns"> | null,
-  content: ReturnType<typeof readCompatibleSummary>,
-): SummaryOverviewResponse["state"] {
+  content: SummaryCompatibilityRead,
+): SummaryOverviewState {
   if (hasActiveSummaryWork(owner, run)) return "refreshing";
   const lastSuccessfulGenerationAt =
     content.format === "v2"
@@ -269,6 +271,79 @@ function deriveOverviewState(
   return "current";
 }
 
+/**
+ * Whether a rebuild has any input the stored overview has not already read.
+ *
+ * Generation is the expensive step, and the control that spends it used to be
+ * live unconditionally: a `current` overview could be rebuilt any number of
+ * times, each pass paying full token cost to re-derive the same brief from the
+ * same evidence. A rebuild is offered only where it can change the answer —
+ * nothing generated yet, evidence recorded since the last pass, a failed run to
+ * retry, or a legacy row that has never been built in the structured format.
+ */
+function overviewRefreshAvailable(
+  entityKind: SummaryEntityRef["kind"],
+  state: SummaryOverviewState,
+  content: SummaryCompatibilityRead,
+): boolean {
+  // A run already in flight is the rebuild; there is nothing to start.
+  if (state === "refreshing") return false;
+  if (state === "partial") {
+    // Partial coverage means different things at the two levels, and only one
+    // of them is unread input.
+    //
+    // A process excludes conversations whose evidence extraction did not land.
+    // Extraction re-runs inside the rebuild, so pressing it can genuinely pull
+    // those conversations in — the control stays live.
+    //
+    // A rollup excludes children that hold no current overview of their own,
+    // including a process nobody has recorded a conversation for yet. Rebuilding
+    // the parent cannot read those children; only building the child can, and
+    // that bumps this row's source revision, which surfaces here as `stale`.
+    // Left live, a department with one conversation-less process would offer an
+    // endless rollup that returns the same brief every time.
+    return entityKind === "process";
+  }
+  if (state !== "current") return true;
+  // A legacy-only row reads as current because nothing has changed under it,
+  // but it holds no structured artifact — the rebuild is how it migrates.
+  return content.format !== "v2";
+}
+
+type OverviewSnapshot = {
+  owner: SummaryOwner;
+  run: Doc<"summaryRuns"> | null;
+  content: SummaryCompatibilityRead;
+  state: SummaryOverviewState;
+};
+
+/**
+ * The one read behind both the overview surface and the rebuild gate, so the
+ * disabled control and the refused mutation can never disagree about whether
+ * an overview has anything left to build from.
+ */
+async function readOverviewSnapshot(
+  ctx: Pick<QueryCtx, "db">,
+  orgId: string,
+  entity: SummaryEntityRef,
+): Promise<OverviewSnapshot> {
+  const owner = await getSummaryOwner(ctx, orgId, entity);
+  const run = await getRelevantRun(ctx, orgId, entity, ownerRunId(owner));
+  const content = readCompatibleSummary({
+    // `readableSummaryV2` is the rollback gate: with `SUMMARY_V2` disabled
+    // every surface reads the deterministic Markdown projection instead, and
+    // no stored artifact is touched.
+    summaryV2: readableSummaryV2(owner.doc.clerkOrgId, owner.doc.summaryV2),
+    legacyMarkdown: ownerCompatibilityMarkdown(owner),
+  });
+  return {
+    owner,
+    run,
+    content,
+    state: deriveOverviewState(owner, run, content),
+  };
+}
+
 async function requestSummaryRefresh(
   ctx: MutationCtx,
   orgId: string,
@@ -276,27 +351,36 @@ async function requestSummaryRefresh(
   entity: SummaryEntityRef,
   forceRefresh: boolean,
 ): Promise<SummaryRefreshResult> {
-  const owner = await getSummaryOwner(ctx, orgId, entity);
+  const { owner, run, content, state } = await readOverviewSnapshot(
+    ctx,
+    orgId,
+    entity,
+  );
   if (!isSummaryV2EnabledForOrg(orgId)) {
     return { status: "disabled", scheduled: false };
   }
 
-  const runId = ownerRunId(owner);
-  const pointedRun = runId ? await ctx.db.get(runId) : null;
-  if (!forceRefresh && hasActiveSummaryWork(owner, pointedRun)) {
+  const active = hasActiveSummaryWork(owner, run);
+  if (!forceRefresh && active) {
     return { status: "coalesced", scheduled: false };
+  }
+  // The same gate the surface disables its control on, enforced where the spend
+  // actually starts. `forceRefresh` overrides coalescing, not arithmetic: an
+  // overview holding every available source has nothing to rebuild from, and a
+  // second pass would bill a full generation for the same brief. An in-flight
+  // run is excluded here — it is reported by the coalescing paths instead.
+  if (!active && !overviewRefreshAvailable(entity.kind, state, content)) {
+    return { status: "current", scheduled: false };
   }
   if (!forceRefresh && hasCurrentV2Artifact(owner)) {
     return { status: "current", scheduled: false };
   }
-  if (!forceRefresh) {
-    const latestRun = await getRelevantRun(ctx, orgId, entity, runId);
-    if (
-      latestRun?.state === "failed" &&
-      runMatchesCurrentSource(owner, latestRun)
-    ) {
-      return { status: "coalesced", scheduled: false };
-    }
+  if (
+    !forceRefresh &&
+    run?.state === "failed" &&
+    runMatchesCurrentSource(owner, run)
+  ) {
+    return { status: "coalesced", scheduled: false };
   }
 
   const result =
@@ -330,20 +414,11 @@ export const getOverview = query({
   args: { entity: summaryEntityRefValidator },
   handler: async (ctx, args): Promise<SummaryOverviewResponse> => {
     const caller = await requireOrgMember(ctx);
-    const owner = await getSummaryOwner(ctx, caller.orgId, args.entity);
-    const run = await getRelevantRun(
+    const { owner, run, content, state } = await readOverviewSnapshot(
       ctx,
       caller.orgId,
       args.entity,
-      ownerRunId(owner),
     );
-    const content = readCompatibleSummary({
-      // `readableSummaryV2` is the rollback gate: with `SUMMARY_V2` disabled
-      // every surface reads the deterministic Markdown projection instead,
-      // and no stored artifact is touched.
-      summaryV2: readableSummaryV2(owner.doc.clerkOrgId, owner.doc.summaryV2),
-      legacyMarkdown: ownerCompatibilityMarkdown(owner),
-    });
     const flow =
       owner.kind === "process"
         ? ((await ctx.db
@@ -356,12 +431,16 @@ export const getOverview = query({
             .first()) ?? null)
         : null;
     const hasFlowArtifact = flow !== null && flow.nodes.length > 0;
-    const state = deriveOverviewState(owner, run, content);
 
     return {
       entity: args.entity,
       refreshKey: overviewRefreshKey(owner),
       state,
+      refreshAvailable: overviewRefreshAvailable(
+        args.entity.kind,
+        state,
+        content,
+      ),
       content,
       coverage: content.format === "v2" ? content.artifact.coverage : null,
       lastSuccessfulGenerationAt:

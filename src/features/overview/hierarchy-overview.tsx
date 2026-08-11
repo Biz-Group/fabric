@@ -365,6 +365,7 @@ export function HierarchyOverviewContent({
         progress={overview.progress}
         progressUnit={childLabel}
         canRefresh={canRefresh}
+        refreshAvailable={overview.refreshAvailable}
         refreshPending={refreshPending}
         refreshError={refreshError}
         error={overview.error}

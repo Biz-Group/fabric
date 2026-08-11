@@ -122,6 +122,10 @@ function overview(
     entity,
     refreshKey: `${entity.kind}-${state}`,
     state,
+    // What the read model derives for a rollup: `partial` here means children
+    // with no overview of their own, which the parent rebuild cannot read.
+    refreshAvailable:
+      state !== "current" && state !== "refreshing" && state !== "partial",
     content: {
       format: "v2",
       artifact,
@@ -223,9 +227,12 @@ describe("HierarchyOverviewContent", () => {
       'id="department-overview-brief-status-detail" hidden=""',
     );
     expect(html).toContain('aria-expanded="false"');
-    // Icon-only controls on narrow viewports still name themselves.
+    // Icon-only controls on narrow viewports still name themselves. This
+    // rollup is partial, so the control also carries why it is inert.
     expect(html).toContain('aria-label="Copy overview"');
-    expect(html).toContain('aria-label="Refresh overview"');
+    expect(html).toContain(
+      'aria-label="Refresh overview. Some processes have no overview of their own yet.',
+    );
   });
 
   it("emphasizes the load-bearing facts the generator marked in the brief", () => {
@@ -318,6 +325,27 @@ describe("HierarchyOverviewContent", () => {
     expect(renderDepartment(undefined, mixedProcessChildren, false)).not.toContain(
       "Refresh overview",
     );
+  });
+
+  it("stops a rollup being rebuilt from child summaries it already read", () => {
+    const html = renderDepartment(
+      overview({ kind: "department", departmentId }, departmentArtifact, "current"),
+    );
+
+    expect(html).toContain("Rebuild overview");
+    expect(html).toContain('disabled=""');
+    expect(html).toContain("already covers every source available to it");
+  });
+
+  it("points a partial rollup at its unbuilt children instead of itself", () => {
+    // The department holding a process nobody has recorded a conversation for:
+    // permanently partial, and rebuilding the rollup can never reach that
+    // process. The next step belongs to the child, so the control says so.
+    const html = renderDepartment();
+
+    expect(html).toContain('disabled=""');
+    expect(html).toContain("Some processes have no overview of their own yet");
+    expect(html).not.toContain("already covers every source available to it");
   });
 
   it("renders a legacy fallback and an honest current-child ledger", () => {

@@ -288,6 +288,7 @@ export function ProcessOverviewContent({
         generatedAt={overview.lastSuccessfulGenerationAt}
         progress={overview.progress}
         canRefresh={canRefresh}
+        refreshAvailable={overview.refreshAvailable}
         refreshPending={refreshPending}
         refreshError={refreshError}
         error={overview.error}

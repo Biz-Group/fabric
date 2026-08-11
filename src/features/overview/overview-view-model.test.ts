@@ -8,6 +8,7 @@ import {
   overviewProgressText,
   overviewStatusDetail,
   refreshActionLabel,
+  refreshUnavailableReason,
   surfaceReadinessLabel,
 } from "./overview-view-model";
 
@@ -112,6 +113,28 @@ describe("overview presentation rules", () => {
     expect(refreshActionLabel("refreshing", true)).toBe("Refreshing");
     expect(refreshActionLabel("stale", true)).toBe("Refresh overview");
     expect(refreshActionLabel("current", true)).toBe("Rebuild overview");
+  });
+
+  it("explains an inert rebuild instead of leaving a dead control", () => {
+    const reason = refreshUnavailableReason("current", false);
+
+    expect(reason).toContain("already covers every source available to it");
+    expect(reason).toContain("Rebuild becomes available");
+    // A live control needs no excuse, and a refreshing one is hidden already.
+    expect(refreshUnavailableReason("current", true)).toBeNull();
+    expect(refreshUnavailableReason("stale", true)).toBeNull();
+    expect(refreshUnavailableReason("refreshing", false)).toBeNull();
+  });
+
+  it("sends a partial rollup to the children it could not read", () => {
+    expect(refreshUnavailableReason("partial", false, "processes")).toBe(
+      "Some processes have no overview of their own yet. Rebuild becomes available once they are built.",
+    );
+    expect(refreshUnavailableReason("partial", false, "departments")).toContain(
+      "Some departments",
+    );
+    // A process rebuild does retry its own excluded sources, so it stays live.
+    expect(refreshUnavailableReason("partial", true)).toBeNull();
   });
 
   it("copies the deterministic projection for both content formats", () => {

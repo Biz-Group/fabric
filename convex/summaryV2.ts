@@ -566,6 +566,13 @@ export type SummaryOverviewResponse = {
   /** Bounded key for de-duplicating refresh-on-view attempts per source state. */
   refreshKey: string;
   state: SummaryOverviewState;
+  /**
+   * Whether a rebuild has any input the stored overview has not already read.
+   * False on an overview that already reflects every available source, so the
+   * control that spends a full generation can go quiet instead of re-deriving
+   * the same brief.
+   */
+  refreshAvailable: boolean;
   content: SummaryCompatibilityRead;
   coverage: SummaryCoverage | null;
   lastSuccessfulGenerationAt: number | null;

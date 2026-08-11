@@ -114,6 +114,9 @@ function overview(
     entity: { kind: "process", processId },
     refreshKey: `refresh-${state}`,
     state,
+    // What the read model derives for a structured artifact: only a state with
+    // unread input left offers a rebuild.
+    refreshAvailable: state !== "current" && state !== "refreshing",
     content: {
       format: "v2",
       artifact,
@@ -264,6 +267,26 @@ describe("ProcessOverviewContent", () => {
     expect(renderOverview(overview("current"), false)).not.toContain(
       "Rebuild overview",
     );
+  });
+
+  it("will not spend a generation on evidence the overview already holds", () => {
+    const html = renderOverview(overview("current"));
+
+    expect(html).toContain("Rebuild overview");
+    expect(html).toContain('disabled=""');
+    expect(html).toContain("already covers every source available to it");
+  });
+
+  it("keeps rebuild live wherever it can still change the answer", () => {
+    // `partial` belongs here for a process and nowhere else: the sources it
+    // left out are conversations whose evidence extraction did not land, and
+    // extraction re-runs inside the rebuild.
+    for (const state of ["stale", "partial", "failed", "missing"] as const) {
+      const html = renderOverview(overview(state));
+
+      expect(html).not.toContain("already covers every source available to it");
+      expect(html).not.toContain('disabled=""');
+    }
   });
 
   it("shows one compact refresh indicator without repeating the action or notice", () => {

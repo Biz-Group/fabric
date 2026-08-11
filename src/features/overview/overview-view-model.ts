@@ -125,6 +125,31 @@ export function overviewStatusDetail(
     .join(" ");
 }
 
+/**
+ * Why the rebuild control is inert, or `null` when it is live.
+ *
+ * Generation is the expensive step, so the read model turns the control off
+ * once the overview already reflects every source available to it — a second
+ * pass would re-derive the same brief at full token cost. A dead control with
+ * no explanation reads as a bug, so the reason travels with it.
+ */
+export function refreshUnavailableReason(
+  state: OverviewState,
+  refreshAvailable: boolean,
+  childUnit?: string,
+): string | null {
+  // `refreshing` hides the control rather than disabling it.
+  if (refreshAvailable || state === "refreshing") return null;
+  if (state === "partial") {
+    // A rollup left incomplete by children that have no overview of their own —
+    // a process nobody has recorded a conversation for yet, most often. Naming
+    // the actual next step beats repeating that nothing has changed, because
+    // something can be done about this one.
+    return `Some ${childUnit ?? "children"} have no overview of their own yet. Rebuild becomes available once they are built.`;
+  }
+  return "This overview already covers every source available to it. Rebuild becomes available once new evidence is recorded.";
+}
+
 export function refreshActionLabel(
   state: OverviewState,
   hasContent: boolean,
