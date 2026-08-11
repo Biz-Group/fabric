@@ -10,7 +10,6 @@ import {
   type ReactNode,
 } from "react";
 import {
-  Building2,
   Menu,
   PanelLeft,
   PanelLeftClose,
@@ -35,6 +34,7 @@ import {
 import { UserMenu } from "@/features/shell/user-menu";
 import { useWorkspaceRoutes } from "@/features/shell/use-workspace-routes";
 import {
+  getWorkspaceInitials,
   WorkspaceBrandLockup,
   type WorkspaceBrandOrganization,
 } from "@/features/shell/workspace-brand-lockup";
@@ -141,12 +141,12 @@ function WorkspaceCard({
         <TooltipTrigger
           render={
             <div
-              className="mx-auto flex size-9 items-center justify-center rounded-md bg-org-accent-subtle text-org-accent"
+              className="mx-auto flex size-9 items-center justify-center rounded-md bg-org-accent-subtle text-xs font-semibold text-org-accent"
               aria-label={`${orgName} workspace`}
             />
           }
         >
-          <Building2 className="size-4" />
+          {getWorkspaceInitials(orgName)}
         </TooltipTrigger>
         <TooltipContent side="right">{orgName}</TooltipContent>
       </Tooltip>
@@ -155,16 +155,11 @@ function WorkspaceCard({
 
   return (
     <div className="rounded-lg border border-sidebar-border bg-background/80 p-3 shadow-xs">
-      <div className="flex items-center gap-2">
-        <div className="flex size-8 shrink-0 items-center justify-center rounded-md bg-org-accent-subtle text-org-accent">
-          <Building2 className="size-4" />
-        </div>
-        <div className="min-w-0">
-          <p className="truncate text-sm font-medium text-sidebar-foreground">
-            {orgName}
-          </p>
-          <p className="text-xs text-sidebar-foreground/60">Workspace</p>
-        </div>
+      <div className="min-w-0">
+        <p className="truncate text-sm font-medium text-sidebar-foreground">
+          {orgName}
+        </p>
+        <p className="text-xs text-sidebar-foreground/60">Workspace</p>
       </div>
     </div>
   );
@@ -283,7 +278,8 @@ function DesktopSidebar({
             <WorkspaceBrandLockup
               organization={organization}
               fabricClassName="text-xl"
-              className="min-w-0 px-1"
+              className="min-w-0 gap-2 px-1"
+              logoContainerClassName="px-0"
             />
           )}
           <Tooltip>

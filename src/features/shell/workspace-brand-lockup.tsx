@@ -18,7 +18,7 @@ type WorkspaceBrandLockupProps = {
   initialsClassName?: string;
 };
 
-function getInitials(name: string) {
+export function getWorkspaceInitials(name: string) {
   const parts = name
     .trim()
     .split(/\s+/)
@@ -57,7 +57,7 @@ export function WorkspaceBrandLockup({
     <Component className={cn("flex min-w-0 items-center gap-3", className)}>
       <span
         className={cn(
-          "truncate text-lg font-semibold tracking-tight",
+          "shrink-0 whitespace-nowrap text-lg font-semibold tracking-tight",
           fabricClassName,
         )}
       >
@@ -67,11 +67,11 @@ export function WorkspaceBrandLockup({
         <>
           <span
             aria-hidden="true"
-            className={cn("h-5 w-px bg-border", dividerClassName)}
+            className={cn("h-5 w-px shrink-0 bg-border", dividerClassName)}
           />
           <span
             className={cn(
-              "flex h-8 max-w-32 shrink-0 items-center justify-center overflow-hidden px-2",
+              "flex h-8 min-w-0 max-w-32 items-center justify-center overflow-hidden px-2",
               logoContainerClassName,
             )}
             title={orgName}
@@ -93,7 +93,7 @@ export function WorkspaceBrandLockup({
                   initialsClassName,
                 )}
               >
-                {getInitials(orgName)}
+                {getWorkspaceInitials(orgName)}
               </span>
             )}
           </span>
