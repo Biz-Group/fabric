@@ -1,0 +1,21 @@
+.edgePath {
+  transition:
+    stroke 160ms ease,
+    stroke-width 160ms ease,
+    opacity 160ms ease,
+    filter 160ms ease;
+}
+
+:global(.react-flow__edge:focus-visible) .edgePath {
+  filter: drop-shadow(0 0 3px color-mix(in oklch, var(--org-accent) 45%, transparent));
+  opacity: 1 !important;
+  stroke: var(--org-accent) !important;
+  stroke-width: 3.2 !important;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .edgePath {
+    transition: none;
+  }
+}
+

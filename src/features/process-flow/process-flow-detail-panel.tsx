@@ -112,7 +112,7 @@ export function ProcessFlowDetailPanel({
   const confidenceInfo = CONFIDENCE_LABELS[node.confidence];
 
   return (
-    <div className="flex h-full w-full flex-col overflow-hidden border-l border-border bg-background md:w-[320px]">
+    <div className="flex h-full w-full flex-col overflow-hidden bg-background md:w-full">
       {/* Header */}
       <div className="flex items-start gap-2 border-b border-border p-4">
         <div
@@ -121,7 +121,7 @@ export function ProcessFlowDetailPanel({
             config.iconBg,
           )}
         >
-          <Icon className="h-4 w-4" />
+          <Icon className="h-4 w-4" aria-hidden="true" />
         </div>
         <div className="min-w-0 flex-1">
           <h3 className="break-words text-sm font-medium leading-tight">
@@ -159,7 +159,7 @@ export function ProcessFlowDetailPanel({
           onClick={onClose}
           aria-label="Close node details"
         >
-          <X className="h-4 w-4" />
+          <X className="h-4 w-4" aria-hidden="true" />
         </Button>
       </div>
 
@@ -323,9 +323,7 @@ export function ProcessFlowDetailPanel({
                       type="button"
                       key={source.conversationId}
                       className="org-focus-ring group flex min-h-8 w-full min-w-0 items-center gap-2 rounded-md px-2 py-1 text-left text-xs text-muted-foreground transition-colors hover:bg-org-accent-subtle hover:text-foreground"
-                      onClick={() =>
-                        onOpenConversation(source.conversationId)
-                      }
+                      onClick={() => onOpenConversation(source.conversationId)}
                       aria-label={`Open source conversation: ${source.source}`}
                     >
                       <MessageSquareText
@@ -417,14 +415,17 @@ function Section({
   title,
   children,
 }: {
-  icon: React.ComponentType<{ className?: string }>;
+  icon: React.ComponentType<{
+    className?: string;
+    "aria-hidden"?: boolean | "true" | "false";
+  }>;
   title: string;
   children: React.ReactNode;
 }) {
   return (
     <div className="space-y-1.5">
       <h4 className="flex min-w-0 items-center gap-1.5 text-xs font-medium text-muted-foreground">
-        <IconComp className="h-3 w-3 shrink-0" />
+        <IconComp className="h-3 w-3 shrink-0" aria-hidden="true" />
         <span className="min-w-0 break-words">{title}</span>
       </h4>
       {children}

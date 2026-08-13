@@ -53,4 +53,7 @@ docs/process-flow-generation-v2-plan.md
 /v1
 /.agents
 /.claude
+/docs/*
+!/docs/process-flow-visualization-ui-ux-plan.md
+!/docs/process-flow-visualization-ui-ux-task-list.md
 /docs

@@ -74,6 +74,8 @@ const AUTOMATION_COLORS = {
 function FlowNodeBase({
   data,
   selected,
+  sourcePosition = Position.Right,
+  targetPosition = Position.Left,
 }: NodeProps & { data: ProcessFlowNodeData }) {
   const config = CATEGORY_CONFIG[data.category];
   const { Icon } = config;
@@ -90,16 +92,31 @@ function FlowNodeBase({
     <>
       <Handle
         type="target"
-        position={Position.Left}
-        className="!bg-border !h-2 !w-2"
+        id="target"
+        position={targetPosition}
+        className="pointer-events-none !h-px !w-px !border-0 !bg-transparent !opacity-0"
       />
       <div
+        data-flow-node-card
         className={cn(
-          "w-[280px] rounded-lg border border-border bg-card/80 backdrop-blur-sm text-card-foreground shadow-sm border-l-[3px] transition-all duration-200",
+          "w-[280px] rounded-xl border border-border border-l-4 bg-card text-card-foreground shadow-[0_1px_2px_rgba(15,23,42,0.06),0_8px_22px_rgba(15,23,42,0.04)] transition-[border-color,box-shadow,opacity] duration-200 motion-reduce:transition-none",
           config.color,
-          selected && "ring-2 ring-org-accent shadow-lg scale-[1.02]",
-          !selected && !data.dimmed && "hover:shadow-md",
-          data.dimmed && "opacity-40",
+          selected &&
+            "ring-2 ring-org-accent-border shadow-[0_12px_30px_rgba(15,23,42,0.12)]",
+          data.isFocusAnchor &&
+            !selected &&
+            "ring-2 ring-org-accent-ring/35 shadow-[0_10px_26px_rgba(15,23,42,0.10)]",
+          data.emphasis === "active" &&
+            !data.isFocusAnchor &&
+            !selected &&
+            "shadow-[0_6px_20px_rgba(15,23,42,0.08)]",
+          data.spotlighted &&
+            !selected &&
+            "ring-2 ring-org-accent-ring/35 shadow-[0_8px_24px_rgba(15,23,42,0.10)]",
+          !selected &&
+            !data.dimmed &&
+            "hover:shadow-[0_8px_24px_rgba(15,23,42,0.10)]",
+          data.dimmed && "opacity-55",
         )}
       >
         {/* Header */}
@@ -220,23 +237,31 @@ function FlowNodeBase({
       </div>
       <Handle
         type="source"
-        position={Position.Right}
-        className="!bg-border !h-2 !w-2"
+        id="source-primary"
+        position={sourcePosition}
+        className="pointer-events-none !h-px !w-px !border-0 !bg-transparent !opacity-0"
       />
-      {/* Decision nodes get top/bottom handles for alternate conditional branches. */}
+      {/* Alternate decision ports fan out perpendicular to the active layout
+          direction. They stay invisible because this viewer is read-only. */}
       {data.category === "decision" && (
         <>
           <Handle
             type="source"
-            position={Position.Top}
-            id="top"
-            className="!bg-border !h-2 !w-2"
+            position={
+              sourcePosition === Position.Right ? Position.Top : Position.Left
+            }
+            id="source-alternate-start"
+            className="pointer-events-none !h-px !w-px !border-0 !bg-transparent !opacity-0"
           />
           <Handle
             type="source"
-            position={Position.Bottom}
-            id="bottom"
-            className="!bg-border !h-2 !w-2"
+            position={
+              sourcePosition === Position.Right
+                ? Position.Bottom
+                : Position.Right
+            }
+            id="source-alternate-end"
+            className="pointer-events-none !h-px !w-px !border-0 !bg-transparent !opacity-0"
           />
         </>
       )}

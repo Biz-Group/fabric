@@ -1,12 +1,21 @@
 import { useMemo } from "react";
-import dagre from "@dagrejs/dagre";
-import type { Node, Edge } from "@xyflow/react";
+import { Position, type Edge, type Node } from "@xyflow/react";
 import type { Doc, Id } from "../../../convex/_generated/dataModel";
-
-// Node dimensions used by dagre for layout calculation
-const NODE_WIDTH = 280;
-const NODE_HEIGHT_BASE = 120;
-const NODE_HEIGHT_DECISION = 100;
+import {
+  deriveFlowFocus,
+  FLOW_LAYER_Z_INDEX,
+  resolveFlowElementEmphasis,
+  type FlowElementEmphasis,
+  type FlowFocusMode,
+} from "./flow-focus";
+import type { FlowSpotlight } from "./flow-spotlight";
+import {
+  layoutProcessFlow,
+  resolveDecisionSourceHandle,
+  type FlowDirection,
+  type FlowGrouping,
+  type FlowLayoutLane,
+} from "./flow-layout";
 
 type FlowDoc = Doc<"processFlows">;
 type FlowNode = FlowDoc["nodes"][number];
@@ -31,125 +40,208 @@ export type ReadFlowNode = FlowNode & {
 
 type ReadFlow = Omit<FlowDoc, "nodes"> & { nodes: ReadFlowNode[] };
 
-export type ProcessFlowNodeData = ReadFlowNode & { dimmed: boolean };
+export type ProcessFlowNodeData = ReadFlowNode & {
+  dimmed: boolean;
+  emphasis: FlowElementEmphasis;
+  isFocusAnchor: boolean;
+  spotlighted: boolean;
+};
+
 export type ProcessFlowNode = Node<ProcessFlowNodeData>;
-export type ProcessFlowEdge = Edge<{
+
+export type ProcessFlowEdgeData = {
   flowType: FlowEdge["type"];
   isHappyPath: boolean;
-}>;
+  emphasis: FlowElementEmphasis;
+  focusMode: FlowFocusMode;
+  animateFlow: boolean;
+  spotlighted: boolean;
+};
+
+export type ProcessFlowEdge = Edge<ProcessFlowEdgeData, "process">;
+
+type LayoutResult = {
+  nodes: ProcessFlowNode[];
+  edges: ProcessFlowEdge[];
+  lanes: FlowLayoutLane[];
+};
+
+const EMPTY_LAYOUT: LayoutResult = { nodes: [], edges: [], lanes: [] };
+
+function markerColorFor(emphasis: FlowElementEmphasis, isHappyPath: boolean) {
+  if (emphasis === "active") return "var(--org-accent)";
+  if (emphasis === "muted") return "var(--color-border)";
+  return isHappyPath
+    ? "var(--color-foreground)"
+    : "var(--color-muted-foreground)";
+}
 
 /**
- * Converts Convex processFlows data into positioned React Flow nodes/edges
- * using dagre for automatic top-to-bottom layout.
+ * Converts Convex process-flow data into positioned React Flow nodes and edges.
+ * Dagre owns stable geometry; selection and hover add presentation-only focus
+ * without changing or persisting the generated graph.
  */
 export function useProcessFlowLayout(
   flow: ReadFlow | null | undefined,
   selectedNodeId: string | null = null,
+  reduceMotion = false,
+  spotlight: FlowSpotlight | null = null,
+  direction: FlowDirection = "horizontal",
+  grouping: FlowGrouping = "process",
 ) {
-  return useMemo(() => {
+  const layout = useMemo<LayoutResult>(() => {
     // Keyed on there being nodes, not on status: a failed refresh retains the
     // previous flow's nodes, and the caller decides whether to show them.
-    if (!flow || flow.nodes.length === 0) {
-      return { nodes: [] as ProcessFlowNode[], edges: [] as ProcessFlowEdge[] };
-    }
+    if (!flow || flow.nodes.length === 0) return EMPTY_LAYOUT;
 
-    const g = new dagre.graphlib.Graph();
-    g.setDefaultEdgeLabel(() => ({}));
-    g.setGraph({
-      rankdir: "LR",
-      nodesep: 80,
-      ranksep: 140,
-      marginx: 48,
-      marginy: 48,
+    const geometry = layoutProcessFlow({
+      nodes: flow.nodes,
+      edges: flow.edges,
+      direction,
+      grouping,
     });
-
-    // Add nodes to dagre graph
-    for (const node of flow.nodes) {
-      const height =
-        node.category === "decision" ? NODE_HEIGHT_DECISION : NODE_HEIGHT_BASE;
-      g.setNode(node.id, { width: NODE_WIDTH, height });
-    }
-
-    // Add edges to dagre graph
-    for (const edge of flow.edges) {
-      g.setEdge(edge.source, edge.target);
-    }
-
-    dagre.layout(g);
-
-    // Convert to React Flow format
-    const isSelected = (id: string) => selectedNodeId === id;
+    const positions = new Map(
+      geometry.nodes.map((node) => [node.id, node.position]),
+    );
+    const nodeLabels = new Map(flow.nodes.map((node) => [node.id, node.label]));
     const nodes: ProcessFlowNode[] = flow.nodes.map((node) => {
-      const pos = g.node(node.id);
       return {
         id: node.id,
         type: node.category,
-        zIndex: isSelected(node.id) ? 10 : 0,
-        position: {
-          x: (pos?.x ?? 0) - NODE_WIDTH / 2,
-          y:
-            (pos?.y ?? 0) -
-            (node.category === "decision"
-              ? NODE_HEIGHT_DECISION
-              : NODE_HEIGHT_BASE) /
-              2,
-        },
+        position: positions.get(node.id) ?? { x: 0, y: 0 },
+        sourcePosition:
+          direction === "horizontal" ? Position.Right : Position.Bottom,
+        targetPosition:
+          direction === "horizontal" ? Position.Left : Position.Top,
+        ariaLabel: `${node.category} step: ${node.label}. Use arrow keys for connected steps. Press Enter for details.`,
         data: {
           ...node,
-          dimmed: selectedNodeId !== null && !isSelected(node.id),
+          dimmed: false,
+          emphasis: "default",
+          isFocusAnchor: false,
+          spotlighted: false,
         },
       };
     });
 
-    // When a node is selected, dim edges not connected to it
-    const connectedEdgeIds = selectedNodeId
-      ? new Set(
-          flow.edges
-            .filter(
-              (e) => e.source === selectedNodeId || e.target === selectedNodeId,
-            )
-            .map((e) => e.id),
-        )
-      : null;
+    const edges: ProcessFlowEdge[] = flow.edges.map((edge) => ({
+      id: edge.id,
+      source: edge.source,
+      target: edge.target,
+      sourceHandle:
+        resolveDecisionSourceHandle(edge, flow.nodes, flow.edges) ??
+        "source-primary",
+      targetHandle: "target",
+      type: "process",
+      animated: false,
+      selectable: false,
+      focusable: true,
+      interactionWidth: 32,
+      label: edge.label ?? undefined,
+      ariaLabel: `${edge.type} path from ${nodeLabels.get(edge.source) ?? edge.source} to ${nodeLabels.get(edge.target) ?? edge.target}${edge.label ? `: ${edge.label}` : ""}`,
+      markerEnd: {
+        type: "arrowclosed" as const,
+        width: 18,
+        height: 18,
+        color: markerColorFor("default", edge.isHappyPath),
+      },
+      data: {
+        flowType: edge.type,
+        isHappyPath: edge.isHappyPath,
+        emphasis: "default",
+        focusMode: "none",
+        animateFlow: false,
+        spotlighted: false,
+      },
+    }));
 
-    const edges: ProcessFlowEdge[] = flow.edges.map((edge) => {
-      const isConnected =
-        connectedEdgeIds === null || connectedEdgeIds.has(edge.id);
-      const dimEdge = connectedEdgeIds !== null && !isConnected;
+    return { nodes, edges, lanes: geometry.lanes };
+  }, [direction, flow, grouping]);
+
+  return useMemo<LayoutResult>(() => {
+    if (layout.nodes.length === 0) return layout;
+
+    const focus = deriveFlowFocus({
+      edges: layout.edges,
+      selectedNodeId,
+    });
+    const hasSpotlight = spotlight !== null;
+
+    const nodes = layout.nodes.map((node) => {
+      const focused = focus.nodeIds.has(node.id);
+      const spotlighted = spotlight?.nodeIds.has(node.id) ?? false;
+      const emphasis: FlowElementEmphasis = resolveFlowElementEmphasis({
+        focusMode: focus.mode,
+        focused,
+        hasSpotlight,
+        spotlighted,
+      });
+      const isSelected = node.id === selectedNodeId;
+      const isFocusAnchor = node.id === focus.anchorNodeId;
 
       return {
-        id: edge.id,
-        source: edge.source,
-        target: edge.target,
-        type: "smoothstep",
-        animated: false,
-        label: edge.label ?? undefined,
-        markerEnd: {
-          type: "arrowclosed" as const,
-          width: 16,
-          height: 16,
-          color: edge.isHappyPath
-            ? "var(--color-foreground)"
-            : "var(--color-muted-foreground)",
-        },
-        style: {
-          strokeWidth: edge.isHappyPath ? 2 : 1.5,
-          stroke: edge.isHappyPath
-            ? "var(--color-foreground)"
-            : "var(--color-muted-foreground)",
-          opacity: dimEdge ? 0.1 : edge.isHappyPath ? 0.5 : 0.3,
-          strokeDasharray: edge.isHappyPath ? undefined : "6 4",
-        },
-        pathOptions: {
-          offset: 15,
-        },
+        ...node,
+        selected: isSelected,
+        // Keep this stable during hover. Re-layering the whole node set lets a
+        // widened edge hit target rise above cards and causes pointer churn.
+        zIndex: isSelected
+          ? FLOW_LAYER_Z_INDEX.selectedNode
+          : FLOW_LAYER_Z_INDEX.node,
         data: {
-          flowType: edge.type,
-          isHappyPath: edge.isHappyPath,
+          ...node.data,
+          dimmed: emphasis === "muted",
+          emphasis,
+          isFocusAnchor,
+          spotlighted,
         },
       };
     });
 
-    return { nodes, edges };
-  }, [flow, selectedNodeId]);
+    const edges = layout.edges.map((edge) => {
+      const focused = focus.edgeIds.has(edge.id);
+      const spotlighted = spotlight?.edgeIds.has(edge.id) ?? false;
+      const emphasis: FlowElementEmphasis = resolveFlowElementEmphasis({
+        focusMode: focus.mode,
+        focused,
+        hasSpotlight,
+        spotlighted,
+      });
+      const edgeData: ProcessFlowEdgeData = edge.data ?? {
+        flowType: "sequential",
+        isHappyPath: true,
+        emphasis: "default",
+        focusMode: "none",
+        animateFlow: false,
+        spotlighted: false,
+      };
+
+      return {
+        ...edge,
+        zIndex:
+          emphasis === "active"
+            ? FLOW_LAYER_Z_INDEX.focusedEdge
+            : FLOW_LAYER_Z_INDEX.edge,
+        markerEnd: {
+          type: "arrowclosed" as const,
+          width: 18,
+          height: 18,
+          color: spotlighted
+            ? "var(--org-accent)"
+            : markerColorFor(emphasis, edgeData.isHappyPath),
+        },
+        data: {
+          ...edgeData,
+          emphasis,
+          focusMode: focus.mode,
+          animateFlow:
+            !reduceMotion &&
+            focus.mode === "selected-route" &&
+            emphasis === "active",
+          spotlighted,
+        },
+      };
+    });
+
+    return { nodes, edges, lanes: layout.lanes };
+  }, [layout, reduceMotion, selectedNodeId, spotlight]);
 }

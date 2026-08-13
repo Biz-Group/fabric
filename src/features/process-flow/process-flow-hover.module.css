@@ -1,0 +1,35 @@
+.nodeActive {
+  border-radius: 12px;
+  outline: 2px solid color-mix(in oklch, var(--org-accent) 40%, transparent);
+  outline-offset: 3px;
+  filter: drop-shadow(
+    0 7px 14px color-mix(in oklch, var(--foreground) 12%, transparent)
+  );
+}
+
+.edgeActive :global(.react-flow__edge-path) {
+  stroke: var(--org-accent) !important;
+  stroke-width: 2.8 !important;
+  opacity: 1 !important;
+  filter: drop-shadow(
+    0 0 2px color-mix(in oklch, var(--org-accent) 30%, transparent)
+  ) !important;
+}
+
+:global(.react-flow__node:focus-visible) [data-flow-node-card] {
+  outline: 3px solid var(--org-accent);
+  outline-offset: 3px;
+}
+
+:global(.react-flow__edge:focus-visible) :global(.react-flow__edge-path) {
+  stroke: var(--org-accent) !important;
+  stroke-width: 3 !important;
+  opacity: 1 !important;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .nodeActive,
+  .edgeActive :global(.react-flow__edge-path) {
+    transition: none !important;
+  }
+}
