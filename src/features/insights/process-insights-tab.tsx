@@ -633,7 +633,6 @@ function AutomationSection({
             <p className="text-xs font-medium uppercase text-muted-foreground">
               Recommended automations
             </p>
-            <Badge variant="outline">Recommendation-only</Badge>
           </div>
           {opportunityDetails && opportunityDetails.length > 0 ? (
             <div className="mt-3 space-y-3">

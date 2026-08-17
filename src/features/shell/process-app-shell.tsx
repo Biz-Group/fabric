@@ -11,6 +11,7 @@ import {
 } from "react";
 import {
   Menu,
+  Megaphone,
   PanelLeft,
   PanelLeftClose,
   Search,
@@ -427,6 +428,12 @@ export function WorkspaceAppShell({
           icon: Workflow,
           label: "Processes",
           active: routes.isActivePath("/", { exact: true }),
+        },
+        {
+          href: routes.releaseNotesHref,
+          icon: Megaphone,
+          label: "Release notes",
+          active: routes.isActivePath("/release-notes"),
         },
         {
           href: routes.adminHref,
