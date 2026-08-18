@@ -8,8 +8,10 @@ import type { Id } from "../../../convex/_generated/dataModel";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
+import { copyTextToClipboard } from "@/lib/clipboard";
 import {
   BarChart3,
+  Bot,
   ChevronLeft,
   ChevronRight,
   Building2,
@@ -25,6 +27,7 @@ import { useWorkspaceRoutes } from "@/features/shell/use-workspace-routes";
 import { ProcessConversationsTab } from "@/features/conversations/conversations-tab";
 import { ProcessFlowTab } from "@/features/process-flow/process-flow-tab";
 import { ProcessInsightsTab } from "@/features/insights/process-insights-tab";
+import { ProcessAutomationsTab } from "@/features/automations/process-automations-tab";
 import {
   HierarchyOverview,
   HierarchyOverviewCompactPreview,
@@ -90,33 +93,6 @@ function deepestMobileLevel(sel: {
   return 1;
 }
 
-async function copyTextToClipboard(text: string): Promise<boolean> {
-  try {
-    if (navigator.clipboard?.writeText) {
-      await navigator.clipboard.writeText(text);
-      return true;
-    }
-  } catch {
-    // Fall through to the textarea fallback for local HTTP/dev contexts.
-  }
-
-  const textarea = document.createElement("textarea");
-  textarea.value = text;
-  textarea.setAttribute("readonly", "true");
-  textarea.style.position = "fixed";
-  textarea.style.opacity = "0";
-  document.body.appendChild(textarea);
-  textarea.select();
-
-  try {
-    return document.execCommand("copy");
-  } catch {
-    return false;
-  } finally {
-    document.body.removeChild(textarea);
-  }
-}
-
 // --- Main Component ---
 
 export function ProcessWorkbench() {
@@ -156,7 +132,8 @@ export function ProcessWorkbench() {
   );
   const [mobilePreview, setMobilePreview] = useState<MobilePreview>(null);
 
-  // Active detail tab (0 = Overview, 1 = Conversations, 2 = Process Flow, 3 = Insights), seeded from the URL.
+  // Active detail tab (0 = Overview, 1 = Conversations, 2 = Process Flow,
+  // 3 = Insights, 4 = Automations), seeded from the URL.
   const [detailTab, setDetailTab] = useState<number>(initialSelection.tab);
   const [flowNodeId, setFlowNodeId] = useState<string | null>(
     initialSelection.node,
@@ -1482,6 +1459,10 @@ export function ProcessWorkbench() {
                   <BarChart3 className="h-3.5 w-3.5" />
                   Insights
                 </TabsTrigger>
+                <TabsTrigger value={4} className="gap-1.5 px-2 text-xs">
+                  <Bot className="h-3.5 w-3.5" />
+                  Automations
+                </TabsTrigger>
               </TabsList>
             </div>
 
@@ -1559,6 +1540,25 @@ export function ProcessWorkbench() {
                 completedConversationCount={completedProcessConversationCount}
                 canGenerate={canEdit}
                 isActive={detailTab === 3}
+                onOpenProcessFlow={handleOpenProcessFlow}
+                onOpenAutomations={() => {
+                  setFlowNodeId(null);
+                  setDetailTab(4);
+                }}
+              />
+            </TabsContent>
+
+            {/* Automations tab */}
+            <TabsContent
+              value={4}
+              className="min-h-0 min-w-0 flex-1 overflow-y-auto"
+            >
+              <ProcessAutomationsTab
+                key={selectedProcessId}
+                processId={selectedProcessId!}
+                processName={workbenchProcessName}
+                departmentName={workbenchDepartmentName}
+                functionName={workbenchFunctionName}
                 onOpenProcessFlow={handleOpenProcessFlow}
               />
             </TabsContent>

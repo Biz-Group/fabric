@@ -64,6 +64,8 @@ type ProcessInsightsTabProps = {
   canGenerate: boolean;
   isActive: boolean;
   onOpenProcessFlow: (nodeId?: string) => void;
+  /** Potential automations and their build briefs live on their own tab. */
+  onOpenAutomations?: () => void;
 };
 
 type AutomationOpportunity = NonNullable<
@@ -602,25 +604,29 @@ function BottlenecksSection({
 }
 
 function AutomationSection({
-  opportunities,
   opportunityDetails,
   flowLevelCount,
+  isAnalysed,
   candidates,
-  allNodes,
   onOpenNode,
+  onOpenAutomations,
 }: {
-  opportunities: string[];
   opportunityDetails?: AutomationOpportunity[];
   /** Same value the Automation tile and the Process Flow bottom bar show. */
   flowLevelCount: number;
+  /** False when the analysis fell back to flagging automatable-looking steps. */
+  isAnalysed: boolean;
   candidates: FlowNode[];
-  allNodes: FlowNode[];
   onOpenNode: (nodeId: string) => void;
+  onOpenAutomations?: () => void;
 }) {
-  const nodeMap = getNodeMap(allNodes);
-  // Reported apart, never summed: a flow-level recommendation cites the steps it
-  // covers, so most of them are already counted among the node-level candidates.
-  // Adding the two produced a total larger than the number of distinct findings.
+  // Insights answers "where should we look"; the Automations tab answers "what
+  // do we build, and with what brief". The recommendations themselves live
+  // there so the same list is not maintained in two places — what stays here is
+  // the signal: how many were recommended, and which steps look automatable.
+  const titles = (opportunityDetails ?? []).map(
+    (opportunity) => opportunity.title,
+  );
   return (
     <InsightSection
       icon={Bot}
@@ -628,56 +634,44 @@ function AutomationSection({
       count={`${flowLevelCount} recommended · ${pluralize(candidates.length, "candidate")}`}
     >
       <div className="space-y-4">
+        {/* Reported apart, never summed: a flow-level recommendation cites the
+            steps it covers, so most are already counted among the node-level
+            candidates. Adding the two produced a total larger than the number
+            of distinct findings. */}
         <div className="rounded-lg border bg-muted/10 p-3">
-          <div className="flex flex-wrap items-center gap-2">
-            <p className="text-xs font-medium uppercase text-muted-foreground">
-              Recommended automations
+          <p className="text-xs font-medium uppercase text-muted-foreground">
+            Potential automations
+          </p>
+          {!isAnalysed ? (
+            <p className="mt-2 text-sm text-muted-foreground">
+              Automations were not analysed for this run, so there is nothing to
+              brief. Regenerate the process flow.
             </p>
-          </div>
-          {opportunityDetails && opportunityDetails.length > 0 ? (
-            <div className="mt-3 space-y-3">
-              {opportunityDetails.map((opportunity) => (
-                <article
-                  key={`${opportunity.kind}:${opportunity.title}`}
-                  className="border-t pt-3 first:border-t-0 first:pt-0"
-                >
-                  <div className="flex flex-wrap items-center gap-2">
-                    <p className="text-sm font-medium">{opportunity.title}</p>
-                    <Badge variant="outline" className="capitalize">
-                      {opportunity.kind}
-                    </Badge>
-                  </div>
-                  <p className="mt-1.5 text-sm leading-6 text-muted-foreground">
-                    {opportunity.rationale}
-                  </p>
-                  {opportunity.expectedBenefit && (
-                    <p className="mt-1 text-xs text-muted-foreground">
-                      Expected benefit: {opportunity.expectedBenefit}
-                    </p>
-                  )}
-                  <div className="mt-3 flex flex-wrap gap-2">
-                    {opportunity.nodeIds.map((nodeId) => {
-                      const node = nodeMap.get(nodeId);
-                      return node ? (
-                        <FlowNodeLink
-                          key={nodeId}
-                          nodeId={nodeId}
-                          label={node.label}
-                          onOpenNode={onOpenNode}
-                          compact
-                        />
-                      ) : null;
-                    })}
-                  </div>
-                </article>
-              ))}
-            </div>
-          ) : opportunities.length === 0 ? (
+          ) : titles.length === 0 ? (
             <p className="mt-2 text-sm text-muted-foreground">
               No automation recommendations are listed.
             </p>
           ) : (
-            <BulletList items={opportunities} className="mt-2" />
+            <>
+              <ul className="mt-2 space-y-1">
+                {titles.map((title) => (
+                  <li key={title} className="text-sm text-muted-foreground">
+                    {title}
+                  </li>
+                ))}
+              </ul>
+              {onOpenAutomations && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="mt-3 gap-1.5"
+                  onClick={onOpenAutomations}
+                >
+                  Open Automations
+                  <ArrowUpRight className="h-3.5 w-3.5" />
+                </Button>
+              )}
+            </>
           )}
         </div>
 
@@ -1035,6 +1029,7 @@ export function ProcessInsightsTab({
   canGenerate,
   isActive,
   onOpenProcessFlow,
+  onOpenAutomations,
 }: ProcessInsightsTabProps) {
   const flow = useQuery(
     api.processFlows.getProcessFlow,
@@ -1395,7 +1390,7 @@ export function ProcessInsightsTab({
             detail={
               automationUnreviewed
                 ? "Possible only — not analysed"
-                : "Recommended automations"
+                : "Potential automations"
             }
           />
           <MetricTile
@@ -1426,12 +1421,12 @@ export function ProcessInsightsTab({
             onOpenNode={onOpenProcessFlow}
           />
           <AutomationSection
-            opportunities={flow.insights.automationOpportunities}
             opportunityDetails={flow.insights.automationOpportunityDetails}
             flowLevelCount={flowLevelAutomationCount}
+            isAnalysed={!automationUnreviewed}
             candidates={automationCandidates}
-            allNodes={flow.nodes}
             onOpenNode={onOpenProcessFlow}
+            onOpenAutomations={onOpenAutomations}
           />
         </div>
 

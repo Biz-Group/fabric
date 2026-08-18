@@ -1436,7 +1436,7 @@ function InsightsBar({
   onSpotlightChange: (mode: FlowSpotlightMode | null) => void;
   onOpenInsights: () => void;
 }) {
-  // "recommended automations", not "automation opportunities": this is the
+  // "Potential automations", not "automation opportunities": this is the
   // flow-level analysed list, a handful of multi-step recommendations. The
   // Insights tab's Automation tile is a different measure — one entry per step
   // whose automationPotential is above none — so it reads far higher on the same

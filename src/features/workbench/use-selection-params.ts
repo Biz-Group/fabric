@@ -26,6 +26,7 @@ export function tabToParam(tab: number): string | null {
   if (tab === 1) return "conversations";
   if (tab === 2) return "flow";
   if (tab === 3) return "insights";
+  if (tab === 4) return "automations";
   return null;
 }
 export function paramToTab(value: string | null): number {
@@ -35,6 +36,7 @@ export function paramToTab(value: string | null): number {
   if (value === "conversations") return 1;
   if (value === "flow") return 2;
   if (value === "insights") return 3;
+  if (value === "automations") return 4;
   return 0;
 }
 
