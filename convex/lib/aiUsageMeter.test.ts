@@ -130,10 +130,12 @@ describe("buildCompletionUsageEvent", () => {
   });
 
   test("prefers provider-reported cost when the provider supplies one", () => {
+    // No current provider reports cost — Foundry does not — so `costUsd` here
+    // is synthetic. The branch stays covered for whichever provider next does.
     const event = build({
       completion: completion({
-        provider: "openrouter",
-        model: "openrouter:google/gemma-4-26b-a4b-it",
+        provider: "foundry-openai",
+        model: "foundry:gpt-5-nano@2025-08-07",
         costUsd: 0.00042,
       }),
     });

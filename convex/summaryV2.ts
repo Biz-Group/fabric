@@ -181,7 +181,7 @@ export const SUMMARY_V2_AI_BUDGETS = {
     maxRetries: 2,
   },
   chunkReduce: { maxTokens: 4_096, timeoutMs: 150_000, maxRetries: 2 },
-  finalReduce: { maxTokens: 3_072, timeoutMs: 120_000, maxRetries: 2 },
+  finalReduce: { maxTokens: 5_632, timeoutMs: 180_000, maxRetries: 1 },
   /**
    * The department and function rollups reduce child artifacts rather than raw
    * evidence, and they were the one stage running the widest schema on the

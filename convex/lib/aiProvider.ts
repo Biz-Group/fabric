@@ -4,18 +4,18 @@ import OpenAI from "openai";
 import { env } from "../_generated/server";
 
 export type AICapability = "synthesis" | "safety";
-export type AIProvider = "openrouter" | "foundry-claude" | "foundry-openai";
+export type AIProvider = "foundry-claude" | "foundry-openai";
+/**
+ * `fabric-openrouter` is retained for READ compatibility only: rows written
+ * before the Foundry cutover still carry it. Nothing writes it any more, and
+ * no request can reach OpenRouter — the adapter has no such backend.
+ */
 export type PersistedAIProvider = "fabric-openrouter" | "fabric-foundry";
 
 export const FOUNDRY_CLAUDE_MODEL = "foundry:claude-haiku-4-5@2";
 export const FOUNDRY_FALLBACK_MODEL = "foundry:gpt-5-mini@2025-08-07";
 export const FOUNDRY_SAFETY_MODEL = "foundry:gpt-5-nano@2025-08-07";
-export const OPENROUTER_CLAUDE_MODEL =
-  "openrouter:anthropic/claude-haiku-4.5";
-export const OPENROUTER_SAFETY_MODEL =
-  "openrouter:google/gemma-4-26b-a4b-it";
 
-const OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions";
 const DEFAULT_TIMEOUT_MS = 120_000;
 const DEFAULT_MAX_RETRIES = 2;
 
@@ -142,9 +142,10 @@ export type AICompletion = {
   usage: AIUsage | null;
   requestId: string | null;
   /**
-   * Provider-reported cost in USD, when the provider gives one. OpenRouter
-   * does; Foundry does not, so this is undefined there and the ledger prices
-   * from `aiPricing.ts` instead.
+   * Provider-reported cost in USD, when the provider gives one. Foundry does
+   * not, so this is currently always undefined and the ledger prices from
+   * `aiPricing.ts`. Kept as the contract's extension point for a future
+   * provider that does report cost — see `costFor` in `aiUsageMeter.ts`.
    */
   costUsd?: number;
 };
@@ -155,32 +156,6 @@ type ResolvedAIBackend = {
   deployment: string;
   endpoint: string;
   apiKey: string;
-};
-
-type OpenRouterChoice = {
-  finish_reason?: unknown;
-  native_finish_reason?: unknown;
-  message?: {
-    content?: unknown;
-    tool_calls?: Array<{
-      function?: { name?: unknown; arguments?: unknown };
-    }>;
-  };
-};
-
-type OpenRouterResponse = {
-  id?: unknown;
-  choices?: OpenRouterChoice[];
-  usage?: {
-    prompt_tokens?: unknown;
-    completion_tokens?: unknown;
-    // Always returned now; the old `usage: {include: true}` opt-in is a no-op.
-    cost?: unknown;
-    prompt_tokens_details?: {
-      cached_tokens?: unknown;
-      cache_write_tokens?: unknown;
-    };
-  };
 };
 
 export class AIConfigurationError extends Error {
@@ -257,26 +232,12 @@ function normalizeEndpoint(value: string): string {
     .replace(/\/openai\/v1$/i, "");
 }
 
+/**
+ * Foundry is the only AI backend. There is deliberately no provider switch and
+ * no default-provider fallback: a missing or malformed Foundry setting raises
+ * `AIConfigurationError` rather than routing anywhere else.
+ */
 function resolveBackend(capability: AICapability): ResolvedAIBackend {
-  const provider = env.AI_PROVIDER ?? "openrouter";
-
-  if (provider === "openrouter") {
-    const apiKey = requireSetting(
-      "OPENROUTER_API_KEY",
-      env.OPENROUTER_API_KEY,
-    );
-    const isSafety = capability === "safety";
-    return {
-      provider: "openrouter",
-      model: isSafety ? OPENROUTER_SAFETY_MODEL : OPENROUTER_CLAUDE_MODEL,
-      deployment: isSafety
-        ? "google/gemma-4-26b-a4b-it"
-        : "anthropic/claude-haiku-4.5",
-      endpoint: OPENROUTER_URL,
-      apiKey,
-    };
-  }
-
   const endpoint = normalizeEndpoint(
     requireSetting("FOUNDRY_ENDPOINT", env.FOUNDRY_ENDPOINT),
   );
@@ -331,9 +292,7 @@ export function isAIConfigured(capability: AICapability): boolean {
 }
 
 export function getPersistedAIProvider(): PersistedAIProvider {
-  return (env.AI_PROVIDER ?? "openrouter") === "foundry"
-    ? "fabric-foundry"
-    : "fabric-openrouter";
+  return "fabric-foundry";
 }
 
 function asNonEmptyText(value: unknown): string | null {
@@ -344,17 +303,6 @@ function asNonEmptyText(value: unknown): string | null {
 
 function asFiniteTokenCount(value: unknown): number {
   return typeof value === "number" && Number.isFinite(value) ? value : 0;
-}
-
-/**
- * Unlike token counts, an absent cost and a zero cost are different facts — a
- * free model legitimately reports 0 — so this returns undefined rather than
- * collapsing "not reported" into "free".
- */
-function asReportedCost(value: unknown): number | undefined {
-  return typeof value === "number" && Number.isFinite(value) && value >= 0
-    ? value
-    : undefined;
 }
 
 function parseToolArguments(value: unknown): unknown | null {
@@ -630,153 +578,6 @@ async function callFoundryOpenAI(
   };
 }
 
-function retryDelayMs(response: Response, retryNumber: number): number {
-  const retryAfter = response.headers.get("retry-after");
-  if (retryAfter) {
-    const seconds = Number(retryAfter);
-    if (Number.isFinite(seconds) && seconds >= 0) {
-      return Math.min(seconds * 1000, 10_000);
-    }
-  }
-  return Math.min(250 * 2 ** retryNumber, 4_000);
-}
-
-function shouldRetry(status: number): boolean {
-  return status === 408 || status === 409 || status === 429 || status >= 500;
-}
-
-async function wait(ms: number): Promise<void> {
-  await new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-async function fetchOpenRouter(
-  backend: ResolvedAIBackend,
-  request: AIRequest,
-  body: Record<string, unknown>,
-): Promise<Response> {
-  let lastError: unknown;
-  const maxRetries = request.maxRetries ?? DEFAULT_MAX_RETRIES;
-
-  for (let attempt = 0; attempt <= maxRetries; attempt++) {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(
-      () => controller.abort(),
-      request.timeoutMs ?? DEFAULT_TIMEOUT_MS,
-    );
-
-    try {
-      const response = await fetch(backend.endpoint, {
-        method: "POST",
-        signal: controller.signal,
-        headers: {
-          Authorization: `Bearer ${backend.apiKey}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify(body),
-      });
-
-      if (response.ok || !shouldRetry(response.status)) return response;
-      lastError = new AIRequestError(
-        `OpenRouter request failed with status ${response.status}.`,
-        { provider: backend.provider, status: response.status },
-      );
-      if (attempt < maxRetries) {
-        await response.body?.cancel();
-        await wait(retryDelayMs(response, attempt));
-      }
-    } catch (error) {
-      lastError = error;
-      if (attempt < maxRetries) {
-        await wait(Math.min(250 * 2 ** attempt, 4_000));
-      }
-    } finally {
-      clearTimeout(timeoutId);
-    }
-  }
-
-  throw lastError ?? new Error("OpenRouter request failed.");
-}
-
-async function callOpenRouter(
-  backend: ResolvedAIBackend,
-  request: AIRequest,
-): Promise<AICompletion> {
-  const body: Record<string, unknown> = {
-    model: backend.deployment,
-    messages: [
-      { role: "system", content: request.system },
-      { role: "user", content: request.user },
-    ],
-    max_tokens: request.maxTokens,
-    ...(request.temperature === undefined
-      ? {}
-      : { temperature: request.temperature }),
-    ...(request.tool
-      ? {
-          tools: [
-            {
-              type: "function",
-              function: {
-                name: request.tool.name,
-                description: request.tool.description,
-                parameters: request.tool.inputSchema,
-                strict: true,
-              },
-            },
-          ],
-          tool_choice: {
-            type: "function",
-            function: { name: request.tool.name },
-          },
-        }
-      : {}),
-  };
-
-  const response = await fetchOpenRouter(backend, request, body);
-  if (!response.ok) {
-    await response.body?.cancel();
-    throw new AIRequestError(
-      `OpenRouter request failed with status ${response.status}.`,
-      { provider: backend.provider, status: response.status },
-    );
-  }
-
-  const result = (await response.json()) as OpenRouterResponse;
-  const choice = result.choices?.[0];
-  const toolCall = choice?.message?.tool_calls?.find(
-    (item) =>
-      !request.tool || item.function?.name === request.tool.name,
-  );
-  const finishReason =
-    asNonEmptyText(choice?.finish_reason) ??
-    asNonEmptyText(choice?.native_finish_reason);
-
-  return {
-    provider: backend.provider,
-    model: backend.model,
-    deployment: backend.deployment,
-    text: asNonEmptyText(choice?.message?.content),
-    toolInput: parseToolArguments(toolCall?.function?.arguments),
-    finishReason,
-    usage: result.usage
-      ? {
-          // OpenAI-shaped: prompt_tokens includes cached_tokens.
-          inputTokens: asFiniteTokenCount(result.usage.prompt_tokens),
-          outputTokens: asFiniteTokenCount(result.usage.completion_tokens),
-          cachedReadTokens: asFiniteTokenCount(
-            result.usage.prompt_tokens_details?.cached_tokens,
-          ),
-          cacheWriteTokens: asFiniteTokenCount(
-            result.usage.prompt_tokens_details?.cache_write_tokens,
-          ),
-        }
-      : null,
-    // OpenRouter is the one provider that prices the request for us.
-    costUsd: asReportedCost(result.usage?.cost),
-    requestId: requestIdFrom(result),
-  };
-}
-
 export async function generateAICompletion(
   request: AIRequest,
 ): Promise<AICompletion> {
@@ -788,9 +589,7 @@ export async function generateAICompletion(
     const completion =
       backend.provider === "foundry-claude"
         ? await callFoundryClaude(backend, request)
-        : backend.provider === "foundry-openai"
-          ? await callFoundryOpenAI(backend, request)
-          : await callOpenRouter(backend, request);
+        : await callFoundryOpenAI(backend, request);
     logSuccess(request, completion, startedAt);
     return completion;
   } catch (error) {

@@ -2,6 +2,11 @@
 
 Derived from [PRD.md](PRD.md) v1.0 (Multi-Tenant — Subdomain-Native)
 
+> **Historical record.** Steps below that name OpenRouter or `OPENROUTER_API_KEY`
+> describe how the AI calls were originally built. OpenRouter was sunset as a
+> sub-processor on 2026-08-19; every AI call now goes through Microsoft Foundry
+> via `convex/lib/aiProvider.ts`. Do not follow those steps as written.
+
 ---
 
 ## Phase 1: Project Setup & Infrastructure

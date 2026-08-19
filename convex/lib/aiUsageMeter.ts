@@ -96,7 +96,7 @@ function costFor(completion: AICompletion | undefined): {
   costSource: "computed" | "provider";
   providerReportedCostMicroUsd?: number;
 } {
-  // OpenRouter prices the request itself; prefer its number over our table.
+  // A provider that prices the request itself wins over our rate table.
   if (completion?.costUsd !== undefined) {
     const micro = microUsdFromUsd(completion.costUsd);
     return {

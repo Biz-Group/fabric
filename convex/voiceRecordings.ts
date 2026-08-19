@@ -397,7 +397,7 @@ async function analyzeTranscript(
   transcript: TranscriptMessage[],
 ): Promise<{
   analysis: AnalysisPayload;
-  analysisProvider: "fabric-openrouter" | "fabric-foundry";
+  analysisProvider: "fabric-foundry";
 }> {
   const fallbackSummary = fallbackSummaryFromTranscript(transcript);
   const completion = await meteredCompletion(ctx, attribution, {
@@ -409,10 +409,7 @@ async function analyzeTranscript(
   });
   return {
     analysis: parseAnalysisResponse(completion, fallbackSummary),
-    analysisProvider:
-      completion.provider === "openrouter"
-        ? "fabric-openrouter"
-        : "fabric-foundry",
+    analysisProvider: "fabric-foundry",
   };
 }
 
@@ -506,10 +503,9 @@ export const finishVoiceRecording = internalMutation({
     summary: v.string(),
     title: v.optional(v.string()),
     analysis: v.any(),
-    analysisProvider: v.union(
-      v.literal("fabric-openrouter"),
-      v.literal("fabric-foundry"),
-    ),
+    // Only Foundry can produce a new recording analysis. The wider union
+    // survives in the table schema for pre-cutover rows, not for writes.
+    analysisProvider: v.literal("fabric-foundry"),
     durationSeconds: v.optional(v.number()),
   },
   handler: async (ctx, args) => {

@@ -420,7 +420,7 @@ describe("response payload parsing", () => {
     expect(parsed.nodes).toHaveLength(2);
   });
 
-  test("parses OpenRouter content block arrays", () => {
+  test("parses Claude content block arrays", () => {
     const parsed = parseFlowResponsePayload([
       { type: "text", text: JSON.stringify(sampleGraphPayload) },
     ]);

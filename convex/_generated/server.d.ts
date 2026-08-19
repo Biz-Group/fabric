@@ -25,14 +25,12 @@ import type { DataModel } from "./dataModel.js";
  * Typesafe environment variables declared in `convex.config.ts`.
  */
 type Env = {
-  readonly AI_PROVIDER: "openrouter" | "foundry" | undefined;
   readonly FOUNDRY_API_KEY: string | undefined;
   readonly FOUNDRY_CLAUDE_DEPLOYMENT: string | undefined;
   readonly FOUNDRY_ENDPOINT: string | undefined;
   readonly FOUNDRY_OPENAI_FALLBACK_DEPLOYMENT: string | undefined;
   readonly FOUNDRY_SAFETY_DEPLOYMENT: string | undefined;
   readonly FOUNDRY_SYNTHESIS_BACKEND: "claude" | "gpt5mini" | undefined;
-  readonly OPENROUTER_API_KEY: string | undefined;
   readonly SUMMARY_V2: string | undefined;
   readonly USAGE_DEPLOYMENT_LABEL: "prod" | "dev" | undefined;
   readonly USAGE_SINK_SECRET: string | undefined;

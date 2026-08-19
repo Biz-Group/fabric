@@ -84,17 +84,6 @@ export const TOKEN_RATES: Readonly<Record<string, TokenRate>> = {
   // FOUNDRY_SYNTHESIS_BACKEND=gpt5mini, so until then those rows land as
   // `unpriced` rather than carrying a guessed rate.
 
-  // OpenRouter reports real per-request cost in `usage.cost`, so these entries
-  // are only a fallback for when it doesn't. Same underlying model, same rates.
-  "openrouter:openrouter:anthropic/claude-haiku-4.5": {
-    input: 1.0,
-    output: 5.0,
-    cachedRead: 0.1,
-    cacheWrite: 1.25,
-    inputIncludesCached: true,
-  },
-  // `openrouter:google/gemma-4-26b-a4b-it` is intentionally absent — it only
-  // runs on the OpenRouter rollback path, where provider-reported cost applies.
 };
 
 const MICRO_USD_PER_USD = 1_000_000;
@@ -173,7 +162,7 @@ function finite(value: number | undefined): number {
     : 0;
 }
 
-/** Converts a provider-reported USD amount (e.g. OpenRouter's `usage.cost`). */
+/** Converts a provider-reported USD amount into micro-USD. */
 export function microUsdFromUsd(usd: number): number {
   if (!Number.isFinite(usd) || usd <= 0) return 0;
   return Math.round(usd * MICRO_USD_PER_USD);

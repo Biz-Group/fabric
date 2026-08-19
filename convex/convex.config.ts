@@ -4,10 +4,10 @@ import { v } from "convex/values";
 
 const app = defineApp({
   env: {
-    AI_PROVIDER: v.optional(
-      v.union(v.literal("openrouter"), v.literal("foundry")),
-    ),
-    OPENROUTER_API_KEY: v.optional(v.string()),
+    // Foundry is the only AI provider. There is no provider switch: adding one
+    // back would make an unset variable route traffic to a second
+    // sub-processor, which is exactly the failure mode the OpenRouter sunset
+    // removed. Pick backends within Foundry via FOUNDRY_SYNTHESIS_BACKEND.
     FOUNDRY_ENDPOINT: v.optional(v.string()),
     FOUNDRY_API_KEY: v.optional(v.string()),
     FOUNDRY_SYNTHESIS_BACKEND: v.optional(

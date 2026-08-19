@@ -2,13 +2,20 @@
 
 Last verified: 2026-07-14
 
+> **Superseded 2026-08-19 — historical record only.** The migration is complete
+> and OpenRouter has been sunset as a sub-processor: the rollback backend, the
+> `AI_PROVIDER` switch, and `OPENROUTER_API_KEY` are all removed from the code
+> and from both deployments. Foundry is the only AI provider, and there is no
+> longer any setting that can route a request elsewhere. The cutover and
+> rollback procedures below no longer describe the system — do not follow them.
+> The pricing comparison and the Foundry provisioning steps remain accurate.
+
 ## Implemented application changes
 
 Fabric's eight AI calls now go through `convex/lib/aiProvider.ts` instead of calling OpenRouter directly. The adapter supports:
 
 - Microsoft Foundry Claude Messages API for synthesis.
 - Microsoft Foundry OpenAI v1 chat completions for safety and the warm fallback.
-- OpenRouter as a temporary, explicit rollback backend.
 - Forced tool calls, normalized text/tool output, normalized stop reasons, token usage, request IDs, retries, timeouts, and prompt-free telemetry.
 
 The model mapping is:

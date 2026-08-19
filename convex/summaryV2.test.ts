@@ -174,7 +174,7 @@ describe("Summary V2 contracts and normalizers", () => {
 
     // A rollup carries the widest schema of the three reduce stages, so it must
     // never again be the one with the smallest budget.
-    expect(budget.maxTokens).toBeGreaterThan(
+    expect(budget.maxTokens).toBeGreaterThanOrEqual(
       SUMMARY_V2_AI_BUDGETS.finalReduce.maxTokens,
     );
     expect(budget.maxTokens).toBeGreaterThan(

@@ -106,6 +106,8 @@ async function seedSpeakerLabelFixture(t: ReturnType<typeof convexTest>) {
       userId: userAId,
       inputMode: "voiceRecord",
       transcriptionProvider: "elevenlabs-scribe",
+      // Deliberately the legacy pre-Foundry value: this asserts the read path
+      // still tolerates rows written before the OpenRouter sunset.
       analysisProvider: "fabric-openrouter",
       status: "needs_speaker_labels",
       transcript: [

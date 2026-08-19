@@ -16,8 +16,6 @@ import {
 } from "../summaryV2";
 
 const ENV_NAMES = [
-  "AI_PROVIDER",
-  "OPENROUTER_API_KEY",
   "FOUNDRY_ENDPOINT",
   "FOUNDRY_API_KEY",
   "FOUNDRY_SYNTHESIS_BACKEND",
@@ -174,7 +172,6 @@ describe("conversation evidence V2 contract", () => {
 
 describe("conversation evidence tool transport", () => {
   test("Foundry Claude forces the strict schema tool", async () => {
-    process.env.AI_PROVIDER = "foundry";
     process.env.FOUNDRY_ENDPOINT = "https://fabric-test.services.ai.azure.com";
     process.env.FOUNDRY_API_KEY = "test-key";
     process.env.FOUNDRY_CLAUDE_DEPLOYMENT = "fabric-claude";
@@ -221,7 +218,6 @@ describe("conversation evidence tool transport", () => {
   });
 
   test("Foundry OpenAI sends the same schema in strict mode", async () => {
-    process.env.AI_PROVIDER = "foundry";
     process.env.FOUNDRY_ENDPOINT = "https://fabric-test.services.ai.azure.com";
     process.env.FOUNDRY_API_KEY = "test-key";
     process.env.FOUNDRY_SYNTHESIS_BACKEND = "gpt5mini";
@@ -264,56 +260,6 @@ describe("conversation evidence tool transport", () => {
     );
     expect(body).toMatchObject({
       parallel_tool_calls: false,
-      tools: [
-        {
-          function: {
-            name: CONVERSATION_EVIDENCE_V2_TOOL_NAME,
-            strict: true,
-            parameters: { additionalProperties: false },
-          },
-        },
-      ],
-    });
-  });
-
-  test("OpenRouter sends the same schema in strict mode", async () => {
-    process.env.AI_PROVIDER = "openrouter";
-    process.env.OPENROUTER_API_KEY = "test-key";
-    let body: Record<string, unknown> | undefined;
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-        body = await observedBody(input, init);
-        return new Response(
-          JSON.stringify({
-            id: "or_1",
-            choices: [
-              {
-                finish_reason: "tool_calls",
-                message: {
-                  content: null,
-                  tool_calls: [
-                    {
-                      function: {
-                        name: CONVERSATION_EVIDENCE_V2_TOOL_NAME,
-                        arguments: JSON.stringify(TOOL_PAYLOAD),
-                      },
-                    },
-                  ],
-                },
-              },
-            ],
-            usage: { prompt_tokens: 10, completion_tokens: 20 },
-          }),
-          { status: 200, headers: { "content-type": "application/json" } },
-        );
-      }),
-    );
-    expect((await generateAICompletion(request())).toolInput).toEqual(
-      TOOL_PAYLOAD,
-    );
-    expect(body).toMatchObject({
-      temperature: 0,
       tools: [
         {
           function: {

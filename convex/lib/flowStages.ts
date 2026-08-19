@@ -25,8 +25,16 @@ export const NODE_DETAILS_MAX_RETRIES = 2;
 /** Nodes per detail batch. Halved once if a batch truncates. */
 export const NODE_DETAILS_BATCH_SIZE = 6;
 
-export const INSIGHTS_MAX_TOKENS = 2048;
-export const INSIGHTS_TIMEOUT_MS = 120_000;
+/**
+ * Raised from 2,048 after real runs truncated ("Automation-opportunity analysis
+ * hit the token limit") — a process with a handful of substantial opportunities
+ * does not fit 2k tokens of structured JSON. The timeout moves with it:
+ * `minTimeoutMsForMaxTokens(4096)` is 130,031 ms, so 120 s would leave the call
+ * over its time budget. Worst case is still (1 + 2) x 135 s = 405 s, inside the
+ * 10-minute action ceiling.
+ */
+export const INSIGHTS_MAX_TOKENS = 4096;
+export const INSIGHTS_TIMEOUT_MS = 135_000;
 export const INSIGHTS_MAX_RETRIES = 2;
 
 /**

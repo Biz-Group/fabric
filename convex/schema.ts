@@ -499,6 +499,10 @@ export default defineSchema({
     transcriptionProvider: v.optional(
       v.union(v.literal("elevenlabs-convai"), v.literal("elevenlabs-scribe")),
     ),
+    // `fabric-openrouter` is READ-ONLY legacy: OpenRouter was sunset as a
+    // sub-processor on 2026-08-19 and nothing can write this value any more
+    // (see `finishVoiceRecording`). It stays in the union only so pre-cutover
+    // rows keep validating. Narrowing it needs a full-table count first.
     analysisProvider: v.optional(
       v.union(
         v.literal("elevenlabs-convai"),
@@ -811,8 +815,9 @@ export default defineSchema({
     priceVersion: v.string(),
     costSource: v.union(v.literal("computed"), v.literal("provider")),
     // What the provider says it actually charged, for invoice reconciliation.
-    // OpenRouter: `usage.cost`. ElevenLabs agents: `metadata.cost_fiat`, which
-    // is legitimately 0 for calls absorbed by the plan allowance.
+    // No Foundry API reports this, so it comes only from ElevenLabs agents via
+    // `metadata.cost_fiat`, which is legitimately 0 for calls absorbed by the
+    // plan allowance.
     providerReportedCostMicroUsd: v.optional(v.number()),
     // ElevenLabs agent calls arrive pre-itemised in `metadata.charging`.
     llmCostMicroUsd: v.optional(v.number()),

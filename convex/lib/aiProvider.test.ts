@@ -4,7 +4,6 @@ import {
   FOUNDRY_CLAUDE_MODEL,
   FOUNDRY_SAFETY_MODEL,
   MEASURED_THROUGHPUT,
-  OPENROUTER_CLAUDE_MODEL,
   assertCompletionNotTruncated,
   generateAICompletion,
   getPersistedAIProvider,
@@ -14,8 +13,6 @@ import {
 } from "./aiProvider";
 
 const AI_ENV_NAMES = [
-  "AI_PROVIDER",
-  "OPENROUTER_API_KEY",
   "FOUNDRY_ENDPOINT",
   "FOUNDRY_API_KEY",
   "FOUNDRY_SYNTHESIS_BACKEND",
@@ -42,19 +39,30 @@ async function observeRequest(
   };
 }
 
-function useOpenRouter(): void {
-  process.env.AI_PROVIDER = "openrouter";
-  process.env.OPENROUTER_API_KEY = "openrouter-test-key";
+/**
+ * Minimum Foundry synthesis config. The provider-agnostic tests below (time
+ * budget, near-miss telemetry, retry overrides) need *a* working backend to
+ * exercise `generateAICompletion`; Foundry Claude is the only one there is.
+ */
+function useFoundry(): void {
+  process.env.FOUNDRY_ENDPOINT = "https://fabric-test.services.ai.azure.com/";
+  process.env.FOUNDRY_API_KEY = "foundry-test-key";
+  process.env.FOUNDRY_CLAUDE_DEPLOYMENT = "fabric-claude-haiku-4-5";
 }
 
-function openRouterResponse(options?: { completionTokens?: number }): Response {
+function foundryClaudeResponse(options?: { outputTokens?: number }): Response {
   return new Response(
     JSON.stringify({
-      id: "or_test",
-      choices: [{ finish_reason: "stop", message: { content: "Summary" } }],
+      id: "msg_test",
+      type: "message",
+      role: "assistant",
+      model: "fabric-claude-haiku-4-5",
+      content: [{ type: "text", text: "Summary" }],
+      stop_reason: "end_turn",
+      stop_sequence: null,
       usage: {
-        prompt_tokens: 8,
-        completion_tokens: options?.completionTokens ?? 3,
+        input_tokens: 8,
+        output_tokens: options?.outputTokens ?? 3,
       },
     }),
     { status: 200, headers: { "content-type": "application/json" } },
@@ -85,7 +93,6 @@ describe("AI provider adapter", () => {
   });
 
   test("uses the Foundry Claude Messages API for synthesis", async () => {
-    process.env.AI_PROVIDER = "foundry";
     process.env.FOUNDRY_ENDPOINT =
       "https://fabric-test.services.ai.azure.com/";
     process.env.FOUNDRY_API_KEY = "foundry-test-key";
@@ -148,7 +155,6 @@ describe("AI provider adapter", () => {
   });
 
   test("uses Foundry OpenAI strict tool calling for safety", async () => {
-    process.env.AI_PROVIDER = "foundry";
     process.env.FOUNDRY_ENDPOINT =
       "https://fabric-test.services.ai.azure.com/openai/v1";
     process.env.FOUNDRY_API_KEY = "foundry-test-key";
@@ -235,57 +241,8 @@ describe("AI provider adapter", () => {
     });
   });
 
-  test("keeps OpenRouter available as an explicit rollback backend", async () => {
-    process.env.AI_PROVIDER = "openrouter";
-    process.env.OPENROUTER_API_KEY = "openrouter-test-key";
-
-    let observed: ObservedRequest | undefined;
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-        observed = await observeRequest(input, init);
-        return new Response(
-          JSON.stringify({
-            id: "or_test",
-            choices: [
-              {
-                finish_reason: "stop",
-                message: { content: "Rollback summary" },
-              },
-            ],
-            usage: { prompt_tokens: 8, completion_tokens: 3 },
-          }),
-          { status: 200, headers: { "content-type": "application/json" } },
-        );
-      }),
-    );
-
-    const completion = await generateAICompletion({
-      capability: "synthesis",
-      operation: "adapter-test-openrouter",
-      system: "System prompt",
-      user: "User prompt",
-      maxTokens: 100,
-    });
-
-    expect(observed?.url).toBe(
-      "https://openrouter.ai/api/v1/chat/completions",
-    );
-    expect(observed?.body).toMatchObject({
-      model: "anthropic/claude-haiku-4.5",
-      max_tokens: 100,
-    });
-    expect(completion).toMatchObject({
-      provider: "openrouter",
-      model: OPENROUTER_CLAUDE_MODEL,
-      text: "Rollback summary",
-    });
-    expect(getPersistedAIProvider()).toBe("fabric-openrouter");
-  });
-
   test("honors a per-request maxRetries override (no retry on 429)", async () => {
-    process.env.AI_PROVIDER = "openrouter";
-    process.env.OPENROUTER_API_KEY = "openrouter-test-key";
+    useFoundry();
 
     const fetchMock = vi.fn(
       async () =>
@@ -312,8 +269,8 @@ describe("AI provider adapter", () => {
   });
 
   test("warns when a request asks for more output than its timeout covers", async () => {
-    useOpenRouter();
-    vi.stubGlobal("fetch", vi.fn(async () => openRouterResponse()));
+    useFoundry();
+    vi.stubGlobal("fetch", vi.fn(async () => foundryClaudeResponse()));
     const warn = vi.spyOn(console, "warn");
 
     // 8,192 tokens needs ~256 s at the worst measured rate; this call gets the
@@ -336,8 +293,8 @@ describe("AI provider adapter", () => {
   });
 
   test("stays quiet when the request fits its time budget", async () => {
-    useOpenRouter();
-    vi.stubGlobal("fetch", vi.fn(async () => openRouterResponse()));
+    useFoundry();
+    vi.stubGlobal("fetch", vi.fn(async () => foundryClaudeResponse()));
     const warn = vi.spyOn(console, "warn");
 
     await generateAICompletion({
@@ -354,14 +311,14 @@ describe("AI provider adapter", () => {
   });
 
   test("logs a near miss when latency eats most of the timeout", async () => {
-    useOpenRouter();
+    useFoundry();
     let nowMs = 1_700_000_000_000;
     vi.spyOn(Date, "now").mockImplementation(() => nowMs);
     vi.stubGlobal(
       "fetch",
       vi.fn(async () => {
         nowMs += 90_000;
-        return openRouterResponse({ completionTokens: 9000 });
+        return foundryClaudeResponse({ outputTokens: 9000 });
       }),
     );
     const warn = vi.spyOn(console, "warn");
@@ -389,14 +346,14 @@ describe("AI provider adapter", () => {
   });
 
   test("does not log a near miss for a comfortably fast call", async () => {
-    useOpenRouter();
+    useFoundry();
     let nowMs = 1_700_000_000_000;
     vi.spyOn(Date, "now").mockImplementation(() => nowMs);
     vi.stubGlobal(
       "fetch",
       vi.fn(async () => {
         nowMs += 20_000;
-        return openRouterResponse();
+        return foundryClaudeResponse();
       }),
     );
     const warn = vi.spyOn(console, "warn");
