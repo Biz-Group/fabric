@@ -126,6 +126,48 @@ describe("overview presentation rules", () => {
     expect(refreshUnavailableReason("refreshing", false)).toBeNull();
   });
 
+  it("points an unrecordable process at the conversation it needs", () => {
+    // The control is inert because the process has no completed conversation:
+    // pressing it used to schedule a run that scanned nothing and reported a
+    // failed refresh.
+    const reason = refreshUnavailableReason("missing", false, undefined, false);
+
+    expect(reason).toBe(
+      "No conversation has been completed for this process yet. Build becomes available once one is recorded.",
+    );
+    // It outranks the generic "nothing new to read" explanation at any state,
+    // including a built process whose conversations were all deleted.
+    expect(refreshUnavailableReason("stale", false, undefined, false)).toBe(
+      reason,
+    );
+    expect(refreshUnavailableReason("missing", false)).not.toBe(reason);
+    // The status detail names the same next step instead of offering a build.
+    const detail = overviewStatusDetail("missing", null, undefined, true, false);
+    expect(detail).toContain("Complete a process conversation");
+    expect(detail).not.toContain("when you are ready");
+  });
+
+  it("points an unbuildable rollup at the children it has none of", () => {
+    // Same gate a level up: a rollup reads child overviews, so one with no
+    // built child has nothing to roll up and says so in its own terms.
+    expect(
+      refreshUnavailableReason("missing", false, "processes", false),
+    ).toBe(
+      "No processes have an overview to roll up yet. Build becomes available once one is built.",
+    );
+    expect(
+      refreshUnavailableReason("missing", false, "departments", false),
+    ).toContain("No departments have an overview");
+    // Not the process wording, and not the partial-rollup wording either —
+    // that one is about children it could not read, this one about having none.
+    expect(
+      refreshUnavailableReason("missing", false, "processes", false),
+    ).not.toContain("conversation");
+    expect(
+      overviewStatusDetail("missing", null, "processes", true, false),
+    ).toContain("Build one of its processes");
+  });
+
   it("sends a partial rollup to the children it could not read", () => {
     expect(refreshUnavailableReason("partial", false, "processes")).toBe(
       "Some processes have no overview of their own yet. Rebuild becomes available once they are built.",

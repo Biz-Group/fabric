@@ -573,6 +573,13 @@ export type SummaryOverviewResponse = {
    * the same brief.
    */
   refreshAvailable: boolean;
+  /**
+   * Whether any source a generation could read exists at all — for a process a
+   * completed conversation, for a rollup a child holding a readable overview.
+   * False on an entity nobody has recorded or built under yet, which is why its
+   * build control is inert rather than failing at the source scan.
+   */
+  hasEvidenceSource: boolean;
   content: SummaryCompatibilityRead;
   coverage: SummaryCoverage | null;
   lastSuccessfulGenerationAt: number | null;

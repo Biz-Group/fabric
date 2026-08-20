@@ -216,6 +216,7 @@ export function OverviewLead({
   progressUnit,
   canRefresh,
   refreshAvailable,
+  hasEvidenceSource = true,
   refreshPending,
   refreshError,
   error,
@@ -233,6 +234,8 @@ export function OverviewLead({
   progressUnit?: string;
   canRefresh: boolean;
   refreshAvailable: boolean;
+  /** False only on a process with no completed conversation to build from. */
+  hasEvidenceSource?: boolean;
   refreshPending: boolean;
   refreshError?: string | null;
   error: { message: string; retryable: boolean } | null;
@@ -243,7 +246,13 @@ export function OverviewLead({
 }) {
   const [detailOpen, setDetailOpen] = useState(false);
   const detailId = `${id}-status-detail`;
-  const detail = overviewStatusDetail(state, progress, progressUnit, canRefresh);
+  const detail = overviewStatusDetail(
+    state,
+    progress,
+    progressUnit,
+    canRefresh,
+    hasEvidenceSource,
+  );
   // The timestamp only says something once an overview has been generated.
   const liveProgress =
     state === "refreshing" ? overviewProgressText(progress, progressUnit) : null;
@@ -256,6 +265,7 @@ export function OverviewLead({
     state,
     refreshAvailable,
     progressUnit,
+    hasEvidenceSource,
   );
 
   return (

@@ -301,6 +301,13 @@ describe("unified summary overview API", () => {
       await seedMember(ctx, "contributor", "contributor");
       await seedMember(ctx, "admin", "admin");
       const hierarchy = await seedHierarchy(ctx);
+      // Every department here needs a child overview to roll up: this test is
+      // about who may press the control, which only matters where a rebuild has
+      // something to read.
+      await ctx.db.patch(hierarchy.processId, {
+        summaryV2: processArtifact("member-refresh-child"),
+        summaryV2SourceRevision: 1,
+      });
       const contributorDepartment = await ctx.db.insert("departments", {
         functionId: hierarchy.functionId,
         name: "Contributor refresh",
@@ -317,6 +324,20 @@ describe("unified summary overview API", () => {
         summaryStale: true,
         clerkOrgId: ORG,
       });
+      for (const [index, departmentId] of [
+        contributorDepartment,
+        adminDepartment,
+      ].entries()) {
+        await ctx.db.insert("processes", {
+          departmentId,
+          name: `Built child ${index + 1}`,
+          sortOrder: 1,
+          summaryEvidenceRevision: 1,
+          summaryV2SourceRevision: 1,
+          summaryV2: processArtifact(`rollup-child-${index + 1}`),
+          clerkOrgId: ORG,
+        });
+      }
       const otherFunction = await ctx.db.insert("functions", {
         name: "Other tenant",
         sortOrder: 1,
@@ -397,6 +418,15 @@ describe("unified summary overview API", () => {
       await seedMember(ctx, "viewer", "viewer");
       const { departmentId, processId } = await seedHierarchy(ctx);
       await ctx.db.patch(processId, { summaryEvidenceRevision: 4 });
+      // Both processes here have evidence to reduce — the coalescing this test
+      // covers only applies once a rebuild has something to read. A process
+      // with no completed conversation is refused before it can coalesce.
+      await ctx.db.insert("conversations", {
+        processId,
+        contributorName: "First contributor",
+        status: "done",
+        clerkOrgId: ORG,
+      });
       const failedProcessId = await ctx.db.insert("processes", {
         departmentId,
         name: "Failed unchanged process",
@@ -429,6 +459,12 @@ describe("unified summary overview API", () => {
         attempt: 2,
         maxAttempts: 2,
         resumeCount: 0,
+      });
+      await ctx.db.insert("conversations", {
+        processId: failedProcessId,
+        contributorName: "First contributor",
+        status: "done",
+        clerkOrgId: ORG,
       });
       return { processId, failedProcessId };
     });

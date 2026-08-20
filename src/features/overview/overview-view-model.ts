@@ -78,9 +78,20 @@ export function surfaceReadinessLabel(
 export function overviewActionHint(
   state: OverviewState,
   canRefresh: boolean,
+  hasEvidenceSource = true,
+  childUnit?: string,
 ): string | null {
   if (state !== "stale" && state !== "missing" && state !== "partial") {
     return null;
+  }
+  if (!hasEvidenceSource) {
+    // No control changes this state, whoever is reading. Recording a
+    // conversation — or building one child, a level up — is the only step that
+    // does, so the hint names that instead of promising a build that would find
+    // nothing to read.
+    return childUnit
+      ? `Build one of its ${childUnit} before rolling this overview up.`
+      : "Complete a process conversation before building this overview.";
   }
   const action =
     state === "missing" ? "Build the overview" : "Rebuild the overview";
@@ -111,6 +122,7 @@ export function overviewStatusDetail(
   progress: { completed: number; total: number } | null | undefined,
   unit: string | undefined,
   canRefresh: boolean,
+  hasEvidenceSource = true,
 ): string | null {
   if (state !== "stale" && state !== "partial" && state !== "missing") {
     return null;
@@ -119,7 +131,7 @@ export function overviewStatusDetail(
   return [
     OVERVIEW_STATE_META[state].description,
     progressText ? `${progressText}.` : null,
-    overviewActionHint(state, canRefresh),
+    overviewActionHint(state, canRefresh, hasEvidenceSource, unit),
   ]
     .filter(Boolean)
     .join(" ");
@@ -137,9 +149,22 @@ export function refreshUnavailableReason(
   state: OverviewState,
   refreshAvailable: boolean,
   childUnit?: string,
+  hasEvidenceSource = true,
 ): string | null {
   // `refreshing` hides the control rather than disabling it.
   if (refreshAvailable || state === "refreshing") return null;
+  if (!hasEvidenceSource) {
+    // Nothing to build from at all: a process with no completed conversation,
+    // or a rollup whose children hold no overview to read. Pressing Build used
+    // to reach the source scan, find nothing, and report a failed refresh; the
+    // control now names the one thing that unblocks it instead.
+    //
+    // Only a rollup surface passes a child unit, which is what separates the
+    // two — the same signal the `partial` message below reads.
+    return childUnit
+      ? `No ${childUnit} have an overview to roll up yet. Build becomes available once one is built.`
+      : "No conversation has been completed for this process yet. Build becomes available once one is recorded.";
+  }
   if (state === "partial") {
     // A rollup left incomplete by children that have no overview of their own —
     // a process nobody has recorded a conversation for yet, most often. Naming

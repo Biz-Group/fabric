@@ -56,6 +56,7 @@ const TERMINAL_STATES = ["succeeded", "partial", "failed"] as const;
 type RunFailureCode =
   | "feature_disabled"
   | "not_configured"
+  | "no_evidence_sources"
   | "no_current_evidence"
   | "invalid_output"
   | "truncated"
@@ -371,17 +372,30 @@ export const scanProcessSources = internalMutation({
     };
 
     if (includedSources === 0) {
+      // Two different outcomes used to share one retryable error. Zero eligible
+      // sources means no conversation has been completed for this process at
+      // all: there was nothing to read, retrying reads nothing again, and the
+      // overview is undocumented rather than broken — the read model maps this
+      // code back to `missing`. Eligible sources that produced no current
+      // evidence is a real failure of extraction, and worth retrying.
+      const noSources = eligibleSources === 0;
       await ctx.db.patch(run._id, {
         sourceSnapshot,
         sourceScan: undefined,
         chunkCount: 0,
         state: "failed",
         progress: { stage: "evidence", completed: 0, total: eligibleSources },
-        error: errorFor(
-          "no_current_evidence",
-          "No current structured conversation evidence is available.",
-          true,
-        ),
+        error: noSources
+          ? errorFor(
+              "no_evidence_sources",
+              "No conversation has been completed for this process yet.",
+              false,
+            )
+          : errorFor(
+              "no_current_evidence",
+              "No current structured conversation evidence is available.",
+              true,
+            ),
         lastProgressAt: Date.now(),
         completedAt: Date.now(),
       });

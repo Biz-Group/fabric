@@ -117,6 +117,9 @@ function overview(
     // What the read model derives for a structured artifact: only a state with
     // unread input left offers a rebuild.
     refreshAvailable: state !== "current" && state !== "refreshing",
+    // These fixtures all hold a structured artifact, so a conversation was
+    // recorded to build it from.
+    hasEvidenceSource: true,
     content: {
       format: "v2",
       artifact,
@@ -338,6 +341,26 @@ describe("ProcessOverviewContent", () => {
     expect(html).toContain("No overview yet");
     expect(html).toContain("Build overview");
     expect(html).not.toContain("Not generated yet");
+  });
+
+  it("keeps the build action inert while no conversation has been recorded", () => {
+    const value: SummaryOverviewResponse = {
+      ...overview("missing"),
+      content: { format: "none", artifact: null, markdown: null },
+      coverage: null,
+      lastSuccessfulGenerationAt: null,
+      refreshAvailable: false,
+      hasEvidenceSource: false,
+    };
+    const html = renderOverview(value);
+
+    // Visible, so the reader knows where the build lives, but disabled and
+    // carrying its reason — the press it used to accept ended in a failed
+    // refresh over a process that had never been recorded.
+    expect(html).toContain("Build overview");
+    expect(html).toContain("disabled");
+    expect(html).toContain("No conversation has been completed for this process");
+    expect(html).not.toContain("Refresh failed");
   });
 
   it("does not repeat legacy provenance already explained by Compatibility view", () => {

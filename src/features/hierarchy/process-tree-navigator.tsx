@@ -640,7 +640,7 @@ export function ProcessTreeNavigator({
                               onSelect: () => onCreateDepartment(fn),
                             },
                             {
-                              label: `Rename "${fn.name}"`,
+                              label: `Edit "${fn.name}"`,
                               icon: Pencil,
                               onSelect: () => onEditFunction(fn),
                             },
@@ -700,7 +700,7 @@ export function ProcessTreeNavigator({
                                           onCreateProcess(fn, department),
                                       },
                                       {
-                                        label: `Rename "${department.name}"`,
+                                        label: `Edit "${department.name}"`,
                                         icon: Pencil,
                                         onSelect: () =>
                                           onEditDepartment(fn, department),
@@ -747,7 +747,7 @@ export function ProcessTreeNavigator({
                                           canEdit
                                             ? [
                                                 {
-                                                  label: `Rename "${process.name}"`,
+                                                  label: `Edit "${process.name}"`,
                                                   icon: Pencil,
                                                   onSelect: () =>
                                                     onEditProcess(

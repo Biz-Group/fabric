@@ -396,6 +396,51 @@ describe("process Summary V2 pipeline", () => {
     });
   });
 
+  test("no conversation at all is a distinct, non-retryable outcome", async () => {
+    configureFoundry();
+    const t = convexTest(schema, modules);
+    const { processId } = await t.run((ctx) => seed(ctx, 0));
+
+    const { runId } = await startScannedRun(t, processId);
+
+    const run = await t.run((ctx) => ctx.db.get(runId));
+    expect(run?.sourceSnapshot).toMatchObject({
+      includedSources: 0,
+      totalEligibleSources: 0,
+    });
+    // Nothing was read because nothing exists to read. Retrying cannot change
+    // that, so the error says so and the read model maps this code back to an
+    // undocumented process rather than a failed refresh.
+    expect(run?.error?.code).toBe("no_evidence_sources");
+    expect(run?.error?.retryable).toBe(false);
+  });
+
+  test("recorded conversations whose extraction missed stay a retryable failure", async () => {
+    configureFoundry();
+    const t = convexTest(schema, modules);
+    const { processId, conversationIds } = await t.run((ctx) => seed(ctx, 2));
+    // Both conversations are eligible sources; neither carries current
+    // evidence. Extraction re-runs inside a rebuild, so this one is worth
+    // pressing again.
+    await t.run(async (ctx) => {
+      for (const conversationId of conversationIds) {
+        await ctx.db.patch(conversationId, {
+          processSummaryEvidenceV2: undefined,
+        });
+      }
+    });
+
+    const { runId } = await startScannedRun(t, processId);
+
+    const run = await t.run((ctx) => ctx.db.get(runId));
+    expect(run?.sourceSnapshot).toMatchObject({
+      includedSources: 0,
+      totalEligibleSources: 2,
+    });
+    expect(run?.error?.code).toBe("no_current_evidence");
+    expect(run?.error?.retryable).toBe(true);
+  });
+
   test("55 ordered sources preserve agreement, contradiction, uncertainty, and exact coverage", async () => {
     configureFoundry();
     const t = convexTest(schema, modules);

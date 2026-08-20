@@ -126,6 +126,8 @@ function overview(
     // with no overview of their own, which the parent rebuild cannot read.
     refreshAvailable:
       state !== "current" && state !== "refreshing" && state !== "partial",
+    // A rollup reads child overviews, so this is always true at this level.
+    hasEvidenceSource: true,
     content: {
       format: "v2",
       artifact,
@@ -346,6 +348,28 @@ describe("HierarchyOverviewContent", () => {
     expect(html).toContain('disabled=""');
     expect(html).toContain("Some processes have no overview of their own yet");
     expect(html).not.toContain("already covers every source available to it");
+  });
+
+  it("keeps the build action inert while no child holds an overview", () => {
+    const value: SummaryOverviewResponse = {
+      ...overview(
+        { kind: "department", departmentId },
+        departmentArtifact,
+        "missing",
+      ),
+      content: { format: "none", artifact: null, markdown: null },
+      coverage: null,
+      lastSuccessfulGenerationAt: null,
+      refreshAvailable: false,
+      hasEvidenceSource: false,
+    };
+    const html = renderDepartment(value, []);
+
+    // A brand-new department: pressing Build used to schedule a rollup that
+    // scanned no readable child and came back as "Refresh failed".
+    expect(html).toContain('disabled=""');
+    expect(html).toContain("No processes have an overview to roll up yet");
+    expect(html).not.toContain("Refresh failed");
   });
 
   it("renders a legacy fallback and an honest current-child ledger", () => {

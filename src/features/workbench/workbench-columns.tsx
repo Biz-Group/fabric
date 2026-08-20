@@ -1,5 +1,5 @@
 import type { ComponentType, ReactNode } from "react";
-import { ChevronRight, Pencil, Plus, Trash2 } from "lucide-react";
+import { ChevronRight, Plus, SquarePen, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 
@@ -95,10 +95,10 @@ export function ColumnItem({
               onEdit();
             }}
             className={cn(actionButtonClass, revealClass)}
-            title="Rename"
-            aria-label={`Rename ${label}`}
+            title={`Edit ${label}`}
+            aria-label={`Edit ${label}`}
           >
-            <Pencil className={mobile ? "h-4 w-4" : "h-3 w-3"} />
+            <SquarePen className={mobile ? "h-4 w-4" : "h-3 w-3"} />
           </button>
         )}
         {onDelete && (
@@ -184,10 +184,10 @@ export function OverviewActions({
         type="button"
         onClick={onEdit}
         className="rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-org-accent-subtle hover:text-foreground focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-org-accent-ring/35"
-        title={`Rename ${entityLabel}`}
-        aria-label={`Rename ${entityLabel}`}
+        title={`Edit ${entityLabel}`}
+        aria-label={`Edit ${entityLabel}`}
       >
-        <Pencil className="h-4 w-4" />
+        <SquarePen className="h-4 w-4" />
       </button>
       <button
         type="button"

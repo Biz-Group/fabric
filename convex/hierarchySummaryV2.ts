@@ -156,7 +156,9 @@ async function ownsRun(
     : null;
 }
 
-function processState(process: Doc<"processes">): HierarchyChildState {
+export function processState(
+  process: Doc<"processes">,
+): HierarchyChildState {
   return classifyHierarchyChild({
     hasArtifact: process.summaryV2 !== undefined,
     artifactComplete: process.summaryV2?.coverage.complete,
@@ -170,7 +172,7 @@ function processState(process: Doc<"processes">): HierarchyChildState {
   });
 }
 
-function departmentState(
+export function departmentState(
   department: Doc<"departments">,
 ): HierarchyChildState {
   return classifyHierarchyChild({
@@ -696,15 +698,22 @@ async function finishSourceScan(
     complete: scan.currentSources === scan.eligibleSources,
   };
   if (scan.includedSources === 0) {
+    // Nothing to roll up, which a rollup can never fix by trying again: a
+    // parent reads child artifacts, so the only route forward is building a
+    // child. The old retryable error made this read as a failed refresh and
+    // invited a retry that scanned the same empty set — the read model now maps
+    // this code back to the state the entity is actually in.
     await ctx.db.patch(run._id, {
       sourceSnapshot,
       rollupScan: undefined,
       chunkCount: 0,
       state: "failed",
       error: runError(
-        "no_current_children",
-        "No current child overview artifacts are available.",
-        true,
+        "no_readable_children",
+        scan.eligibleSources === 0
+          ? "This has no children to roll up yet."
+          : "No child holds a current overview to roll up yet.",
+        false,
       ),
       completedAt: Date.now(),
       lastProgressAt: Date.now(),

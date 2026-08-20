@@ -421,6 +421,63 @@ describe("Hierarchy Summary V2 pipeline", () => {
     expect(requestBody).not.toContain("Foreign process must never appear");
   });
 
+  test("a rollup with nothing readable under it is not a retryable failure", async () => {
+    configureFoundry();
+    const t = convexTest(schema, modules);
+    const seeded = await t.run(async (ctx) => {
+      const root = await seedRoot(ctx);
+      // The shape a department lands on before anyone builds a child: processes
+      // exist, none holds an overview to roll up.
+      await insertProcess(ctx, {
+        departmentId: root.departmentId,
+        name: "Never recorded",
+      });
+      await insertProcess(ctx, {
+        departmentId: root.departmentId,
+        name: "Also never recorded",
+      });
+      return root;
+    });
+
+    const { runId } = await startDepartmentRun(t, seeded.departmentId);
+
+    const run = await t.run(async (ctx) => ctx.db.get(runId));
+    expect(run?.sourceSnapshot).toMatchObject({
+      includedSources: 0,
+      totalEligibleSources: 2,
+    });
+    // A parent reads child artifacts, so pressing rebuild again scans the same
+    // empty set. Building a child is the only route forward, and that is not a
+    // failure to report.
+    expect(run?.error?.code).toBe("no_readable_children");
+    expect(run?.error?.retryable).toBe(false);
+    expect(run?.error?.message).toContain(
+      "No child holds a current overview",
+    );
+
+    // A department with no children at all reaches the same outcome, and says
+    // the plainer thing.
+    const emptyDepartmentId = await t.run(
+      async (ctx) =>
+        await ctx.db.insert("departments", {
+          functionId: seeded.functionId,
+          name: "No processes yet",
+          sortOrder: 2,
+          summarySourceRevision: 1,
+          summaryStale: true,
+          clerkOrgId: ORG,
+        }),
+    );
+    const empty = await startDepartmentRun(t, emptyDepartmentId);
+    const emptyRun = await t.run(async (ctx) => ctx.db.get(empty.runId));
+    expect(emptyRun?.sourceSnapshot).toMatchObject({
+      includedSources: 0,
+      totalEligibleSources: 0,
+    });
+    expect(emptyRun?.error?.code).toBe("no_readable_children");
+    expect(emptyRun?.error?.message).toContain("no children to roll up");
+  });
+
   test("function rollup cannot become current from stale or missing departments", async () => {
     configureFoundry();
     const t = convexTest(schema, modules);

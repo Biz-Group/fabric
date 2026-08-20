@@ -33,12 +33,16 @@ import {
   type SummaryEntityRef,
   type SummaryOverviewResponse,
   type SummaryOverviewState,
+  type SummaryRunError,
 } from "./summaryV2";
 import { requestProcessEvidenceRefreshForOrg } from "./summaryEvidence";
 import {
+  departmentState,
+  processState,
   requestDepartmentSummaryV2ForOrg,
   requestFunctionSummaryV2ForOrg,
 } from "./hierarchySummaryV2";
+import { isUsableHierarchyChild } from "./lib/hierarchyOverviewV2";
 
 const SUMMARY_PIPELINE_STALE_MS = 10 * 60_000;
 
@@ -238,10 +242,49 @@ function insightsGenerationStatus(flow: Doc<"processFlows"> | null) {
   return "ready" as const;
 }
 
+/**
+ * Codes a scan records when it found nothing to read. Both levels reach this:
+ * a process with no completed conversation, a rollup with no child holding a
+ * readable overview. Neither is a failure — the run had nothing to work on.
+ */
+const EMPTY_SOURCE_CODES = new Set(["no_evidence_sources", "no_readable_children"]);
+
+/**
+ * The retryable codes those two outcomes used to share with real failures,
+ * before the scans told the cases apart. A live source check separates them on
+ * rows already carrying one.
+ */
+const AMBIGUOUS_EMPTY_SOURCE_CODES = new Set([
+  "no_current_evidence",
+  "no_current_children",
+]);
+
+/**
+ * Whether a recorded failure is really "nothing to build from" wearing a
+ * failure's clothes.
+ *
+ * A process with no completed conversation used to reach the source scan, find
+ * zero sources, and record a retryable failure; a department whose processes
+ * had no overviews yet did the same. The surface then read `failed` forever —
+ * "the previous overview remains available" over a row that never had one, plus
+ * an invitation to retry that could only fail the same way. Nothing failed
+ * there: the entity is simply undocumented, which `missing` already says, and
+ * which the empty state already explains.
+ */
+function isEmptySourceFailure(
+  error: SummaryRunError | null,
+  hasEligibleSource: boolean,
+): boolean {
+  if (!error) return false;
+  if (EMPTY_SOURCE_CODES.has(error.code)) return true;
+  return AMBIGUOUS_EMPTY_SOURCE_CODES.has(error.code) && !hasEligibleSource;
+}
+
 function deriveOverviewState(
   owner: SummaryOwner,
   run: Doc<"summaryRuns"> | null,
   content: SummaryCompatibilityRead,
+  hasEligibleSource: boolean,
 ): SummaryOverviewState {
   if (hasActiveSummaryWork(owner, run)) return "refreshing";
   const lastSuccessfulGenerationAt =
@@ -250,16 +293,24 @@ function deriveOverviewState(
       : content.format === "legacy"
         ? (owner.doc.summaryUpdatedAt ?? null)
         : null;
-  const failureCompletedAt =
+  const failure =
     run?.state === "failed"
-      ? (run.completedAt ?? run.createdAt)
+      ? {
+          completedAt: run.completedAt ?? run.createdAt,
+          error: run.error ?? ownerLastError(owner),
+        }
       : ownerLastRunState(owner) === "failed"
-        ? (owner.doc.summaryV2LastCompletedAt ?? null)
+        ? {
+            completedAt: owner.doc.summaryV2LastCompletedAt ?? null,
+            error: ownerLastError(owner),
+          }
         : null;
+  const failureCompletedAt = failure?.completedAt ?? null;
   if (
     failureCompletedAt !== null &&
     (lastSuccessfulGenerationAt === null ||
-      failureCompletedAt >= lastSuccessfulGenerationAt)
+      failureCompletedAt >= lastSuccessfulGenerationAt) &&
+    !isEmptySourceFailure(failure?.error ?? null, hasEligibleSource)
   ) {
     return "failed";
   }
@@ -280,14 +331,25 @@ function deriveOverviewState(
  * same evidence. A rebuild is offered only where it can change the answer —
  * nothing generated yet, evidence recorded since the last pass, a failed run to
  * retry, or a legacy row that has never been built in the structured format.
+ *
+ * The other half of the same question is whether there is any input at all. A
+ * process reduces completed conversations and a rollup reduces child overviews,
+ * so one holding neither cannot produce an overview by any amount of pressing —
+ * the run would scan zero sources and record a failure. That is a state to
+ * explain at the control, not to discover by spending a generation on it.
  */
 function overviewRefreshAvailable(
   entityKind: SummaryEntityRef["kind"],
   state: SummaryOverviewState,
   content: SummaryCompatibilityRead,
+  hasEligibleSource: boolean,
 ): boolean {
   // A run already in flight is the rebuild; there is nothing to start.
   if (state === "refreshing") return false;
+  // Applies at every other state, not just `missing`: a built process whose
+  // conversations were all deleted has an artifact and no way to rebuild it,
+  // and a legacy row with no source cannot migrate either.
+  if (!hasEligibleSource) return false;
   if (state === "partial") {
     // Partial coverage means different things at the two levels, and only one
     // of them is unread input.
@@ -315,7 +377,83 @@ type OverviewSnapshot = {
   run: Doc<"summaryRuns"> | null;
   content: SummaryCompatibilityRead;
   state: SummaryOverviewState;
+  hasEligibleSource: boolean;
 };
+
+/**
+ * Whether the process holds a source a generation could read.
+ *
+ * The same filter the source scan applies — a conversation is evidence only
+ * once it is `done` — asked with a single bounded read, so the gate and the scan
+ * cannot disagree about whether there is anything to build from.
+ */
+async function processHasEligibleSource(
+  ctx: Pick<QueryCtx, "db">,
+  orgId: string,
+  processId: Id<"processes">,
+): Promise<boolean> {
+  const first = await ctx.db
+    .query("conversations")
+    .withIndex("by_clerkOrgId_and_processId_and_status", (q) =>
+      q
+        .eq("clerkOrgId", orgId)
+        .eq("processId", processId)
+        .eq("status", "done"),
+    )
+    .first();
+  return first !== null;
+}
+
+/**
+ * How many children the rollup gate will look at before it stops asking.
+ *
+ * A readable child cannot be selected by an index — it is a computed state over
+ * several fields — so the answer costs a scan of the children. The cap keeps
+ * that read bounded on any org shape; the scan itself paginates children the
+ * same way.
+ */
+const ROLLUP_CHILD_SCAN_CAP = 200;
+
+/**
+ * Whether a rollup holds a child overview a generation could read.
+ *
+ * `isUsableHierarchyChild` is the same predicate the rollup scan selects
+ * sources with, so the gate and the scan agree on what counts: a child holding
+ * an artifact that is neither stale nor mid-refresh. A child that has never
+ * been built, or whose evidence moved on since, is not a source — building the
+ * child is what makes it one.
+ */
+async function rollupHasReadableChild(
+  ctx: Pick<QueryCtx, "db">,
+  orgId: string,
+  owner: Extract<SummaryOwner, { kind: "department" | "function" }>,
+): Promise<boolean> {
+  const states =
+    owner.kind === "department"
+      ? (
+          await ctx.db
+            .query("processes")
+            .withIndex("by_clerkOrgId_and_departmentId", (q) =>
+              q.eq("clerkOrgId", orgId).eq("departmentId", owner.doc._id),
+            )
+            .take(ROLLUP_CHILD_SCAN_CAP + 1)
+        ).map(processState)
+      : (
+          await ctx.db
+            .query("departments")
+            .withIndex("by_clerkOrgId_and_functionId", (q) =>
+              q.eq("clerkOrgId", orgId).eq("functionId", owner.doc._id),
+            )
+            .take(ROLLUP_CHILD_SCAN_CAP + 1)
+        ).map(departmentState);
+  if (states.slice(0, ROLLUP_CHILD_SCAN_CAP).some(isUsableHierarchyChild)) {
+    return true;
+  }
+  // The cap was reached without finding one, so the answer is unknown rather
+  // than no. The gate stays open on a subtree it did not finish reading: a
+  // refused rebuild that should have run is worse than one wasted scan.
+  return states.length > ROLLUP_CHILD_SCAN_CAP;
+}
 
 /**
  * The one read behind both the overview surface and the rebuild gate, so the
@@ -336,11 +474,18 @@ async function readOverviewSnapshot(
     summaryV2: readableSummaryV2(owner.doc.clerkOrgId, owner.doc.summaryV2),
     legacyMarkdown: ownerCompatibilityMarkdown(owner),
   });
+  // Each level asks the question its own scan would: a process looks for a
+  // completed conversation, a rollup for a child holding a readable overview.
+  const hasEligibleSource =
+    owner.kind === "process"
+      ? await processHasEligibleSource(ctx, orgId, owner.doc._id)
+      : await rollupHasReadableChild(ctx, orgId, owner);
   return {
     owner,
     run,
     content,
-    state: deriveOverviewState(owner, run, content),
+    state: deriveOverviewState(owner, run, content, hasEligibleSource),
+    hasEligibleSource,
   };
 }
 
@@ -351,11 +496,8 @@ async function requestSummaryRefresh(
   entity: SummaryEntityRef,
   forceRefresh: boolean,
 ): Promise<SummaryRefreshResult> {
-  const { owner, run, content, state } = await readOverviewSnapshot(
-    ctx,
-    orgId,
-    entity,
-  );
+  const { owner, run, content, state, hasEligibleSource } =
+    await readOverviewSnapshot(ctx, orgId, entity);
   if (!isSummaryV2EnabledForOrg(orgId)) {
     return { status: "disabled", scheduled: false };
   }
@@ -369,7 +511,10 @@ async function requestSummaryRefresh(
   // overview holding every available source has nothing to rebuild from, and a
   // second pass would bill a full generation for the same brief. An in-flight
   // run is excluded here — it is reported by the coalescing paths instead.
-  if (!active && !overviewRefreshAvailable(entity.kind, state, content)) {
+  if (
+    !active &&
+    !overviewRefreshAvailable(entity.kind, state, content, hasEligibleSource)
+  ) {
     return { status: "current", scheduled: false };
   }
   if (!forceRefresh && hasCurrentV2Artifact(owner)) {
@@ -414,11 +559,8 @@ export const getOverview = query({
   args: { entity: summaryEntityRefValidator },
   handler: async (ctx, args): Promise<SummaryOverviewResponse> => {
     const caller = await requireOrgMember(ctx);
-    const { owner, run, content, state } = await readOverviewSnapshot(
-      ctx,
-      caller.orgId,
-      args.entity,
-    );
+    const { owner, run, content, state, hasEligibleSource } =
+      await readOverviewSnapshot(ctx, caller.orgId, args.entity);
     const flow =
       owner.kind === "process"
         ? ((await ctx.db
@@ -440,7 +582,9 @@ export const getOverview = query({
         args.entity.kind,
         state,
         content,
+        hasEligibleSource,
       ),
+      hasEvidenceSource: hasEligibleSource,
       content,
       coverage: content.format === "v2" ? content.artifact.coverage : null,
       lastSuccessfulGenerationAt:

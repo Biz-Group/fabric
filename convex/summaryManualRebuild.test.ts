@@ -64,7 +64,16 @@ async function seed(
     summaryUpdatedAt: 1_780_000_000_000,
     clerkOrgId: ORG,
   });
-  return { functionId, departmentId, processId };
+  // The conversation that summary was built from. A process holding an overview
+  // always has one, and without it there is nothing to rebuild from — see the
+  // undocumented-process tests below.
+  const conversationId = await ctx.db.insert("conversations", {
+    processId,
+    contributorName: "First contributor",
+    status: "done",
+    clerkOrgId: ORG,
+  });
+  return { functionId, departmentId, processId, conversationId };
 }
 
 /**
@@ -292,7 +301,139 @@ describe("summary generation is a human action", () => {
     // partial reading of evidence that does not exist.
     expect(overview.state).toBe("missing");
     expect(overview.content.format).toBe("none");
-    // Building the first overview is still the point of the control.
+    // And nothing to build from either. Pressing Build used to schedule a run
+    // that scanned zero conversations and reported a failed refresh over a
+    // process that had simply never been recorded.
+    expect(overview.hasEvidenceSource).toBe(false);
+    expect(overview.refreshAvailable).toBe(false);
+    expect(
+      await contributor.mutation(api.summaries.forceRefresh, {
+        entity: { kind: "process", processId: ids.emptyProcessId },
+      }),
+    ).toEqual({ status: "current", scheduled: false });
+    expect(await scheduledCount(t)).toBe(0);
+  });
+
+  test("the first completed conversation opens the build control", async () => {
+    const t = convexTest(schema, modules);
+    const contributor = t.withIdentity(identity("contributor"));
+    const ids = await t.run(async (ctx) => {
+      const seeded = await seed(ctx);
+      const emptyProcessId = await ctx.db.insert("processes", {
+        departmentId: seeded.departmentId,
+        name: "Newly created, never recorded",
+        sortOrder: 2,
+        clerkOrgId: ORG,
+      });
+      return { ...seeded, emptyProcessId };
+    });
+    const entity = { kind: "process" as const, processId: ids.emptyProcessId };
+
+    // A recording still being transcribed is not a source yet — the scan reads
+    // `done` only, so the gate does too.
+    await t.run(async (ctx) => {
+      await ctx.db.insert("conversations", {
+        processId: ids.emptyProcessId,
+        contributorName: "Still transcribing",
+        status: "processing",
+        clerkOrgId: ORG,
+      });
+    });
+    expect(
+      (await contributor.query(api.summaries.getOverview, { entity }))
+        .refreshAvailable,
+    ).toBe(false);
+
+    await t.run(async (ctx) => {
+      await ctx.db.insert("conversations", {
+        processId: ids.emptyProcessId,
+        contributorName: "First contributor",
+        status: "done",
+        clerkOrgId: ORG,
+      });
+    });
+
+    const overview = await contributor.query(api.summaries.getOverview, {
+      entity,
+    });
+    expect(overview.state).toBe("missing");
+    expect(overview.hasEvidenceSource).toBe(true);
+    expect(overview.refreshAvailable).toBe(true);
+    expect(
+      await contributor.mutation(api.summaries.forceRefresh, { entity }),
+    ).toEqual({ status: "scheduled", scheduled: true });
+  });
+
+  test("a process stuck on an empty-source failure reads as undocumented", async () => {
+    const t = convexTest(schema, modules);
+    const contributor = t.withIdentity(identity("contributor"));
+    const ids = await t.run(async (ctx) => {
+      const seeded = await seed(ctx);
+      const emptyProcessId = await ctx.db.insert("processes", {
+        departmentId: seeded.departmentId,
+        name: "Built once, with nothing to build from",
+        sortOrder: 2,
+        clerkOrgId: ORG,
+        // What pressing Build on an unrecorded process left behind: a failed
+        // run, a retryable error, and a surface reading "Refresh failed" with
+        // no previous overview to fall back to.
+        summaryV2LastRunState: "failed",
+        summaryV2LastCompletedAt: 1_780_000_100_000,
+        summaryV2LastError: {
+          code: "no_current_evidence",
+          message: "No current structured conversation evidence is available.",
+          retryable: true,
+        },
+      });
+      return { ...seeded, emptyProcessId };
+    });
+
+    const overview = await contributor.query(api.summaries.getOverview, {
+      entity: { kind: "process", processId: ids.emptyProcessId },
+    });
+
+    // Rows already carrying that failure recover on read, with no migration:
+    // no eligible source means nothing failed, so the empty state comes back.
+    expect(overview.state).toBe("missing");
+    expect(overview.error).toBeNull();
+    expect(overview.refreshAvailable).toBe(false);
+  });
+
+  test("a failure over recorded conversations is still reported", async () => {
+    const t = convexTest(schema, modules);
+    const contributor = t.withIdentity(identity("contributor"));
+    const ids = await t.run(async (ctx) => {
+      const seeded = await seed(ctx);
+      const processId = await ctx.db.insert("processes", {
+        departmentId: seeded.departmentId,
+        name: "Recorded, but extraction missed",
+        sortOrder: 2,
+        clerkOrgId: ORG,
+        summaryV2LastRunState: "failed",
+        summaryV2LastCompletedAt: 1_780_000_100_000,
+        summaryV2LastError: {
+          code: "no_current_evidence",
+          message: "No current structured conversation evidence is available.",
+          retryable: true,
+        },
+      });
+      await ctx.db.insert("conversations", {
+        processId,
+        contributorName: "First contributor",
+        status: "done",
+        clerkOrgId: ORG,
+      });
+      return { ...seeded, processId };
+    });
+
+    const overview = await contributor.query(api.summaries.getOverview, {
+      entity: { kind: "process", processId: ids.processId },
+    });
+
+    // An eligible source exists and produced nothing usable. That is a real
+    // failure, and its retry can genuinely succeed — extraction re-runs.
+    expect(overview.state).toBe("failed");
+    expect(overview.error?.code).toBe("no_current_evidence");
     expect(overview.refreshAvailable).toBe(true);
   });
 
@@ -333,6 +474,148 @@ describe("summary generation is a human action", () => {
     expect(await scheduledCount(t)).toBe(0);
   });
 
+  test("a rollup with no built child cannot start a doomed rollup", async () => {
+    const t = convexTest(schema, modules);
+    const contributor = t.withIdentity(identity("contributor"));
+    const ids = await t.run(async (ctx) => {
+      const seeded = await seed(ctx);
+      // A department whose only process has never been built, and a function
+      // whose only department has never been built. Neither holds a source, and
+      // pressing Build used to schedule a rollup that scanned nothing and
+      // reported "Refresh failed" over an entity that was simply new.
+      const emptyDepartmentId = await ctx.db.insert("departments", {
+        functionId: seeded.functionId,
+        name: "Nothing built under it",
+        sortOrder: 2,
+        clerkOrgId: ORG,
+      });
+      await ctx.db.insert("processes", {
+        departmentId: emptyDepartmentId,
+        name: "Never recorded",
+        sortOrder: 1,
+        clerkOrgId: ORG,
+      });
+      return { ...seeded, emptyDepartmentId };
+    });
+
+    for (const entity of [
+      { kind: "department" as const, departmentId: ids.emptyDepartmentId },
+      { kind: "function" as const, functionId: ids.functionId },
+    ]) {
+      const overview = await contributor.query(api.summaries.getOverview, {
+        entity,
+      });
+      expect(overview.state).toBe("missing");
+      expect(overview.hasEvidenceSource).toBe(false);
+      expect(overview.refreshAvailable).toBe(false);
+      expect(
+        await contributor.mutation(api.summaries.forceRefresh, { entity }),
+      ).toEqual({ status: "current", scheduled: false });
+    }
+    expect(await scheduledCount(t)).toBe(0);
+  });
+
+  test("a subtree larger than the gate's read keeps its rebuild live", async () => {
+    const t = convexTest(schema, modules);
+    const contributor = t.withIdentity(identity("contributor"));
+    const ids = await t.run(async (ctx) => {
+      const seeded = await seed(ctx);
+      const departmentId = await ctx.db.insert("departments", {
+        functionId: seeded.functionId,
+        name: "More processes than the gate reads",
+        sortOrder: 2,
+        clerkOrgId: ORG,
+      });
+      // 201 unbuilt children: one past the cap on how many the gate inspects.
+      // It cannot prove there is nothing readable, so it must not act as if it
+      // had — a refused rebuild that should have run is the worse error.
+      for (let index = 0; index < 201; index += 1) {
+        await ctx.db.insert("processes", {
+          departmentId,
+          name: `Never recorded ${index + 1}`,
+          sortOrder: index + 1,
+          clerkOrgId: ORG,
+        });
+      }
+      return { ...seeded, departmentId };
+    });
+
+    const overview = await contributor.query(api.summaries.getOverview, {
+      entity: { kind: "department", departmentId: ids.departmentId },
+    });
+
+    expect(overview.hasEvidenceSource).toBe(true);
+    expect(overview.refreshAvailable).toBe(true);
+  });
+
+  test("a rollup stuck on an empty-children failure reads as undocumented", async () => {
+    const t = convexTest(schema, modules);
+    const contributor = t.withIdentity(identity("contributor"));
+    const ids = await t.run(async (ctx) => {
+      const seeded = await seed(ctx);
+      const departmentId = await ctx.db.insert("departments", {
+        functionId: seeded.functionId,
+        name: "Pressed Build too early",
+        sortOrder: 2,
+        clerkOrgId: ORG,
+        summaryV2LastRunState: "failed",
+        summaryV2LastCompletedAt: 1_780_000_100_000,
+        summaryV2LastError: {
+          code: "no_current_children",
+          message: "No current child overview artifacts are available.",
+          retryable: true,
+        },
+      });
+      await ctx.db.insert("processes", {
+        departmentId,
+        name: "Never recorded",
+        sortOrder: 1,
+        clerkOrgId: ORG,
+      });
+      return { ...seeded, departmentId };
+    });
+
+    const overview = await contributor.query(api.summaries.getOverview, {
+      entity: { kind: "department", departmentId: ids.departmentId },
+    });
+
+    expect(overview.state).toBe("missing");
+    expect(overview.error).toBeNull();
+    expect(overview.refreshAvailable).toBe(false);
+  });
+
+  test("a rollup keeps its rebuild while one child is readable", async () => {
+    const t = convexTest(schema, modules);
+    const contributor = t.withIdentity(identity("contributor"));
+    const ids = await t.run(async (ctx) => {
+      const seeded = await seed(ctx);
+      // One built child among unbuilt ones is still a source: the rollup can
+      // read it, so the gate stays open even though coverage will be partial.
+      await ctx.db.patch(seeded.processId, {
+        summaryEvidenceRevision: 3,
+        summaryV2SourceRevision: 3,
+        summaryV2: processArtifact(),
+      });
+      await ctx.db.insert("processes", {
+        departmentId: seeded.departmentId,
+        name: "Never recorded",
+        sortOrder: 2,
+        clerkOrgId: ORG,
+      });
+      return seeded;
+    });
+    const entity = { kind: "department" as const, departmentId: ids.departmentId };
+
+    const overview = await contributor.query(api.summaries.getOverview, {
+      entity,
+    });
+    expect(overview.hasEvidenceSource).toBe(true);
+    expect(overview.refreshAvailable).toBe(true);
+    expect(
+      await contributor.mutation(api.summaries.forceRefresh, { entity }),
+    ).toEqual({ status: "scheduled", scheduled: true });
+  });
+
   test("building the missing child re-opens the department rebuild", async () => {
     const t = convexTest(schema, modules);
     const contributor = t.withIdentity(identity("contributor"));
@@ -343,6 +626,15 @@ describe("summary generation is a human action", () => {
         summaryV2SourceRevision: 2,
         summaryStale: false,
         summaryV2: departmentArtifact(),
+      });
+      // The child overview this test is about: a rollup reads child artifacts,
+      // so the one it could not read has to exist before the parent has
+      // anything to roll up.
+      await ctx.db.patch(seeded.processId, {
+        summaryEvidenceRevision: 3,
+        summaryV2SourceRevision: 3,
+        summaryStale: false,
+        summaryV2: processArtifact(),
       });
       return seeded;
     });
