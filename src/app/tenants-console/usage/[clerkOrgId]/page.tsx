@@ -78,6 +78,17 @@ export default function TenantUsagePage() {
     { initialNumItems: LOG_PAGE_SIZE },
   );
 
+  // Shaped once for both charts, above the loading gate so the hook order holds.
+  const chartPoints = useMemo(
+    () =>
+      (data?.byDay ?? []).map((day) => ({
+        period: String(day.period),
+        costMicroUsd: day.costMicroUsd,
+        callCount: day.callCount,
+      })),
+    [data],
+  );
+
   if (data === undefined || availability === undefined) {
     return <LoadingScreen message="Loading tenant usage..." />;
   }
@@ -121,16 +132,17 @@ export default function TenantUsagePage() {
 
       <UsageStatTiles totals={data.totals} />
 
-      <section className="space-y-3">
-        <h2 className="text-sm font-semibold">Daily cost</h2>
-        <UsageCostChart
-          points={data.byDay.map((day) => ({
-            period: String(day.period),
-            costMicroUsd: day.costMicroUsd,
-            callCount: day.callCount,
-          }))}
-        />
-      </section>
+      <div className="grid gap-6 lg:grid-cols-2">
+        <section className="space-y-3">
+          <h2 className="text-sm font-semibold">Daily cost</h2>
+          <UsageCostChart points={chartPoints} />
+        </section>
+
+        <section className="space-y-3">
+          <h2 className="text-sm font-semibold">Cumulative cost</h2>
+          <UsageCostChart points={chartPoints} mode="cumulative" />
+        </section>
+      </div>
 
       <UsageBreakdownTable
         title="By action"

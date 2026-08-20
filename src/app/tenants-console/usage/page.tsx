@@ -41,6 +41,18 @@ export default function UsageOverviewPage() {
     ...(deployment === "all" ? {} : { deployment }),
   });
 
+  // Both charts read the same day series — the cumulative one folds it itself —
+  // so it is shaped once, above the loading gate to keep the hook order stable.
+  const chartPoints = useMemo(
+    () =>
+      (data?.byDay ?? []).map((day) => ({
+        period: String(day.period),
+        costMicroUsd: day.costMicroUsd,
+        callCount: day.callCount,
+      })),
+    [data],
+  );
+
   if (data === undefined || availability === undefined) {
     return <LoadingScreen message="Loading usage..." />;
   }
@@ -73,22 +85,33 @@ export default function UsageOverviewPage() {
 
       <UsageStatTiles totals={data.totals} />
 
-      <section className="space-y-3">
-        <div>
-          <h2 className="text-sm font-semibold">Daily cost</h2>
-          <p className="text-xs text-muted-foreground">
-            List-rate cost per UTC day. Today is folded live from the ledger;
-            earlier days come from rollups.
-          </p>
-        </div>
-        <UsageCostChart
-          points={data.byDay.map((day) => ({
-            period: String(day.period),
-            costMicroUsd: day.costMicroUsd,
-            callCount: day.callCount,
-          }))}
-        />
-      </section>
+      <div className="grid gap-6 lg:grid-cols-2">
+        <section className="flex flex-col gap-3">
+          <div>
+            <h2 className="text-sm font-semibold">Daily cost</h2>
+            <p className="text-xs text-muted-foreground">
+              List-rate cost per UTC day. Today is folded live from the ledger;
+              earlier days come from rollups.
+            </p>
+          </div>
+          <div className="mt-auto">
+            <UsageCostChart points={chartPoints} />
+          </div>
+        </section>
+
+        <section className="flex flex-col gap-3">
+          <div>
+            <h2 className="text-sm font-semibold">Cumulative cost</h2>
+            <p className="text-xs text-muted-foreground">
+              Running total across the selected range. The last point equals the
+              range total above.
+            </p>
+          </div>
+          <div className="mt-auto">
+            <UsageCostChart points={chartPoints} mode="cumulative" />
+          </div>
+        </section>
+      </div>
 
       <UsageBreakdownTable
         title="By tenant"
