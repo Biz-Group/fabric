@@ -10,6 +10,7 @@ import { useQuery } from "convex/react";
 import { api } from "../../../convex/_generated/api";
 import { Settings } from "lucide-react";
 import { useWorkspaceRoutes } from "@/features/shell/use-workspace-routes";
+import { ThemeToggle } from "@/features/theming/theme-toggle";
 
 const ROOT_DOMAIN = process.env.NEXT_PUBLIC_ROOT_DOMAIN ?? "";
 
@@ -72,6 +73,7 @@ export function UserMenu({ compact = false }: { compact?: boolean }) {
       <span className={compact ? "hidden" : "rounded-full bg-muted px-2 py-0.5 text-[10px] font-medium capitalize text-muted-foreground"}>
         {role}
       </span>
+      <ThemeToggle />
       <UserButton />
     </div>
   );

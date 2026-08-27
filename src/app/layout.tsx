@@ -5,6 +5,8 @@ import { ClerkProvider } from "@clerk/nextjs";
 import { ui } from "@clerk/ui";
 import { ConvexClientProvider } from "@/components/providers/convex-client-provider";
 import { ServiceWorkerRegistration } from "@/components/providers/service-worker-registration";
+import { THEME_INITIALIZATION_SCRIPT } from "@/features/theming/theme-config";
+import { ThemeProvider } from "@/features/theming/theme-provider";
 import "./globals.css";
 
 const clerkTaskUrls = {
@@ -94,7 +96,7 @@ export const viewport: Viewport = {
   colorScheme: "light dark",
   themeColor: [
     { media: "(prefers-color-scheme: light)", color: "#F7F5F0" },
-    { media: "(prefers-color-scheme: dark)", color: "#11161C" },
+    { media: "(prefers-color-scheme: dark)", color: "#191A1D" },
   ],
 };
 
@@ -106,9 +108,16 @@ export default function RootLayout({
   return (
     <html
       lang="en"
+      data-theme="light"
+      data-theme-preference="system"
       suppressHydrationWarning
       className={`${inter.variable} h-full antialiased`}
     >
+      <head>
+        <script
+          dangerouslySetInnerHTML={{ __html: THEME_INITIALIZATION_SCRIPT }}
+        />
+      </head>
       <body suppressHydrationWarning className="min-h-full flex flex-col">
         {process.env.NODE_ENV === "development" ? (
           <Script
@@ -119,7 +128,9 @@ export default function RootLayout({
           </Script>
         ) : null}
         <ClerkProvider taskUrls={clerkTaskUrls} ui={ui}>
-          <ConvexClientProvider>{children}</ConvexClientProvider>
+          <ConvexClientProvider>
+            <ThemeProvider>{children}</ThemeProvider>
+          </ConvexClientProvider>
         </ClerkProvider>
         <ServiceWorkerRegistration />
       </body>

@@ -5,10 +5,11 @@ import { useMutation, useQuery } from "convex/react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect } from "react";
-import { Toaster } from "sonner";
 import { api } from "../../../convex/_generated/api";
 import { Button } from "@/components/ui/button";
 import { LoadingScreen } from "@/components/ui/loading-screen";
+import { ThemeToaster } from "@/features/theming/theme-toaster";
+import { ThemeToggle } from "@/features/theming/theme-toggle";
 
 // Middleware guarantees authentication for every route on this host; this
 // layout enforces *authorization*: only platform super-admins may see the
@@ -49,7 +50,7 @@ export default function TenantsConsoleLayout({
       <main className="mx-auto w-full max-w-6xl flex-1 px-6 py-8">
         {children}
       </main>
-      <Toaster richColors closeButton position="bottom-right" />
+      <ThemeToaster />
     </div>
   );
 }
@@ -95,6 +96,7 @@ function ConsoleHeader({ email }: { email: string }) {
         </div>
         <div className="flex items-center gap-3">
           <span className="text-xs text-muted-foreground">{email}</span>
+          <ThemeToggle />
           <Button
             variant="outline"
             size="sm"

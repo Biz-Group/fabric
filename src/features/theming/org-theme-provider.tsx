@@ -48,8 +48,10 @@ const RESTRAINED_ACCENT_BORDER =
 
 function getIsDarkMode() {
   if (typeof document === "undefined") return false;
-  if (document.documentElement.classList.contains("dark")) return true;
-  return window.matchMedia?.("(prefers-color-scheme: dark)").matches ?? false;
+  const resolvedTheme = document.documentElement.dataset.theme;
+  if (resolvedTheme === "dark") return true;
+  if (resolvedTheme === "light") return false;
+  return document.documentElement.classList.contains("dark");
 }
 
 function applyThemeTokens(tokens: ThemeTokens | null) {

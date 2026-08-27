@@ -7,6 +7,7 @@ import {
   WorkspaceBrandLockup,
   type WorkspaceBrandOrganization,
 } from "@/features/shell/workspace-brand-lockup";
+import { ThemeToggle } from "@/features/theming/theme-toggle";
 
 type FabricHeroProps = {
   className?: string;
@@ -101,7 +102,8 @@ export async function AuthShell({
         organization={organization}
       />
 
-      <div className="flex min-h-screen w-full min-w-0 items-center justify-center px-4 py-10 sm:px-6 sm:py-12">
+      <div className="relative flex min-h-screen w-full min-w-0 items-center justify-center px-4 py-10 sm:px-6 sm:py-12">
+        <ThemeToggle className="absolute right-4 top-4 sm:right-6 sm:top-6" />
         <div className="w-full min-w-0 max-w-md space-y-6 sm:space-y-8">
           <div className="space-y-3 text-center lg:text-left">
             <WorkspaceBrandLockup
