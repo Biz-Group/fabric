@@ -48,7 +48,19 @@ export function InviteMemberDialog({
     }
     setSubmitting(true);
     try {
-      await invite({ email: trimmed, role });
+      const result = await invite({ email: trimmed, role });
+      if (result.outcome === "alreadyMember") {
+        toast.error(`${result.email} is already a member of this workspace.`);
+        return;
+      }
+      if (result.outcome === "alreadyInvited") {
+        toast.error(`An invitation is already pending for ${result.email}.`);
+        return;
+      }
+      if (result.outcome === "failed") {
+        toast.error(result.userMessage);
+        return;
+      }
       toast.success(`Invitation sent to ${trimmed}.`);
       setEmail("");
       setRole("contributor");

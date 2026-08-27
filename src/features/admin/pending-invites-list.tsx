@@ -90,7 +90,22 @@ export function PendingInvitesList({
       // Clerk doesn't expose a first-class "resend" — revoke + re-invite is
       // the canonical path. Both calls re-verify admin on the server.
       await revokeInvite({ invitationId: invite.id });
-      await reInvite({ email: invite.email, role: invite.role });
+      const result = await reInvite({ email: invite.email, role: invite.role });
+      if (result.outcome === "alreadyMember") {
+        toast.info(`${result.email} is already a member of this workspace.`);
+        await refresh();
+        return;
+      }
+      if (result.outcome === "alreadyInvited") {
+        toast.error(`An invitation is already pending for ${result.email}.`);
+        await refresh();
+        return;
+      }
+      if (result.outcome === "failed") {
+        toast.error(result.userMessage);
+        await refresh();
+        return;
+      }
       toast.success(`Re-sent invitation to ${invite.email}.`);
       await refresh();
     } catch (err) {

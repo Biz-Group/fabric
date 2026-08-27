@@ -1,5 +1,10 @@
 import { v } from "convex/values";
-import { action, ActionCtx, internalQuery } from "./_generated/server";
+import {
+  action,
+  ActionCtx,
+  internalQuery,
+  QueryCtx,
+} from "./_generated/server";
 import { internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
 import { resolveOrgForAction } from "./lib/orgAuth";
@@ -42,6 +47,16 @@ type ClerkInvitation = {
   expires_at?: number | null;
 };
 
+type ClerkMembership = {
+  organization?: { id?: string };
+  public_user_data?: { identifier?: string };
+};
+
+type ClerkListResponse<T> = {
+  data?: T[];
+  total_count?: number;
+};
+
 type Role = "admin" | "contributor" | "viewer";
 
 type AdminCheckResult = {
@@ -54,6 +69,132 @@ type InvitationIntentRole = {
   emailLower: string;
   requestedRole: Role;
 };
+
+type InviteResult =
+  | {
+      outcome: "invited";
+      id: string;
+      email: string;
+      role: Role;
+      status: string;
+      createdAt: number;
+      expiresAt: number | null;
+    }
+  | { outcome: "alreadyMember"; email: string }
+  | { outcome: "alreadyInvited"; email: string }
+  | { outcome: "failed"; email: string; userMessage: string };
+
+function clerkInviteConflict(
+  error: unknown,
+): "alreadyMember" | "alreadyInvited" | null {
+  const message = error instanceof Error ? error.message : String(error);
+  if (message.includes("already_a_member_in_organization")) {
+    return "alreadyMember";
+  }
+  if (message.includes("duplicate_record")) {
+    return "alreadyInvited";
+  }
+  return null;
+}
+
+function rowsFromClerkResponse<T>(
+  response: ClerkListResponse<T> | T[],
+): T[] {
+  return Array.isArray(response) ? response : (response.data ?? []);
+}
+
+async function hasOrgMemberWithEmail(
+  ctx: QueryCtx,
+  orgId: string,
+  emailLower: string,
+): Promise<boolean> {
+  const denormalizedMembership = await ctx.db
+    .query("memberships")
+    .withIndex("by_clerkOrgId_and_emailLower", (q) =>
+      q.eq("clerkOrgId", orgId).eq("emailLower", emailLower),
+    )
+    .first();
+  if (denormalizedMembership) return true;
+
+  // Older membership rows may predate the denormalized email fields. Fall
+  // back through the canonical user record and indexed identity/org lookup.
+  const matchingUsers = await ctx.db
+    .query("users")
+    .withIndex("by_emailLower", (q) => q.eq("emailLower", emailLower))
+    .take(20);
+  for (const user of matchingUsers) {
+    const membership = await ctx.db
+      .query("memberships")
+      .withIndex("by_tokenIdentifier_and_clerkOrgId", (q) =>
+        q.eq("tokenIdentifier", user.tokenIdentifier).eq("clerkOrgId", orgId),
+      )
+      .unique();
+    if (membership) return true;
+  }
+  return false;
+}
+
+async function getClerkInviteState(
+  orgId: string,
+  emailLower: string,
+): Promise<"alreadyMember" | "alreadyInvited" | null> {
+  const [membershipResponse, firstInvitationResponse] = await Promise.all([
+    clerkFetch(`/organizations/${orgId}/memberships`, {
+      query: { email_address: [emailLower], limit: "1" },
+    }) as Promise<ClerkListResponse<ClerkMembership> | ClerkMembership[]>,
+    clerkFetch(`/organizations/${orgId}/invitations`, {
+      query: { status: "pending", limit: "500", offset: "0" },
+    }) as Promise<ClerkListResponse<ClerkInvitation> | ClerkInvitation[]>,
+  ]);
+
+  // Clerk applies the exact email filter server-side. Treat any returned row
+  // as authoritative even if public_user_data exposes a different primary
+  // identifier than the email that matched.
+  if (rowsFromClerkResponse(membershipResponse).length > 0) {
+    return "alreadyMember";
+  }
+
+  let invitationResponse = firstInvitationResponse;
+  let offset = 0;
+  while (true) {
+    const responseRows = rowsFromClerkResponse(invitationResponse);
+    const scopedRows = responseRows.filter(
+      (row) => row.organization_id === orgId,
+    );
+    if (
+      scopedRows.some(
+        (row) => row.email_address.trim().toLowerCase() === emailLower,
+      )
+    ) {
+      return "alreadyInvited";
+    }
+
+    offset += responseRows.length;
+    const totalCount = Array.isArray(invitationResponse)
+      ? responseRows.length
+      : invitationResponse.total_count;
+    if (
+      responseRows.length === 0 ||
+      responseRows.length < 500 ||
+      (totalCount !== undefined && offset >= totalCount)
+    ) {
+      break;
+    }
+
+    invitationResponse = (await clerkFetch(
+      `/organizations/${orgId}/invitations`,
+      {
+        query: {
+          status: "pending",
+          limit: "500",
+          offset: String(offset),
+        },
+      },
+    )) as ClerkListResponse<ClerkInvitation> | ClerkInvitation[];
+  }
+
+  return null;
+}
 
 async function requireAdminForAction(
   ctx: ActionCtx,
@@ -95,15 +236,33 @@ export const getMemberEmailsAmong = internalQuery({
   handler: async (ctx, args) => {
     const memberEmails: string[] = [];
     for (const emailLower of args.emailsLower) {
-      const membership = await ctx.db
-        .query("memberships")
-        .withIndex("by_clerkOrgId_and_emailLower", (q) =>
-          q.eq("clerkOrgId", args.orgId).eq("emailLower", emailLower),
-        )
-        .first();
-      if (membership) memberEmails.push(emailLower);
+      if (await hasOrgMemberWithEmail(ctx, args.orgId, emailLower)) {
+        memberEmails.push(emailLower);
+      }
     }
     return memberEmails;
+  },
+});
+
+export const getInviteStateForEmail = internalQuery({
+  args: { orgId: v.string(), emailLower: v.string() },
+  handler: async (ctx, args) => {
+    if (await hasOrgMemberWithEmail(ctx, args.orgId, args.emailLower)) {
+      return "alreadyMember" as const;
+    }
+
+    const intents = await ctx.db
+      .query("membershipIntents")
+      .withIndex("by_clerkOrgId_and_emailLower", (q) =>
+        q
+          .eq("clerkOrgId", args.orgId)
+          .eq("emailLower", args.emailLower),
+      )
+      .take(20);
+    if (intents.some((intent) => intent.status === "pending")) {
+      return "alreadyInvited" as const;
+    }
+    return null;
   },
 });
 
@@ -122,29 +281,106 @@ export const invite = action({
       ),
     ),
   },
-  handler: async (ctx, args) => {
+  handler: async (ctx, args): Promise<InviteResult> => {
     const { orgId, orgSlug, tokenIdentifier } = await resolveOrgForAction(ctx);
     const caller = await requireAdminForAction(ctx, orgId, tokenIdentifier);
     const requestedRole = args.role ?? "contributor";
+    const email = args.email.trim();
+    const emailLower = email.toLowerCase();
+
+    // Treat inviting an existing member or a pending invite as a normal,
+    // expected outcome. This avoids creating duplicate Clerk invitations and
+    // lets the client show useful feedback instead of a generic server error.
+    const localState: "alreadyMember" | "alreadyInvited" | null = emailLower
+      ? await ctx.runQuery(internal.invitations.getInviteStateForEmail, {
+          orgId,
+          emailLower,
+        })
+      : null;
+    if (localState) {
+      return { outcome: localState, email };
+    }
+
+    // Convex is the fast path, but Clerk remains authoritative for membership
+    // and invitation state that may have been created outside Fabric or not yet
+    // synchronized locally.
+    let clerkState: "alreadyMember" | "alreadyInvited" | null;
+    try {
+      clerkState = await getClerkInviteState(orgId, emailLower);
+    } catch (error) {
+      console.error("Failed to verify invitation eligibility with Clerk", error);
+      return {
+        outcome: "failed",
+        email,
+        userMessage:
+          "We couldn't verify whether this person is already a member or invited. Please try again.",
+      };
+    }
+    if (clerkState) {
+      return { outcome: clerkState, email };
+    }
+
+    // Claim the email transactionally before the external write. Concurrent
+    // submissions may both pass the Clerk preflight, but only one can create a
+    // pending Convex intent and continue to the POST.
+    const claim: {
+      outcome: "ready" | "alreadyPending";
+      intentId: Id<"membershipIntents">;
+    } = await ctx.runMutation(internal.users.createMembershipIntent, {
+      clerkOrgId: orgId,
+      email,
+      requestedRole,
+      source: "adminInvite",
+      invitedBy: caller.userId,
+      failIfPending: true,
+    });
+    if (claim.outcome === "alreadyPending") {
+      return { outcome: "alreadyInvited", email };
+    }
 
     const inviterClerkUserId = clerkUserIdFromTokenIdentifier(tokenIdentifier);
     const redirectUrl = inviteRedirectUrl(orgSlug);
-    const invitation = (await clerkFetch(
-      `/organizations/${orgId}/invitations`,
-      {
-        method: "POST",
-        body: {
-          email_address: args.email,
-          role: "org:member",
-          inviter_user_id: inviterClerkUserId,
-          ...(redirectUrl ? { redirect_url: redirectUrl } : {}),
+    let invitation: ClerkInvitation;
+    try {
+      invitation = (await clerkFetch(
+        `/organizations/${orgId}/invitations`,
+        {
+          method: "POST",
+          body: {
+            email_address: email,
+            role: "org:member",
+            inviter_user_id: inviterClerkUserId,
+            ...(redirectUrl ? { redirect_url: redirectUrl } : {}),
+          },
         },
-      },
-    )) as ClerkInvitation;
+      )) as ClerkInvitation;
+    } catch (error) {
+      const outcome = clerkInviteConflict(error);
+      if (outcome) {
+        if (outcome === "alreadyMember") {
+          await ctx.runMutation(internal.users.releaseMembershipIntentClaim, {
+            intentId: claim.intentId,
+          });
+        }
+        return { outcome, email };
+      }
+      console.error("Failed to create Clerk organization invitation", error);
+      await ctx.runMutation(internal.users.releaseMembershipIntentClaim, {
+        intentId: claim.intentId,
+      });
+      return {
+        outcome: "failed",
+        email,
+        userMessage: "The invitation could not be sent. Please try again.",
+      };
+    }
 
     // Defense-in-depth: Clerk should never return an invitation for a different
     // org, but re-assert in case the API contract shifts.
     if (invitation.organization_id !== orgId) {
+      await ctx.runMutation(internal.users.releaseMembershipIntentClaim, {
+        intentId: claim.intentId,
+      });
       throw new Error("Invitation org mismatch");
     }
 
@@ -158,6 +394,7 @@ export const invite = action({
     });
 
     return {
+      outcome: "invited",
       id: invitation.id,
       email: invitation.email_address,
       role: requestedRole,

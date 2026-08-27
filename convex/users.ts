@@ -1082,6 +1082,7 @@ export const createMembershipIntent = internalMutation({
     source: membershipSourceValidator,
     invitedBy: v.optional(v.id("users")),
     clerkInvitationId: v.optional(v.string()),
+    failIfPending: v.optional(v.boolean()),
   },
   handler: async (ctx, args) => {
     const email = validateProfileText(args.email, "Email", 320);
@@ -1098,6 +1099,9 @@ export const createMembershipIntent = internalMutation({
         (intent.status === "pending" || intent.status === "accepted"),
     );
     if (reusable) {
+      if (args.failIfPending && reusable.status === "pending") {
+        return { outcome: "alreadyPending" as const, intentId: reusable._id };
+      }
       await ctx.db.patch(reusable._id, {
         requestedRole: args.requestedRole,
         clerkInvitationId: args.clerkInvitationId ?? reusable.clerkInvitationId,
@@ -1105,7 +1109,7 @@ export const createMembershipIntent = internalMutation({
         status: "pending",
         updatedAt: Date.now(),
       });
-      return reusable._id;
+      return { outcome: "ready" as const, intentId: reusable._id };
     }
     const intentId = await ctx.db.insert("membershipIntents", {
       clerkOrgId: args.clerkOrgId,
@@ -1127,7 +1131,36 @@ export const createMembershipIntent = internalMutation({
       action: "inviteCreated",
       detail: `Requested ${args.requestedRole}`,
     });
-    return intentId;
+    return { outcome: "ready" as const, intentId };
+  },
+});
+
+export const releaseMembershipIntentClaim = internalMutation({
+  args: { intentId: v.id("membershipIntents") },
+  handler: async (ctx, args) => {
+    const intent = await ctx.db.get(args.intentId);
+    if (
+      !intent ||
+      intent.source !== "adminInvite" ||
+      intent.status !== "pending" ||
+      intent.clerkInvitationId !== undefined
+    ) {
+      return null;
+    }
+
+    await ctx.db.patch(intent._id, {
+      status: "revoked",
+      updatedAt: Date.now(),
+    });
+    await patchStatsIfPresent(ctx, intent.clerkOrgId, { pendingInvite: -1 });
+    await writeAudit(ctx, {
+      clerkOrgId: intent.clerkOrgId,
+      actorUserId: intent.invitedBy,
+      targetEmailLower: intent.emailLower,
+      action: "inviteRevoked",
+      detail: "Invite creation did not complete in Clerk",
+    });
+    return null;
   },
 });
 

@@ -353,6 +353,32 @@ function stubClerkFetchStatus(status: number, body: unknown = {}) {
   return { calls };
 }
 
+function stubClerkFetchSequence(
+  responses: Array<{ status: number; body?: unknown }>,
+) {
+  const calls: FetchCall[] = [];
+  let callIndex = 0;
+  const fetchMock = vi.fn(
+    async (input: string | URL | Request, init?: RequestInit) => {
+      const url =
+        typeof input === "string"
+          ? input
+          : input instanceof URL
+            ? input.toString()
+            : input.url;
+      calls.push({ url, init });
+      const response = responses[callIndex] ?? { status: 200, body: {} };
+      callIndex += 1;
+      return new Response(JSON.stringify(response.body ?? {}), {
+        status: response.status,
+        headers: { "content-type": "application/json" },
+      });
+    },
+  );
+  vi.stubGlobal("fetch", fetchMock);
+  return { calls };
+}
+
 describe("user provisioning sync", () => {
   beforeEach(() => {
     process.env.CLERK_SECRET_KEY = "sk_test_abc";
@@ -639,6 +665,8 @@ describe("invitations — admin gating and org scoping", () => {
     await seedTwoOrgs(t);
 
     const { calls } = stubClerkFetch([
+      { data: [], total_count: 0 },
+      { data: [], total_count: 0 },
       {
         id: "inv_1",
         email_address: "new@a.test",
@@ -656,14 +684,20 @@ describe("invitations — admin gating and org scoping", () => {
         role: "viewer",
       });
 
+    expect(result.outcome).toBe("invited");
+    if (result.outcome !== "invited") {
+      throw new Error(`Expected invited outcome, got ${result.outcome}`);
+    }
     expect(result.id).toBe("inv_1");
     expect(result.role).toBe("viewer");
-    expect(calls).toHaveLength(1);
-    expect(calls[0].url).toContain(`/organizations/${ORG_A}/invitations`);
-    expect(calls[0].init?.body).toContain('"role":"org:member"');
+    expect(calls).toHaveLength(3);
+    const createCall = calls.find((call) => call.init?.method === "POST");
+    expect(createCall?.url).toContain(`/organizations/${ORG_A}/invitations`);
+    expect(createCall?.init?.body).toContain('"role":"org:member"');
+    expect(calls[0].url).toContain("email_address=new%40a.test");
     // The other org's id must never appear in the URL or body.
-    expect(calls[0].url).not.toContain(ORG_B);
-    expect(calls[0].init?.body).not.toContain(ORG_B);
+    expect(calls.every((call) => !call.url.includes(ORG_B))).toBe(true);
+    expect(createCall?.init?.body).not.toContain(ORG_B);
 
     const intent = await t.run(async (ctx) => {
       return await ctx.db
@@ -676,6 +710,210 @@ describe("invitations — admin gating and org scoping", () => {
     expect(intent?.status).toBe("pending");
   });
 
+  test("invite: finds an existing member through a legacy membership without emailLower", async () => {
+    const t = convexTest(schema, modules);
+    await seedTwoOrgs(t);
+    await t.run(async (ctx) => {
+      const user = await ctx.db
+        .query("users")
+        .withIndex("by_tokenIdentifier", (q) =>
+          q.eq("tokenIdentifier", `${ISSUER}|user_a`),
+        )
+        .unique();
+      if (!user) throw new Error("Missing seeded user");
+      await ctx.db.patch(user._id, { emailLower: "alice@a.test" });
+    });
+    const { calls } = stubClerkFetch([]);
+
+    const result = await t
+      .withIdentity(identityForOrgA())
+      .action(api.invitations.invite, { email: "ALICE@A.TEST" });
+
+    expect(result).toEqual({
+      outcome: "alreadyMember",
+      email: "ALICE@A.TEST",
+    });
+    expect(calls).toHaveLength(0);
+  });
+
+  test("invite: a sequential duplicate is rejected before another Clerk request", async () => {
+    const t = convexTest(schema, modules);
+    await seedTwoOrgs(t);
+    const { calls } = stubClerkFetch([
+      { data: [], total_count: 0 },
+      { data: [], total_count: 0 },
+      {
+        id: "inv_once",
+        email_address: "repeat@a.test",
+        role: "org:member",
+        status: "pending",
+        organization_id: ORG_A,
+        created_at: Date.now(),
+      },
+    ]);
+
+    const first = await t
+      .withIdentity(identityForOrgA())
+      .action(api.invitations.invite, { email: "repeat@a.test" });
+    const second = await t
+      .withIdentity(identityForOrgA())
+      .action(api.invitations.invite, { email: "REPEAT@A.TEST" });
+
+    expect(first.outcome).toBe("invited");
+    expect(second).toEqual({
+      outcome: "alreadyInvited",
+      email: "REPEAT@A.TEST",
+    });
+    expect(calls.filter((call) => call.init?.method === "POST")).toHaveLength(1);
+    expect(calls).toHaveLength(3);
+  });
+
+  test("invite: concurrent duplicates create only one Clerk invitation", async () => {
+    const t = convexTest(schema, modules);
+    await seedTwoOrgs(t);
+    const calls: FetchCall[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+        const url =
+          typeof input === "string"
+            ? input
+            : input instanceof URL
+              ? input.toString()
+              : input.url;
+        calls.push({ url, init });
+        const isCreate = init?.method === "POST";
+        return new Response(
+          JSON.stringify(
+            isCreate
+              ? {
+                  id: "inv_concurrent",
+                  email_address: "concurrent@a.test",
+                  role: "org:member",
+                  status: "pending",
+                  organization_id: ORG_A,
+                  created_at: Date.now(),
+                }
+              : { data: [], total_count: 0 },
+          ),
+          {
+            status: 200,
+            headers: { "content-type": "application/json" },
+          },
+        );
+      }),
+    );
+
+    const results = await Promise.all([
+      t
+        .withIdentity(identityForOrgA())
+        .action(api.invitations.invite, { email: "concurrent@a.test" }),
+      t
+        .withIdentity(identityForOrgA())
+        .action(api.invitations.invite, { email: "CONCURRENT@A.TEST" }),
+    ]);
+
+    expect(results.map((result) => result.outcome).sort()).toEqual([
+      "alreadyInvited",
+      "invited",
+    ]);
+    expect(calls.filter((call) => call.init?.method === "POST")).toHaveLength(1);
+  });
+
+  test("invite: a failed Clerk create releases its pending claim", async () => {
+    const t = convexTest(schema, modules);
+    await seedTwoOrgs(t);
+    stubClerkFetchSequence([
+      { status: 200, body: { data: [], total_count: 0 } },
+      { status: 200, body: { data: [], total_count: 0 } },
+      { status: 500, body: { error: "upstream unavailable" } },
+    ]);
+
+    const first = await t
+      .withIdentity(identityForOrgA())
+      .action(api.invitations.invite, { email: "retry@a.test" });
+    expect(first.outcome).toBe("failed");
+
+    const pendingAfterFailure = await t.run(async (ctx) => {
+      return await ctx.db
+        .query("membershipIntents")
+        .withIndex("by_clerkOrgId_and_emailLower", (q) =>
+          q
+            .eq("clerkOrgId", ORG_A)
+            .eq("emailLower", "retry@a.test"),
+        )
+        .take(20);
+    });
+    expect(
+      pendingAfterFailure.some((intent) => intent.status === "pending"),
+    ).toBe(false);
+  });
+
+  test.each([
+    [
+      "alreadyMember",
+      { data: [{ public_user_data: { identifier: "external@a.test" } }] },
+      { data: [], total_count: 0 },
+    ],
+    [
+      "alreadyInvited",
+      { data: [], total_count: 0 },
+      {
+        data: [
+          {
+            id: "inv_external",
+            email_address: "external@a.test",
+            role: "org:member",
+            status: "pending",
+            organization_id: ORG_A,
+            created_at: Date.now(),
+          },
+        ],
+        total_count: 1,
+      },
+    ],
+  ] as const)(
+    "invite: Clerk preflight returns %s for externally managed state",
+    async (outcome, membershipResponse, invitationResponse) => {
+      const t = convexTest(schema, modules);
+      await seedTwoOrgs(t);
+      const { calls } = stubClerkFetch([
+        membershipResponse,
+        invitationResponse,
+      ]);
+
+      const result = await t
+        .withIdentity(identityForOrgA())
+        .action(api.invitations.invite, { email: "external@a.test" });
+
+      expect(result).toEqual({ outcome, email: "external@a.test" });
+      expect(calls).toHaveLength(2);
+      expect(calls.every((call) => call.init?.method !== "POST")).toBe(true);
+    },
+  );
+
+  test.each([
+    ["already_a_member_in_organization", "alreadyMember"],
+    ["duplicate_record", "alreadyInvited"],
+  ] as const)(
+    "invite: Clerk %s conflict returns the %s outcome",
+    async (code, outcome) => {
+      const t = convexTest(schema, modules);
+      await seedTwoOrgs(t);
+      stubClerkFetchSequence([
+        { status: 200, body: { data: [], total_count: 0 } },
+        { status: 200, body: { data: [], total_count: 0 } },
+        { status: 422, body: { errors: [{ code }] } },
+      ]);
+
+      const result = await t
+        .withIdentity(identityForOrgA())
+        .action(api.invitations.invite, { email: "existing@a.test" });
+
+      expect(result).toEqual({ outcome, email: "existing@a.test" });
+    },
+  );
+
   test("invite: rejects Clerk responses whose organization_id doesn't match", async () => {
     const t = convexTest(schema, modules);
     await seedTwoOrgs(t);
@@ -683,6 +921,8 @@ describe("invitations — admin gating and org scoping", () => {
     // Stub Clerk returning an invitation allegedly for ORG_B even though we
     // hit ORG_A's URL — the action must refuse to trust this.
     stubClerkFetch([
+      { data: [], total_count: 0 },
+      { data: [], total_count: 0 },
       {
         id: "inv_bad",
         email_address: "x@x.test",
