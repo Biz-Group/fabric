@@ -7,7 +7,6 @@ import type { api } from "../../../convex/_generated/api";
 import {
   Bot,
   Check,
-  ChevronDown,
   Download,
   GitBranch,
   Loader2,
@@ -36,6 +35,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
+import styles from "./process-header.module.css";
 
 type ProcessWorkbench = NonNullable<
   FunctionReturnType<typeof api.processes.getWorkbench>
@@ -241,7 +241,7 @@ function ProcessMetadata({
   );
 }
 
-function CaptureSplitButton({
+function CaptureActions({
   disabled,
   onStartInterview,
   onRecordVoice,
@@ -252,41 +252,47 @@ function CaptureSplitButton({
   onRecordVoice: () => void;
   onUploadAudio: () => void;
 }) {
+  const actionClassName =
+    "h-13 w-full min-w-0 justify-start gap-2.5 px-3.5 text-sm lg:h-10 lg:w-auto lg:px-3 transition-[background-color,border-color,color,box-shadow,transform] motion-reduce:transition-none";
+
   return (
-    <div className="inline-flex min-w-0 shrink-0 rounded-lg shadow-sm">
+    <div
+      className="grid w-full min-w-0 grid-cols-1 gap-2 lg:w-auto lg:grid-cols-[auto_auto_auto]"
+      role="group"
+      aria-label="Add information"
+    >
+      <span className={cn(styles.aiButtonGlow, "w-full lg:w-auto")}>
+        <Button
+          type="button"
+          variant="outline"
+          className={cn(actionClassName, styles.aiButton)}
+          disabled={disabled}
+          onClick={onStartInterview}
+        >
+          <Bot className="size-4" aria-hidden="true" />
+          <span className="truncate">Start AI interview</span>
+        </Button>
+      </span>
       <Button
         type="button"
-        className="min-h-10 min-w-0 justify-start gap-2 rounded-r-none px-3 sm:w-auto"
+        variant="outline"
+        className={actionClassName}
         disabled={disabled}
-        onClick={onStartInterview}
+        onClick={onRecordVoice}
       >
-        <Bot className="size-4" />
-        <span className="truncate">Start AI interview</span>
+        <Mic className="size-4" aria-hidden="true" />
+        <span className="truncate">Record a quick note</span>
       </Button>
-      <DropdownMenu>
-        <DropdownMenuTrigger
-          render={
-            <Button
-              type="button"
-              className="min-h-10 rounded-l-none border-l border-primary-foreground/20 px-2"
-              disabled={disabled}
-              aria-label="Choose capture method"
-            />
-          }
-        >
-          <ChevronDown className="size-4" />
-        </DropdownMenuTrigger>
-        <DropdownMenuContent role="menu" align="end" className="w-48">
-          <DropdownMenuItem onClick={onRecordVoice}>
-            <Mic className="size-4" />
-            Record voice
-          </DropdownMenuItem>
-          <DropdownMenuItem onClick={onUploadAudio}>
-            <Upload className="size-4" />
-            Upload audio
-          </DropdownMenuItem>
-        </DropdownMenuContent>
-      </DropdownMenu>
+      <Button
+        type="button"
+        variant="outline"
+        className={actionClassName}
+        disabled={disabled}
+        onClick={onUploadAudio}
+      >
+        <Upload className="size-4" aria-hidden="true" />
+        <span className="truncate">Upload files</span>
+      </Button>
     </div>
   );
 }
@@ -355,179 +361,177 @@ export function ProcessHeader({
 
   return (
     <header className="shrink-0 border-b bg-background">
-      <div className="space-y-4 px-4 py-4 md:px-6">
-        <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
-          <div className="min-w-0 flex-1 space-y-3">
-            <Breadcrumb>
-              <BreadcrumbList className="text-xs">
-                <BreadcrumbItem>
-                  <BreadcrumbLink
-                    href={functionHref}
-                    title={functionName || "Function"}
-                    className="block max-w-40 truncate rounded-sm outline-none focus-visible:ring-3 focus-visible:ring-org-accent-ring/35"
-                    onClick={(event) => {
-                      event.preventDefault();
-                      onSelectFunction();
-                    }}
-                  >
-                    {functionName || "Function"}
-                  </BreadcrumbLink>
-                </BreadcrumbItem>
-                <BreadcrumbSeparator />
-                <BreadcrumbItem>
-                  <BreadcrumbLink
-                    href={departmentHref}
-                    title={departmentName || "Department"}
-                    className="block max-w-48 truncate rounded-sm outline-none focus-visible:ring-3 focus-visible:ring-org-accent-ring/35"
-                    onClick={(event) => {
-                      event.preventDefault();
-                      onSelectDepartment();
-                    }}
-                  >
-                    {departmentName || "Department"}
-                  </BreadcrumbLink>
-                </BreadcrumbItem>
-                <BreadcrumbSeparator />
-                <BreadcrumbItem className="min-w-0">
-                  <span
-                    aria-current="page"
-                    title={processName || "Process"}
-                    className="block max-w-72 truncate text-xs text-foreground"
-                  >
-                    {processName || "Process"}
-                  </span>
-                </BreadcrumbItem>
-              </BreadcrumbList>
-            </Breadcrumb>
-
-            <div className="flex min-w-0 flex-wrap items-center gap-2">
-              <h1 className="min-w-0 max-w-full break-words text-2xl font-semibold tracking-normal md:text-3xl">
-                {processName || "Untitled process"}
-              </h1>
-              <ProcessStatusBadge
-                workbench={workbench}
-                onJumpToLabeling={onJumpToLabeling}
-              />
-            </div>
-
-            <div className="flex min-w-0 flex-wrap items-center gap-2">
-              <ProcessMetadata
-                contributorName={latestContributor?.name}
-                submittedByName={latestContributor?.submittedByName}
-                contributorImageUrl={contributorImageUrl}
-                updatedAt={workbench?.lastUpdatedAt}
-                relativeUpdatedAt={lastUpdated}
-                absoluteUpdatedAt={lastUpdatedTitle}
-                dateTime={lastUpdatedDateTime}
-              />
-              {workbench?.flow?.stale && (
-                <Badge
-                  variant="outline"
-                  className="border-sky-200 bg-sky-50 text-sky-800 dark:border-sky-500/30 dark:bg-sky-500/10 dark:text-sky-200"
+      <div className="grid min-w-0 gap-y-3 px-4 py-4 md:px-6 xl:grid-cols-[minmax(0,1fr)_auto] xl:items-center xl:gap-x-6">
+        <div className="min-w-0 xl:col-span-2 xl:row-start-1">
+          <Breadcrumb>
+            <BreadcrumbList className="text-xs">
+              <BreadcrumbItem>
+                <BreadcrumbLink
+                  href={functionHref}
+                  title={functionName || "Function"}
+                  className="block max-w-40 truncate rounded-sm outline-none focus-visible:ring-3 focus-visible:ring-org-accent-ring/35"
+                  onClick={(event) => {
+                    event.preventDefault();
+                    onSelectFunction();
+                  }}
                 >
-                  Flow stale
-                </Badge>
-              )}
-            </div>
-          </div>
+                  {functionName || "Function"}
+                </BreadcrumbLink>
+              </BreadcrumbItem>
+              <BreadcrumbSeparator />
+              <BreadcrumbItem>
+                <BreadcrumbLink
+                  href={departmentHref}
+                  title={departmentName || "Department"}
+                  className="block max-w-48 truncate rounded-sm outline-none focus-visible:ring-3 focus-visible:ring-org-accent-ring/35"
+                  onClick={(event) => {
+                    event.preventDefault();
+                    onSelectDepartment();
+                  }}
+                >
+                  {departmentName || "Department"}
+                </BreadcrumbLink>
+              </BreadcrumbItem>
+              <BreadcrumbSeparator />
+              <BreadcrumbItem className="min-w-0">
+                <span
+                  aria-current="page"
+                  title={processName || "Process"}
+                  className="block max-w-72 truncate text-xs text-foreground"
+                >
+                  {processName || "Process"}
+                </span>
+              </BreadcrumbItem>
+            </BreadcrumbList>
+          </Breadcrumb>
+        </div>
 
-          <div className="flex shrink-0 flex-wrap items-center gap-3 xl:flex-nowrap xl:justify-end">
-            {canEdit && (
-              <CaptureSplitButton
-                disabled={captureDisabled}
-                onStartInterview={onStartInterview}
-                onRecordVoice={onRecordVoice}
-                onUploadAudio={onUploadAudio}
-              />
-            )}
-            <div
-              className={cn(
-                "flex shrink-0 items-center gap-1.5",
-                canEdit && "border-l pl-3",
-              )}
+        <div className="flex min-w-0 flex-wrap items-center gap-2 xl:col-start-1 xl:row-start-2">
+          <h1 className="min-w-0 max-w-full break-words text-2xl font-semibold tracking-normal md:text-3xl">
+            {processName || "Untitled process"}
+          </h1>
+          <ProcessStatusBadge
+            workbench={workbench}
+            onJumpToLabeling={onJumpToLabeling}
+          />
+        </div>
+
+        <div className="flex min-w-0 flex-wrap items-center gap-2 xl:col-start-1 xl:row-start-3">
+          <ProcessMetadata
+            contributorName={latestContributor?.name}
+            submittedByName={latestContributor?.submittedByName}
+            contributorImageUrl={contributorImageUrl}
+            updatedAt={workbench?.lastUpdatedAt}
+            relativeUpdatedAt={lastUpdated}
+            absoluteUpdatedAt={lastUpdatedTitle}
+            dateTime={lastUpdatedDateTime}
+          />
+          {workbench?.flow?.stale && (
+            <Badge
+              variant="outline"
+              className="border-sky-200 bg-sky-50 text-sky-800 dark:border-sky-500/30 dark:bg-sky-500/10 dark:text-sky-200"
             >
-              <Button
-                type="button"
-                variant="ghost"
-                className="hidden min-h-10 justify-start gap-2 px-2.5 text-muted-foreground hover:text-foreground md:inline-flex"
-                onClick={handleCopyLink}
-                disabled={copyState === "copying"}
-              >
-                {copyState === "copying" ? (
-                  <Loader2 className="size-4 animate-spin" />
-                ) : copyState === "copied" ? (
-                  <Check className="size-4" />
-                ) : (
-                  <Share2 className="size-4" />
-                )}
-                {copyLabel}
-              </Button>
-              <div>
-                <DropdownMenu>
-                  <DropdownMenuTrigger
-                    render={
-                      <Button
-                        type="button"
-                        variant="ghost"
-                        size="icon-lg"
-                        className="text-muted-foreground hover:text-foreground"
-                        aria-label={`More actions for ${safeProcessName}`}
-                      />
-                    }
+              Flow stale
+            </Badge>
+          )}
+        </div>
+
+        <div className="flex w-full shrink-0 flex-col gap-3 lg:flex-row lg:items-center xl:col-start-2 xl:row-start-2 xl:w-auto xl:flex-nowrap xl:justify-end">
+          {canEdit && (
+            <CaptureActions
+              disabled={captureDisabled}
+              onStartInterview={onStartInterview}
+              onRecordVoice={onRecordVoice}
+              onUploadAudio={onUploadAudio}
+            />
+          )}
+          <div
+            className={cn(
+              "flex shrink-0 items-center justify-end gap-1.5",
+              canEdit && "lg:border-l lg:pl-3",
+            )}
+          >
+            <Button
+              type="button"
+              variant="ghost"
+              className="hidden min-h-10 justify-start gap-2 px-2.5 text-muted-foreground hover:text-foreground md:inline-flex"
+              onClick={handleCopyLink}
+              disabled={copyState === "copying"}
+            >
+              {copyState === "copying" ? (
+                <Loader2 className="size-4 animate-spin" />
+              ) : copyState === "copied" ? (
+                <Check className="size-4" />
+              ) : (
+                <Share2 className="size-4" />
+              )}
+              {copyLabel}
+            </Button>
+            <div>
+              <DropdownMenu>
+                <DropdownMenuTrigger
+                  render={
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="icon-lg"
+                      className="text-muted-foreground hover:text-foreground"
+                      aria-label={`More actions for ${safeProcessName}`}
+                    />
+                  }
+                >
+                  <MoreHorizontal className="size-4" />
+                </DropdownMenuTrigger>
+                <DropdownMenuContent role="menu" align="end" className="w-48">
+                  <DropdownMenuItem
+                    className="md:hidden"
+                    disabled={copyState === "copying"}
+                    onClick={handleCopyLink}
                   >
-                    <MoreHorizontal className="size-4" />
-                  </DropdownMenuTrigger>
-                  <DropdownMenuContent role="menu" align="end" className="w-48">
-                    <DropdownMenuItem
-                      className="md:hidden"
-                      disabled={copyState === "copying"}
-                      onClick={handleCopyLink}
-                    >
-                      {copyState === "copying" ? (
-                        <Loader2 className="size-4 animate-spin" />
-                      ) : copyState === "copied" ? (
-                        <Check className="size-4" />
-                      ) : (
-                        <Share2 className="size-4" />
-                      )}
-                      {copyLabel}
-                    </DropdownMenuItem>
-                    <DropdownMenuSeparator className="md:hidden" />
-                    <DropdownMenuItem
-                      disabled={isDownloading}
-                      onClick={onDownloadProcess}
-                    >
-                      {isDownloading ? (
-                        <Loader2 className="size-4 animate-spin" />
-                      ) : (
-                        <Download className="size-4" />
-                      )}
-                      {isDownloading ? "Preparing PDF…" : "Download PDF"}
-                    </DropdownMenuItem>
-                    {canEdit && (
-                      <>
-                        <DropdownMenuSeparator />
-                        <DropdownMenuItem onClick={onEditProcess}>
-                          <Pencil className="size-4" />
-                          Edit process
-                        </DropdownMenuItem>
-                        <DropdownMenuItem onClick={onMoveProcess}>
-                          <GitBranch className="size-4" />
-                          Move process
-                        </DropdownMenuItem>
-                        <DropdownMenuSeparator />
-                        <DropdownMenuItem
-                          variant="destructive"
-                          onClick={onDeleteProcess}
-                        >
-                          <Trash2 className="size-4" />
-                          Delete process
-                        </DropdownMenuItem>
-                      </>
+                    {copyState === "copying" ? (
+                      <Loader2 className="size-4 animate-spin" />
+                    ) : copyState === "copied" ? (
+                      <Check className="size-4" />
+                    ) : (
+                      <Share2 className="size-4" />
                     )}
-                  </DropdownMenuContent>
-                </DropdownMenu>
-              </div>
+                    {copyLabel}
+                  </DropdownMenuItem>
+                  <DropdownMenuSeparator className="md:hidden" />
+                  <DropdownMenuItem
+                    disabled={isDownloading}
+                    onClick={onDownloadProcess}
+                  >
+                    {isDownloading ? (
+                      <Loader2 className="size-4 animate-spin" />
+                    ) : (
+                      <Download className="size-4" />
+                    )}
+                    {isDownloading ? "Preparing PDF…" : "Download PDF"}
+                  </DropdownMenuItem>
+                  {canEdit && (
+                    <>
+                      <DropdownMenuSeparator />
+                      <DropdownMenuItem onClick={onEditProcess}>
+                        <Pencil className="size-4" />
+                        Edit process
+                      </DropdownMenuItem>
+                      <DropdownMenuItem onClick={onMoveProcess}>
+                        <GitBranch className="size-4" />
+                        Move process
+                      </DropdownMenuItem>
+                      <DropdownMenuSeparator />
+                      <DropdownMenuItem
+                        variant="destructive"
+                        onClick={onDeleteProcess}
+                      >
+                        <Trash2 className="size-4" />
+                        Delete process
+                      </DropdownMenuItem>
+                    </>
+                  )}
+                </DropdownMenuContent>
+              </DropdownMenu>
             </div>
           </div>
         </div>

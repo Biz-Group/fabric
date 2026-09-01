@@ -1,0 +1,75 @@
+.aiButtonGlow {
+  --ai-button-gradient: linear-gradient(
+    105deg,
+    color-mix(in oklch, var(--org-accent) 60%, var(--background)),
+    var(--org-accent),
+    color-mix(in oklch, var(--org-accent) 78%, var(--foreground)),
+    var(--org-accent),
+    color-mix(in oklch, var(--org-accent) 60%, var(--background))
+  );
+
+  position: relative;
+  isolation: isolate;
+  display: flex;
+  min-width: 0;
+  border-radius: var(--radius-lg);
+}
+
+.aiButtonGlow::before,
+.aiButtonGlow::after {
+  position: absolute;
+  z-index: -1;
+  border-radius: calc(var(--radius-lg) + 1px);
+  background: var(--ai-button-gradient);
+  background-position: 0% 50%;
+  background-size: 220% 100%;
+  content: "";
+  pointer-events: none;
+  animation: ai-button-glow 8s ease-in-out infinite alternate;
+  transition: opacity var(--motion-normal);
+}
+
+.aiButtonGlow::before {
+  inset: 0;
+  filter: blur(0.32rem);
+  opacity: 0.18;
+}
+
+.aiButtonGlow::after {
+  inset: -1px;
+  opacity: 0.38;
+}
+
+.aiButtonGlow:hover::before {
+  opacity: 0.24;
+}
+
+.aiButtonGlow:hover::after {
+  opacity: 0.5;
+}
+
+.aiButtonGlow:has(.aiButton:focus-visible)::before {
+  opacity: 0.05;
+}
+
+.aiButtonGlow:has(.aiButton:focus-visible)::after {
+  opacity: 0;
+}
+
+.aiButton:focus-visible {
+  outline: 2px solid var(--foreground);
+  outline-offset: 3px;
+}
+
+@keyframes ai-button-glow {
+  to {
+    background-position: 100% 50%;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .aiButtonGlow::before,
+  .aiButtonGlow::after {
+    animation: none;
+  }
+}
