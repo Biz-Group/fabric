@@ -6,8 +6,8 @@
 |---|---|
 | Owner | Saish / Biz Group |
 | Status | Active product baseline |
-| Last updated | 17 August 2026 |
-| Current release | 1.4 |
+| Last updated | 1 September 2026 |
+| Current release | 1.5 |
 
 This document defines what Fabric is, who it serves, the product experience, and the requirements that should remain true. It intentionally excludes implementation task lists, database schemas, source-code inventories, full prompts, deployment commands, and migration procedures.
 
@@ -18,12 +18,13 @@ Supporting documents:
 - [Summary and Overview V2 design](docs/summary-overview-v2-plan.md)
 - [Process-flow generation V3 design](docs/process-flow-generation-v3-plan.md)
 - [Process-flow visualization design](docs/process-flow-visualization-ui-ux-plan.md)
+- [Automation solution portfolio design](docs/automation-solution-portfolio-agents-library-plan.md)
 - [AI usage metering design](docs/ai-usage-metering-plan.md)
 - [Foundry migration runbook](docs/foundry-migration-runbook.md)
 
 ## 1. Product overview
 
-Fabric helps organizations capture how work actually happens through natural conversations. Contributors select a process and either speak with an AI interviewer, record a conversation, or upload existing audio. Fabric transcribes and analyzes that evidence, then produces a living view of the process: an evidence-backed overview, an interactive process flow, operational insights, and a shareable report.
+Fabric helps organizations capture how work actually happens through natural conversations. Contributors select a process and either speak with an AI interviewer, record a conversation, or upload existing audio. Fabric transcribes and analyzes that evidence, then produces a living view of the process: an evidence-backed overview, an interactive process flow, operational insights, actionable automation briefs, and a shareable report.
 
 The organizational model is **Function → Department → Process**. Knowledge is synthesized at process, department, and function level without losing its connection to source conversations.
 
@@ -78,6 +79,7 @@ Required behaviors:
 - Show server-computed blockers and route admins to conversation cleanup when relevant.
 - Provide a usable mobile drill-down rather than compressing the desktop tree.
 - Display the approved organization brand lockup consistently without allowing oversized logos to dominate the workspace header.
+- Let each user choose a light, dark, or system appearance, persist that preference on the device, and preserve approved organization accents in every mode.
 
 ### 3.2 Function and department overview
 
@@ -94,7 +96,7 @@ They must:
 
 ### 3.3 Process workbench
 
-Every process has four complementary tabs.
+Every process has five complementary tabs.
 
 #### Overview
 
@@ -130,6 +132,7 @@ The current interaction requirements are:
 - route edges and branch labels legibly, using distinct conditional, parallel, fallback, and sequential treatments;
 - support keyboard navigation between connected steps;
 - focus the selected path, dim unrelated content, and open a responsive detail panel;
+- open at the entry step, placing horizontal flows at the center-left and vertical flows at the top-center;
 - preserve user context when switching orientation or entering fullscreen;
 - expose zoom, pan, fit-to-view, and a desktop minimap;
 - allow per-step retry when enrichment fails; and
@@ -143,13 +146,21 @@ Insights answers “Where should we investigate or improve?” and is derived fr
 
 Insights should wait until step enrichment is complete rather than presenting metrics that change while the user reads them. A partial or failed enrichment state must state that reported findings are a floor, not a complete assessment.
 
+#### Automations
+
+Automations answers “What might we build, and what evidence should inform it?” It lists analyzed automation opportunities from the current process flow and provides a deterministic, copyable brief for each one without spending an additional AI call.
+
+Each brief should include the opportunity type and confidence, the steps it covers, upstream and downstream context, decision branches, current actors and systems, expected benefit, prerequisites, reported friction and risks, and what the evidence does not establish. The tab must explain stale, incomplete, failed, and empty states, and it must not present fallback-derived candidates as build-ready briefs. Insights retains the automation signal and links to this dedicated surface rather than duplicating the recommendations.
+
 ### 3.4 Capture modes
 
-Fabric supports three capture modes through one recording entry point:
+Fabric supports three capture modes, exposed directly from the process header:
 
 1. **AI Interview** — a voice agent conducts a semi-structured interview and asks follow-up questions.
 2. **Voice Record** — the browser records one or more people without an AI interviewer.
 3. **Audio Upload** — a contributor uploads an existing audio file, subject to audio-type validation and a 100 MB client-side limit.
+
+The three actions must remain clear and directly accessible across responsive layouts rather than hiding secondary capture modes behind a menu.
 
 The entry step confirms the contributor identity and presents concise, mode-appropriate recording/content notices.
 
@@ -183,12 +194,12 @@ Users can download a client-generated process report containing the overview, ke
 The organization admin console provides:
 
 - workspace health and recent-conversation indicators;
-- member roles, invitations, and protected removal flows;
+- member roles, duplicate-safe invitations with clear member/pending feedback, and protected removal flows;
 - an org-wide searchable conversation table with stage-aware retry and confirmed deletion;
 - filtered CSV export with contributor attribution; and
 - organization appearance generation, approval, and reset.
 
-The platform tenant console provides tenant-level AI usage and estimated cost views, including date, environment, provider, model, feature, and organization breakdowns plus export. Usage reporting must explicitly identify known coverage gaps rather than implying invoice-grade completeness.
+The platform tenant console provides tenant-level AI usage and estimated cost views, including daily and cumulative cost trends, date, environment, provider, model, feature, and organization breakdowns plus export. Usage reporting must explicitly identify known coverage gaps rather than implying invoice-grade completeness.
 
 ### 3.8 Public landing experience
 
@@ -201,7 +212,7 @@ Unauthenticated visitors see a responsive product landing page with clear positi
 - Conversation, process, department, and function artifacts must remain traceable to their source evidence.
 - Overview generation must be deterministic in structure even when wording varies.
 - New evidence marks dependent artifacts stale or unread and schedules eligible refresh work.
-- Manual rebuild is available only when there is unread input or an operational override is justified.
+- Manual build or rebuild is available only when a usable source exists and an artifact is missing, unread input is available, or an operational retry or override is justified.
 - Deleted completed evidence triggers regeneration; deleting the last completed conversation clears derived process artifacts.
 - Summaries must communicate disagreement and missing evidence instead of manufacturing consensus.
 
@@ -209,6 +220,7 @@ Unauthenticated visitors see a responsive product landing page with clear positi
 
 - Pipeline state is persisted so refreshes and reconnects do not lose progress.
 - Duplicate triggers join or no-op against the active run.
+- Duplicate or concurrent invitation submissions must not create multiple pending invitations for the same workspace and email address.
 - Stalled runs are detected and resolved without manual database repair.
 - Partial completion is represented explicitly and can be retried at the smallest safe unit.
 - Destructive flows are idempotent where practical and reconcile dependent artifacts.
@@ -219,6 +231,7 @@ Unauthenticated visitors see a responsive product landing page with clear positi
 - Clerk provides identity and organization membership; Fabric maintains application role and profile data.
 - Audio access uses short-lived authorized delivery rather than public storage URLs.
 - Secrets and provider credentials remain server-side.
+- Fabric-owned AI inference uses Microsoft Foundry only and fails closed when its configuration is missing or invalid rather than routing to an external provider.
 - AI telemetry stores operational metadata but not prompt or response content.
 - Description inputs are screened before being used in AI-facing workflows.
 - Production and development credentials, deployments, and tenant data remain separated.
@@ -236,6 +249,7 @@ Unauthenticated visitors see a responsive product landing page with clear positi
 - Every Fabric-owned AI request records provider, model/deployment, feature, environment, organization, latency, outcome, token usage where available, and request identifiers.
 - ElevenLabs agent and transcription usage is recorded using the best available billable unit and a versioned price snapshot.
 - Usage reports separate raw usage, estimated list cost, and known unmetered or delayed charges.
+- Cost trend views show both daily spend and a cumulative total scoped to the selected date range.
 - Retry attempts are attributable without double-counting successful work.
 
 ## 5. Success measures
@@ -246,10 +260,11 @@ The product is successful when:
 2. A typical capture reaches a usable process overview automatically and makes its processing state understandable throughout.
 3. Readers can trace important claims and process steps back to source conversations.
 4. The Overview, Process Flow, Insights, and PDF agree on evidence, status, and derived findings.
-5. Admins can identify and recover failed processing without engineering intervention.
-6. New evidence refreshes the right artifacts without unnecessary AI calls.
-7. Cross-tenant access tests remain negative across user, admin, export, audio, and metering paths.
-8. Platform operators can attribute the large majority of variable AI spend to a tenant and product feature, with gaps clearly disclosed.
+5. A maker can copy an automation brief that distinguishes supported findings from gaps and omits incomplete step details.
+6. Admins can identify and recover failed processing without engineering intervention.
+7. New evidence refreshes the right artifacts without unnecessary AI calls.
+8. Cross-tenant access tests remain negative across user, admin, export, audio, and metering paths.
+9. Platform operators can attribute the large majority of variable AI spend to a tenant and product feature, with gaps clearly disclosed.
 
 ## 6. Scope and roadmap
 
@@ -261,19 +276,17 @@ The product is successful when:
 - On-behalf contributor attribution and conversation titles
 - Evidence-backed Overview V2 at process, department, and function level
 - Staged Process Flow V3 generation with automatic pipeline start and recovery
-- Interactive process-flow layout, orientation, focus, and keyboard controls
-- Derived Insights and client-side PDF reporting
-- Organization administration, branding, invitations, exports, retries, and hardened deletion
-- Tenant-level AI usage and estimated-cost reporting
-- Microsoft Foundry provider adapter and provisioned environments
+- Interactive process-flow layout, orientation, entry-point framing, focus, and keyboard controls
+- Derived Insights, copyable automation build briefs, and client-side PDF reporting
+- Organization administration, branding, appearance preferences, invitations, exports, retries, and hardened deletion
+- Tenant-level AI usage and daily/cumulative estimated-cost reporting
+- Microsoft Foundry-only AI processing in provisioned development and production environments
 - Public marketing landing page
 
 See [Product delivery history](docs/product-delivery-history.md) for dated changes.
 
 ### 6.2 Current operational work
 
-- Complete the production Foundry application cutover using the golden set and explicit approval.
-- Monitor the rollback window before removing the OpenRouter production fallback.
 - Close known metering coverage gaps and reconcile estimates against provider billing.
 - Validate the latest process-flow interaction changes across representative large and branching flows.
 
@@ -298,7 +311,6 @@ See [Product delivery history](docs/product-delivery-history.md) for dated chang
 2. Who owns periodic review of stale process knowledge, and what notification model should support it?
 3. Which process findings may be promoted into tracked improvement initiatives, and where should that workflow live?
 4. What retention controls should organizations have for source audio versus transcripts and derived artifacts?
-5. When production Foundry cutover is complete, how long should provider provenance and rollback compatibility remain user-visible?
 
 ---
 

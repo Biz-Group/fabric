@@ -17,6 +17,30 @@ export type MonthlyReleaseNote = {
 
 export const monthlyReleaseNotes: MonthlyReleaseNote[] = [
   {
+    id: "september-2026",
+    month: "September",
+    shortMonth: "Sep",
+    monthNumber: "09",
+    year: "2026",
+    headline: "Faster from capture to context",
+    summary:
+      "Capture choices are visible at a glance, and process maps now open at the first step for a more natural reading flow.",
+    newFeatures: [
+      {
+        title: "Direct capture actions",
+        description:
+          "Start an AI interview, record a quick note, or upload files directly from the process header.",
+      },
+    ],
+    enhancements: [
+      {
+        title: "Process maps start at the beginning",
+        description:
+          "Horizontal and vertical flows now open around their entry step instead of centering the full graph.",
+      },
+    ],
+  },
+  {
     id: "august-2026",
     month: "August",
     shortMonth: "Aug",
@@ -40,6 +64,16 @@ export const monthlyReleaseNotes: MonthlyReleaseNote[] = [
         title: "More flexible process flows",
         description:
           "Use owner lanes, layout controls, spotlights, keyboard navigation, and a resizable details panel.",
+      },
+      {
+        title: "Automation build briefs",
+        description:
+          "Review analyzed automation opportunities and copy an evidence-grounded brief into Microsoft Copilot Studio.",
+      },
+      {
+        title: "Light, dark, and system themes",
+        description:
+          "Choose an appearance that stays with the device while keeping workspace colors legible.",
       },
       {
         title: "Workspace usage metering",
@@ -66,7 +100,22 @@ export const monthlyReleaseNotes: MonthlyReleaseNote[] = [
       {
         title: "Smarter rebuild controls",
         description:
-          "An overview can be rebuilt only when there is new information to include.",
+          "Build and rebuild controls appear only when usable sources or new information exist, with guidance when evidence is missing.",
+      },
+      {
+        title: "Daily and cumulative cost trends",
+        description:
+          "Platform usage pages now compare daily AI cost with the running total for the selected period.",
+      },
+      {
+        title: "Duplicate-safe invitations",
+        description:
+          "Admins receive clear feedback when someone is already a member or has a pending invitation.",
+      },
+      {
+        title: "Foundry-only AI processing",
+        description:
+          "Fabric-owned AI requests now stay within Microsoft Foundry, with the former external rollback path retired.",
       },
       {
         title: "Clearer executive briefs",
