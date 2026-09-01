@@ -10,6 +10,8 @@ import {
 } from "./flow-focus";
 import type { FlowSpotlight } from "./flow-spotlight";
 import {
+  FLOW_NODE_WIDTH,
+  flowNodeHeight,
   layoutProcessFlow,
   resolveDecisionSourceHandle,
   type FlowDirection,
@@ -109,6 +111,11 @@ export function useProcessFlowLayout(
         id: node.id,
         type: node.category,
         position: positions.get(node.id) ?? { x: 0, y: 0 },
+        // Layout and rendering already share these fixed card dimensions.
+        // Supplying them as initial dimensions lets React Flow initialize the
+        // viewport and minimap before an off-screen card is DOM-measured.
+        initialWidth: FLOW_NODE_WIDTH,
+        initialHeight: flowNodeHeight(node.category),
         sourcePosition:
           direction === "horizontal" ? Position.Right : Position.Bottom,
         targetPosition:

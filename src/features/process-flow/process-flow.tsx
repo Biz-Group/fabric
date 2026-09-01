@@ -9,7 +9,6 @@ import {
   Panel,
   ViewportPortal,
   useReactFlow,
-  useNodesInitialized,
   useViewport,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
@@ -65,7 +64,10 @@ import { deriveFlowFocus, type FlowFocus } from "./flow-focus";
 import { useProcessFlowLayout } from "@/features/process-flow/use-process-flow-layout";
 import { ProcessFlowDetailPanel } from "./process-flow-detail-panel";
 import { resolveFlowNodeId } from "./flow-navigation";
-import { resolveInitialViewportNodeIds } from "./flow-viewport";
+import {
+  resolveEntryViewportTransform,
+  resolveFlowEntryNodeId,
+} from "./flow-viewport";
 import {
   resolveFreshFlowSourceConversations,
   type FlowConversationForSources,
@@ -78,6 +80,8 @@ import {
 } from "./flow-spotlight";
 import { useFlowViewPreferences } from "./flow-view-preferences";
 import {
+  FLOW_NODE_WIDTH,
+  flowNodeHeight,
   toggleOwnerGrouping,
   type FlowDirection,
   type FlowGrouping,
@@ -144,9 +148,16 @@ function ProcessFlowInner({
     viewPreferences.direction,
     viewPreferences.grouping,
   );
-  const { fitView, getZoom, setCenter, zoomIn, zoomOut } = useReactFlow();
+  const {
+    fitView,
+    getZoom,
+    setCenter,
+    setViewport,
+    viewportInitialized,
+    zoomIn,
+    zoomOut,
+  } = useReactFlow();
   const { zoom } = useViewport();
-  const nodesInitialized = useNodesInitialized();
 
   const [isGenerating, setIsGenerating] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
@@ -368,6 +379,15 @@ function ProcessFlowInner({
       .join("|");
     return `${processId}:${flow.generatedAt}:${nodeKey}:${edgeKey}`;
   }, [flow, processId]);
+  const entryNodeId = resolveFlowEntryNodeId(nodes, edges);
+  const entryNode = entryNodeId
+    ? nodes.find((node) => node.id === entryNodeId)
+    : undefined;
+  // Keep the load-framing effect tied to stable geometry primitives. Detail
+  // descriptions can stream in after topology, but must not cancel framing.
+  const entryNodeX = entryNode?.position.x;
+  const entryNodeY = entryNode?.position.y;
+  const entryNodeCategory = entryNode?.data.category;
 
   const viewportDuration = reduceMotion ? 0 : 250;
   const centerNode = useCallback(
@@ -602,7 +622,14 @@ function ProcessFlowInner({
   });
 
   useEffect(() => {
-    if (!nodesInitialized || nodes.length === 0) return;
+    if (
+      !viewportInitialized ||
+      !entryNodeId ||
+      entryNodeX === undefined ||
+      entryNodeY === undefined ||
+      !entryNodeCategory
+    )
+      return;
 
     const frameKey = `${topologyKey}:${viewPreferences.direction}:${viewPreferences.grouping}:${isFullscreen ? "fullscreen" : "embedded"}`;
     if (selectedNodeId) {
@@ -613,43 +640,44 @@ function ProcessFlowInner({
 
     const timeout = window.setTimeout(
       () => {
+        const canvas = canvasRef.current?.getBoundingClientRect();
+        if (!canvas || canvas.width <= 0 || canvas.height <= 0) return;
+
         lastInitialFrameKey.current = frameKey;
-
-        if (nodes.length <= 8) {
-          void fitView({
-            padding: 0.18,
-            maxZoom: 1,
-            duration: viewportDuration,
-          });
-          return;
-        }
-
-        const initialNodeIds = resolveInitialViewportNodeIds(nodes, edges);
-        void fitView({
-          nodes: initialNodeIds.map((id) => ({ id })),
-          padding: 0.28,
-          maxZoom: 0.92,
-          duration: viewportDuration,
-        });
+        void setViewport(
+          resolveEntryViewportTransform({
+            node: {
+              position: { x: entryNodeX, y: entryNodeY },
+              width: FLOW_NODE_WIDTH,
+              height: flowNodeHeight(entryNodeCategory),
+            },
+            viewport: { width: canvas.width, height: canvas.height },
+            direction: viewPreferences.direction,
+          }),
+          { duration: viewportDuration },
+        );
       },
       isFullscreen ? 80 : 0,
     );
     return () => window.clearTimeout(timeout);
   }, [
-    edges,
-    fitView,
+    entryNodeCategory,
+    entryNodeId,
+    entryNodeX,
+    entryNodeY,
     isFullscreen,
-    nodesInitialized,
-    nodes,
     selectedNodeId,
+    setViewport,
     topologyKey,
+    viewerWidth,
     viewPreferences.direction,
     viewPreferences.grouping,
+    viewportInitialized,
     viewportDuration,
   ]);
 
   useEffect(() => {
-    if (!nodesInitialized || !selectedNodeId) {
+    if (!viewportInitialized || !selectedNodeId) {
       lastSelectionFrameKey.current = null;
       return;
     }
@@ -680,13 +708,13 @@ function ProcessFlowInner({
     isFullscreen,
     isMobile,
     nodes,
-    nodesInitialized,
     onSelectedNodeChange,
     reduceMotion,
     selectedNodeId,
     topologyKey,
     viewPreferences.direction,
     viewPreferences.grouping,
+    viewportInitialized,
   ]);
 
   // Empty state: no flow generated yet
@@ -998,9 +1026,9 @@ function ProcessFlowInner({
                   nodeStrokeColor={(node) =>
                     node.selected || node.data.spotlighted
                       ? "var(--org-accent)"
-                      : "transparent"
+                      : "color-mix(in oklch, var(--foreground) 28%, transparent)"
                   }
-                  nodeStrokeWidth={4}
+                  nodeStrokeWidth={10}
                   nodeBorderRadius={6}
                   pannable
                   zoomable
@@ -1012,9 +1040,11 @@ function ProcessFlowInner({
                   style={{ width: 144, height: 96 }}
                   ariaLabel="Process map overview. Drag to pan or scroll to zoom."
                   className="!m-3 !overflow-hidden !rounded-xl !border !border-border !bg-card/95 !shadow-lg"
-                  maskColor="color-mix(in oklch, var(--background) 72%, transparent)"
+                  bgColor="var(--color-card)"
+                  maskColor="color-mix(in oklch, var(--background) 34%, transparent)"
                   maskStrokeColor="var(--org-accent)"
                   maskStrokeWidth={2}
+                  offsetScale={8}
                 />
               )}
             </ReactFlow>
