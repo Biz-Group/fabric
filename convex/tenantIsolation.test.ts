@@ -260,6 +260,52 @@ describe("cross-tenant isolation", () => {
     expect(created!.clerkOrgId).toBe(ORG_A);
   });
 
+  test("function rename does not rewrite global profiles in either tenant", async () => {
+    const t = convexTest(schema, modules);
+    const ids = await seedTwoOrgs(t);
+    await t.run(async (ctx) => {
+      await ctx.db.patch(ids.userAId, { function: "Sales-A" });
+      await ctx.db.patch(ids.userBId, { function: "Sales-A" });
+    });
+
+    await t.withIdentity(identityForOrgA()).mutation(api.functions.update, {
+      functionId: ids.fnA,
+      name: "Revenue-A",
+    });
+
+    const result = await t.run(async (ctx) => ({
+      renamedFunction: await ctx.db.get(ids.fnA),
+      userA: await ctx.db.get(ids.userAId),
+      userB: await ctx.db.get(ids.userBId),
+    }));
+    expect(result.renamedFunction?.name).toBe("Revenue-A");
+    expect(result.userA?.function).toBe("Sales-A");
+    expect(result.userB?.function).toBe("Sales-A");
+  });
+
+  test("department rename does not rewrite global profiles in either tenant", async () => {
+    const t = convexTest(schema, modules);
+    const ids = await seedTwoOrgs(t);
+    await t.run(async (ctx) => {
+      await ctx.db.patch(ids.userAId, { department: "Inside-Sales-A" });
+      await ctx.db.patch(ids.userBId, { department: "Inside-Sales-A" });
+    });
+
+    await t.withIdentity(identityForOrgA()).action(api.departments.update, {
+      departmentId: ids.deptA,
+      name: "Field-Sales-A",
+    });
+
+    const result = await t.run(async (ctx) => ({
+      renamedDepartment: await ctx.db.get(ids.deptA),
+      userA: await ctx.db.get(ids.userAId),
+      userB: await ctx.db.get(ids.userBId),
+    }));
+    expect(result.renamedDepartment?.name).toBe("Field-Sales-A");
+    expect(result.userA?.department).toBe("Inside-Sales-A");
+    expect(result.userB?.department).toBe("Inside-Sales-A");
+  });
+
   test("identity with orgId but no membership throws", async () => {
     const t = convexTest(schema, modules);
     await seedTwoOrgs(t);

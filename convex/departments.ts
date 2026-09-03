@@ -403,17 +403,9 @@ export const updateInternal = internalMutation({
     applyDescriptionUpdate(patch, args.descriptionUpdate);
     await ctx.db.patch(args.departmentId, patch);
 
-    // Cascade name change to users referencing the old department name.
-    // See note on the equivalent cascade in functions.ts::update.
-    if (oldName !== args.name) {
-      const usersWithOldName = await ctx.db
-        .query("users")
-        .withIndex("by_department", (q) => q.eq("department", oldName))
-        .collect();
-      for (const user of usersWithOldName) {
-        await ctx.db.patch(user._id, { department: args.name });
-      }
-    }
+    // User profile fields are global and user-managed. Do not infer a profile
+    // relationship from a matching free-form label or rewrite it as a side
+    // effect of this tenant-scoped hierarchy change.
 
     if (isMoving) {
       await ctx.runMutation(internal.summariesHelpers.markFunctionSummaryStale, {

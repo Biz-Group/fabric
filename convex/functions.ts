@@ -89,23 +89,15 @@ export const update = mutation({
     const oldName = existing.name;
     await ctx.db.patch(args.functionId, { name: args.name });
 
-    // Cascade name change to users whose profile references the old function
-    // name. Note: users.function is a global profile string (not org-scoped),
-    // so a user in a different org with the same function label would also
-    // be updated. Acceptable for Biz-Group-only rollout; revisit when a
-    // second tenant joins (see PRD §3.7 Open Items).
+    // User profile fields are global and user-managed. A tenant-scoped
+    // hierarchy rename must not rewrite them: one user can belong to multiple
+    // organizations, and matching a free-form label does not establish that
+    // this function is the profile's intended reference.
     if (oldName !== args.name) {
       await ctx.runMutation(
         internal.summariesHelpers.markFunctionSummaryStale,
         { functionId: args.functionId },
       );
-      const usersWithOldName = await ctx.db
-        .query("users")
-        .withIndex("by_function", (q) => q.eq("function", oldName))
-        .collect();
-      for (const user of usersWithOldName) {
-        await ctx.db.patch(user._id, { function: args.name });
-      }
     }
   },
 });
