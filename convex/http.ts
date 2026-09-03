@@ -2,6 +2,10 @@ import { httpRouter } from "convex/server";
 import { httpAction } from "./_generated/server";
 import { internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
+import {
+  buildElevenLabsConversationUrl,
+  isElevenLabsConversationId,
+} from "./lib/elevenLabsConversation";
 
 function hexToBytes(hex: string): ArrayBuffer | null {
   if (hex.length === 0 || hex.length % 2 !== 0) return null;
@@ -313,8 +317,14 @@ http.route({
       return new Response("Server configuration error", { status: 500 });
     }
 
-    const elevenLabsUrl =
-      `https://api.elevenlabs.io/v1/convai/conversations/${source.elevenlabsConversationId}/audio`;
+    if (!isElevenLabsConversationId(source.elevenlabsConversationId)) {
+      return new Response("Audio not available", { status: 404 });
+    }
+
+    const elevenLabsUrl = buildElevenLabsConversationUrl(
+      source.elevenlabsConversationId,
+      "audio",
+    );
     const upstream = await fetch(elevenLabsUrl, {
       headers: { "xi-api-key": apiKey },
     });

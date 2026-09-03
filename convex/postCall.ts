@@ -28,6 +28,11 @@ import {
 } from "./lib/contributorAttribution";
 import { summaryTitleFromAnalysis } from "./lib/conversationTitle";
 import { startConversationPipelines } from "./lib/conversationPipelines";
+import {
+  assertElevenLabsConversationIdentity,
+  buildElevenLabsConversationUrl,
+  requireElevenLabsConversationId,
+} from "./lib/elevenLabsConversation";
 import { hashTranscript } from "./lib/transcriptHash";
 
 // Normalize ElevenLabs transcript to the shape our UI expects:
@@ -242,6 +247,9 @@ export const insertConversation = internalMutation({
     if (!process || process.clerkOrgId !== args.clerkOrgId) {
       throw new Error("Process not found in this organization");
     }
+    if (args.elevenlabsConversationId !== undefined) {
+      requireElevenLabsConversationId(args.elevenlabsConversationId);
+    }
     return await ctx.db.insert("conversations", {
       processId: args.processId,
       clerkOrgId: args.clerkOrgId,
@@ -389,6 +397,13 @@ export const fetchConversation = action({
   },
   handler: async (ctx, args) => {
     const { orgId } = await resolveOrgForAction(ctx);
+    const elevenlabsConversationId = requireElevenLabsConversationId(
+      args.elevenlabsConversationId,
+    );
+    await ctx.runQuery(internal.processFlows.assertProcessInOrg, {
+      processId: args.processId,
+      clerkOrgId: orgId,
+    });
     // Also gates the caller on contributor role — the resolver runs
     // requireOrgContributor, and escalates to admin for on-behalf submissions.
     const attribution: ResolvedAttribution = await ctx.runQuery(
@@ -425,7 +440,7 @@ export const fetchConversation = action({
       let response: Response;
       try {
         response = await fetch(
-          `https://api.elevenlabs.io/v1/convai/conversations/${args.elevenlabsConversationId}`,
+          buildElevenLabsConversationUrl(elevenlabsConversationId),
           { headers: { "xi-api-key": apiKey } },
         );
       } catch (networkError) {
@@ -439,7 +454,7 @@ export const fetchConversation = action({
           await ctx.runMutation(internal.postCall.insertConversation, {
             processId: args.processId,
             clerkOrgId: orgId,
-            elevenlabsConversationId: args.elevenlabsConversationId,
+            elevenlabsConversationId,
             ...attributionFields,
             inputMode: "agent",
             transcriptionProvider: "elevenlabs-convai",
@@ -466,7 +481,7 @@ export const fetchConversation = action({
         await ctx.runMutation(internal.postCall.insertConversation, {
           processId: args.processId,
           clerkOrgId: orgId,
-          elevenlabsConversationId: args.elevenlabsConversationId,
+          elevenlabsConversationId,
           ...attributionFields,
           inputMode: "agent",
           transcriptionProvider: "elevenlabs-convai",
@@ -477,6 +492,11 @@ export const fetchConversation = action({
       }
 
       const data = await response.json();
+      assertElevenLabsConversationIdentity(
+        data,
+        elevenlabsConversationId,
+        process.env.ELEVENLABS_AGENT_ID,
+      );
 
       if (data.status === "done") {
         const transcript = normalizeTranscript(data.transcript);
@@ -490,7 +510,7 @@ export const fetchConversation = action({
           {
             processId: args.processId,
             clerkOrgId: orgId,
-            elevenlabsConversationId: args.elevenlabsConversationId,
+            elevenlabsConversationId,
             ...attributionFields,
             transcript,
             summary,
@@ -515,7 +535,7 @@ export const fetchConversation = action({
             entityLabel: attributionFields.contributorName,
           },
           {
-            elevenlabsConversationId: args.elevenlabsConversationId,
+            elevenlabsConversationId,
             metadata: data.metadata,
           },
         );
@@ -531,7 +551,7 @@ export const fetchConversation = action({
         await ctx.runMutation(internal.postCall.insertConversation, {
           processId: args.processId,
           clerkOrgId: orgId,
-          elevenlabsConversationId: args.elevenlabsConversationId,
+          elevenlabsConversationId,
           ...attributionFields,
           inputMode: "agent",
           transcriptionProvider: "elevenlabs-convai",
@@ -548,7 +568,7 @@ export const fetchConversation = action({
     await ctx.runMutation(internal.postCall.insertConversation, {
       processId: args.processId,
       clerkOrgId: orgId,
-      elevenlabsConversationId: args.elevenlabsConversationId,
+      elevenlabsConversationId,
       ...attributionFields,
       inputMode: "agent",
       transcriptionProvider: "elevenlabs-convai",
@@ -765,11 +785,19 @@ export const importConversation = internalAction({
     clerkOrgId: v.string(),
   },
   handler: async (ctx, args) => {
+    const elevenlabsConversationId = requireElevenLabsConversationId(
+      args.elevenlabsConversationId,
+    );
+    await ctx.runQuery(internal.processFlows.assertProcessInOrg, {
+      processId: args.processId,
+      clerkOrgId: args.clerkOrgId,
+    });
+
     const apiKey = process.env.ELEVENLABS_API_KEY;
     if (!apiKey) throw new Error("ELEVENLABS_API_KEY is not configured");
 
     const response = await fetch(
-      `https://api.elevenlabs.io/v1/convai/conversations/${args.elevenlabsConversationId}`,
+      buildElevenLabsConversationUrl(elevenlabsConversationId),
       { headers: { "xi-api-key": apiKey } },
     );
 
@@ -778,6 +806,11 @@ export const importConversation = internalAction({
     }
 
     const data = await response.json();
+    assertElevenLabsConversationIdentity(
+      data,
+      elevenlabsConversationId,
+      process.env.ELEVENLABS_AGENT_ID,
+    );
 
     if (data.status !== "done") {
       throw new Error(
@@ -796,7 +829,7 @@ export const importConversation = internalAction({
       {
         processId: args.processId,
         clerkOrgId: args.clerkOrgId,
-        elevenlabsConversationId: args.elevenlabsConversationId,
+        elevenlabsConversationId,
         contributorName: args.contributorName,
         transcript,
         summary,
@@ -819,7 +852,7 @@ export const importConversation = internalAction({
         entityLabel: args.contributorName,
       },
       {
-        elevenlabsConversationId: args.elevenlabsConversationId,
+        elevenlabsConversationId,
         metadata: data.metadata,
       },
     );
@@ -836,24 +869,27 @@ export const refreshConversationAnalysis = internalAction({
     clerkOrgId: v.string(),
   },
   handler: async (ctx, args) => {
+    const elevenlabsConversationId = requireElevenLabsConversationId(
+      args.elevenlabsConversationId,
+    );
     const apiKey = process.env.ELEVENLABS_API_KEY;
     if (!apiKey) throw new Error("ELEVENLABS_API_KEY is not configured");
 
     const existing = await ctx.runQuery(
       internal.postCall.getConversationByElevenLabsId,
       {
-        elevenlabsConversationId: args.elevenlabsConversationId,
+        elevenlabsConversationId,
         clerkOrgId: args.clerkOrgId,
       },
     );
     if (!existing) {
       throw new Error(
-        `Conversation ${args.elevenlabsConversationId} not found in org ${args.clerkOrgId}`,
+        `Conversation ${elevenlabsConversationId} not found in org ${args.clerkOrgId}`,
       );
     }
 
     const response = await fetch(
-      `https://api.elevenlabs.io/v1/convai/conversations/${args.elevenlabsConversationId}`,
+      buildElevenLabsConversationUrl(elevenlabsConversationId),
       { headers: { "xi-api-key": apiKey } },
     );
     if (!response.ok) {
@@ -861,6 +897,11 @@ export const refreshConversationAnalysis = internalAction({
     }
 
     const data = await response.json();
+    assertElevenLabsConversationIdentity(
+      data,
+      elevenlabsConversationId,
+      process.env.ELEVENLABS_AGENT_ID,
+    );
     const transcript =
       normalizeTranscript(data.transcript) ?? existing.transcript;
     const summary = data.analysis?.transcript_summary ?? existing.summary;
@@ -879,7 +920,7 @@ export const refreshConversationAnalysis = internalAction({
         entityId: existing._id,
       },
       {
-        elevenlabsConversationId: args.elevenlabsConversationId,
+        elevenlabsConversationId,
         metadata: data.metadata,
       },
     );
@@ -907,7 +948,7 @@ export const refreshConversationAnalysis = internalAction({
       });
     }
 
-    console.log(`Refreshed analysis for ${args.elevenlabsConversationId}`);
+    console.log(`Refreshed analysis for ${elevenlabsConversationId}`);
     return { status: "updated" as const };
   },
 });

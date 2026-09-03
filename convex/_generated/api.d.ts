@@ -30,6 +30,7 @@ import type * as lib_conversationEvidenceV2 from "../lib/conversationEvidenceV2.
 import type * as lib_conversationPipelines from "../lib/conversationPipelines.js";
 import type * as lib_conversationTitle from "../lib/conversationTitle.js";
 import type * as lib_elevenLabsCharging from "../lib/elevenLabsCharging.js";
+import type * as lib_elevenLabsConversation from "../lib/elevenLabsConversation.js";
 import type * as lib_flowQuality from "../lib/flowQuality.js";
 import type * as lib_flowStages from "../lib/flowStages.js";
 import type * as lib_hierarchyOverviewV2 from "../lib/hierarchyOverviewV2.js";
@@ -89,6 +90,7 @@ declare const fullApi: ApiFromModules<{
   "lib/conversationPipelines": typeof lib_conversationPipelines;
   "lib/conversationTitle": typeof lib_conversationTitle;
   "lib/elevenLabsCharging": typeof lib_elevenLabsCharging;
+  "lib/elevenLabsConversation": typeof lib_elevenLabsConversation;
   "lib/flowQuality": typeof lib_flowQuality;
   "lib/flowStages": typeof lib_flowStages;
   "lib/hierarchyOverviewV2": typeof lib_hierarchyOverviewV2;
