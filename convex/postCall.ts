@@ -4,7 +4,6 @@ import {
   internalAction,
   internalMutation,
   internalQuery,
-  query,
   type ActionCtx,
 } from "./_generated/server";
 import { internal } from "./_generated/api";
@@ -13,6 +12,7 @@ import {
   requireOrgContributor,
   requireOrgMember,
   resolveOrgForAction,
+  isActiveMembership,
 } from "./lib/orgAuth";
 import {
   assertCompletionNotTruncated,
@@ -33,6 +33,10 @@ import {
   buildElevenLabsConversationUrl,
   requireElevenLabsConversationId,
 } from "./lib/elevenLabsConversation";
+import {
+  AUDIO_PLAYBACK_TOKEN_TTL_MS,
+  signAudioPlaybackToken,
+} from "./lib/audioPlaybackToken";
 import { hashTranscript } from "./lib/transcriptHash";
 
 // Normalize ElevenLabs transcript to the shape our UI expects:
@@ -613,55 +617,47 @@ export const conversationExistsByElevenLabsId = internalQuery({
   },
 });
 
-// Signed audio URLs stay valid this long. The HTTP audio endpoint can't run
-// `requireOrgMember` itself (cross-origin <audio> fetches are unauthenticated
-// — the browser uses crossOrigin="anonymous" so no Clerk JWT is sent), so
-// authorization is enforced once at token-mint time and re-verified by HMAC
-// on every byte fetch within the TTL.
-const AUDIO_URL_TTL_MS = 7 * 24 * 60 * 60 * 1000;
-
-function bytesToHex(bytes: Uint8Array): string {
-  let out = "";
-  for (let i = 0; i < bytes.length; i++) {
-    out += bytes[i].toString(16).padStart(2, "0");
-  }
-  return out;
-}
-
-async function signAudioPath(
-  secret: string,
-  clerkOrgId: string,
-  conversationId: string,
-  expiresAt: number,
-): Promise<string> {
-  const enc = new TextEncoder();
-  const key = await crypto.subtle.importKey(
-    "raw",
-    enc.encode(secret),
-    { name: "HMAC", hash: "SHA-256" },
-    false,
-    ["sign"],
-  );
-  const sig = await crypto.subtle.sign(
-    "HMAC",
-    key,
-    enc.encode(`${clerkOrgId}.${conversationId}.${expiresAt}`),
-  );
-  return bytesToHex(new Uint8Array(sig));
-}
-
 /**
- * Returns an HMAC-signed `{ exp, sig }` pair the client can append to an
- * /audio/{orgId}/{convId} URL. Authorization is enforced here: the caller
- * must have a membership in the conversation's org. Returns null if the
- * conversation doesn't exist or belongs to a different org (404-equivalent).
+ * Resolves the caller's current membership and verifies that the requested
+ * conversation belongs to the same organization. The membership document ID
+ * becomes the token's revocation handle.
  */
-export const getAudioPlaybackToken = query({
+export const getAudioPlaybackGrant = internalQuery({
   args: { conversationId: v.id("conversations") },
   handler: async (ctx, args) => {
     const caller = await requireOrgMember(ctx);
     const conv = await ctx.db.get(args.conversationId);
     if (!conv || conv.clerkOrgId !== caller.orgId) return null;
+    return {
+      clerkOrgId: caller.orgId,
+      membershipId: caller.membershipId,
+    };
+  },
+});
+
+/**
+ * Mints a short-lived, membership-bound playback token. This is an action so
+ * the result is never held indefinitely in Convex's reactive query cache.
+ * The audio endpoint rechecks the signed membership ID on every request.
+ */
+export const getAudioPlaybackToken = action({
+  args: { conversationId: v.id("conversations") },
+  handler: async (
+    ctx,
+    args,
+  ): Promise<{
+    clerkOrgId: string;
+    membershipId: Id<"memberships">;
+    exp: number;
+    sig: string;
+  } | null> => {
+    const grant: {
+      clerkOrgId: string;
+      membershipId: Id<"memberships">;
+    } | null = await ctx.runQuery(internal.postCall.getAudioPlaybackGrant, {
+      conversationId: args.conversationId,
+    });
+    if (!grant) return null;
 
     const secret = process.env.AUDIO_SIGNING_SECRET;
     if (!secret) {
@@ -670,14 +666,22 @@ export const getAudioPlaybackToken = query({
       );
     }
 
-    const exp = Date.now() + AUDIO_URL_TTL_MS;
-    const sig = await signAudioPath(
+    const exp = Date.now() + AUDIO_PLAYBACK_TOKEN_TTL_MS;
+    const sig = await signAudioPlaybackToken(
       secret,
-      caller.orgId,
-      args.conversationId,
-      exp,
+      {
+        clerkOrgId: grant.clerkOrgId,
+        conversationId: args.conversationId,
+        membershipId: grant.membershipId,
+        expiresAt: exp,
+      },
     );
-    return { exp, sig };
+    return {
+      clerkOrgId: grant.clerkOrgId,
+      membershipId: grant.membershipId,
+      exp,
+      sig,
+    };
   },
 });
 
@@ -685,8 +689,17 @@ export const getConversationAudioSource = internalQuery({
   args: {
     conversationId: v.id("conversations"),
     clerkOrgId: v.string(),
+    membershipId: v.id("memberships"),
   },
   handler: async (ctx, args) => {
+    const membership = await ctx.db.get(args.membershipId);
+    if (
+      !isActiveMembership(membership) ||
+      membership.clerkOrgId !== args.clerkOrgId
+    ) {
+      return null;
+    }
+
     const conv = await ctx.db.get(args.conversationId);
     if (!conv || conv.clerkOrgId !== args.clerkOrgId) return null;
 

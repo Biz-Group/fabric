@@ -46,10 +46,21 @@ export type OrgContext = {
   orgId: string;
   orgSlug: string;
   userId: Id<"users">;
+  membershipId: Id<"memberships">;
   role: Role;
   email?: string;
   name?: string;
 };
+
+export function isActiveMembership(
+  membership: Doc<"memberships"> | null,
+): membership is Doc<"memberships"> {
+  return (
+    membership !== null &&
+    membership.removedAt === undefined &&
+    membership.status !== "removed"
+  );
+}
 
 /**
  * Resolves identity + Fabric membership for the caller's active Clerk org.
@@ -80,13 +91,16 @@ export async function requireOrgMember(
       q.eq("tokenIdentifier", identity.tokenIdentifier).eq("clerkOrgId", orgId),
     )
     .unique();
-  if (!membership) throw new Error("Not a member of this organization");
+  if (!isActiveMembership(membership)) {
+    throw new Error("Not a member of this organization");
+  }
 
   return {
     tokenIdentifier: identity.tokenIdentifier,
     orgId,
     orgSlug: orgSlug ?? "",
     userId: user._id,
+    membershipId: membership._id,
     role: membership.role,
     email: identity.email ?? undefined,
     name: identity.name ?? undefined,

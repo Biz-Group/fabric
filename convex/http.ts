@@ -6,18 +6,7 @@ import {
   buildElevenLabsConversationUrl,
   isElevenLabsConversationId,
 } from "./lib/elevenLabsConversation";
-
-function hexToBytes(hex: string): ArrayBuffer | null {
-  if (hex.length === 0 || hex.length % 2 !== 0) return null;
-  const buf = new ArrayBuffer(hex.length / 2);
-  const view = new Uint8Array(buf);
-  for (let i = 0; i < hex.length; i += 2) {
-    const byte = parseInt(hex.substring(i, i + 2), 16);
-    if (Number.isNaN(byte)) return null;
-    view[i / 2] = byte;
-  }
-  return buf;
-}
+import { verifyAudioPlaybackToken } from "./lib/audioPlaybackToken";
 
 function base64ToBytes(value: string): ArrayBuffer | null {
   try {
@@ -86,33 +75,6 @@ async function verifyClerkWebhook(
     }
   }
   return { ok: false, eventId };
-}
-
-// Verify an HMAC-SHA256 signature minted by `getAudioPlaybackToken`. Uses
-// crypto.subtle.verify which performs a timing-safe comparison.
-async function verifyAudioSig(
-  secret: string,
-  clerkOrgId: string,
-  conversationId: string,
-  exp: number,
-  providedHex: string,
-): Promise<boolean> {
-  const sigBytes = hexToBytes(providedHex);
-  if (!sigBytes) return false;
-  const enc = new TextEncoder();
-  const key = await crypto.subtle.importKey(
-    "raw",
-    enc.encode(secret),
-    { name: "HMAC", hash: "SHA-256" },
-    false,
-    ["verify"],
-  );
-  return crypto.subtle.verify(
-    "HMAC",
-    key,
-    sigBytes,
-    enc.encode(`${clerkOrgId}.${conversationId}.${exp}`),
-  );
 }
 
 const http = httpRouter();
@@ -217,7 +179,8 @@ function audioResponse(
           "Content-Length": chunk.byteLength.toString(),
           "Content-Range": `bytes ${start}-${boundedEnd}/${totalSize}`,
           "Accept-Ranges": "bytes",
-          "Cache-Control": "public, max-age=3600",
+          "Cache-Control": "private, no-store",
+          "Referrer-Policy": "no-referrer",
         }),
       });
     }
@@ -229,7 +192,8 @@ function audioResponse(
       "Content-Type": contentType,
       "Content-Length": totalSize.toString(),
       "Accept-Ranges": "bytes",
-      "Cache-Control": "public, max-age=3600",
+      "Cache-Control": "private, no-store",
+      "Referrer-Policy": "no-referrer",
     }),
   });
 }
@@ -252,25 +216,33 @@ http.route({
     const clerkOrgId = suffix.substring(0, slashIdx);
     const conversationId = suffix.substring(slashIdx + 1) as Id<"conversations">;
 
-    // Authorization: require a valid HMAC-signed URL minted by
-    // `getAudioPlaybackToken`, which gates issuance on org membership.
-    // The browser plays audio via crossOrigin="anonymous", so the JWT
-    // never reaches this handler — signed URLs are how access control
-    // travels with the request.
+    // The browser plays audio via crossOrigin="anonymous", so a short-lived,
+    // membership-bound signature carries authorization. The signed membership
+    // is also rechecked below, making removal immediately revoke old URLs.
     const exp = Number(url.searchParams.get("exp"));
     const sig = url.searchParams.get("sig");
-    if (!sig || !Number.isFinite(exp) || exp < Date.now()) {
+    const membershipIdParam = url.searchParams.get("mid");
+    if (
+      !sig ||
+      !membershipIdParam ||
+      !Number.isFinite(exp) ||
+      exp < Date.now()
+    ) {
       return new Response("Not found", { status: 404 });
     }
+    const membershipId = membershipIdParam as Id<"memberships">;
     const signingSecret = process.env.AUDIO_SIGNING_SECRET;
     if (!signingSecret) {
       return new Response("Server configuration error", { status: 500 });
     }
-    const sigOk = await verifyAudioSig(
+    const sigOk = await verifyAudioPlaybackToken(
       signingSecret,
-      clerkOrgId,
-      conversationId,
-      exp,
+      {
+        clerkOrgId,
+        conversationId,
+        membershipId,
+        expiresAt: exp,
+      },
       sig,
     );
     if (!sigOk) {
@@ -292,6 +264,7 @@ http.route({
       source = await ctx.runQuery(internal.postCall.getConversationAudioSource, {
         conversationId,
         clerkOrgId,
+        membershipId,
       });
     } catch {
       return new Response("Not found", { status: 404 });

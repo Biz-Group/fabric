@@ -306,6 +306,64 @@ describe("cross-tenant isolation", () => {
     expect(result.userB?.department).toBe("Inside-Sales-A");
   });
 
+  test("audio URL is revoked immediately when its signed membership is removed", async () => {
+    process.env.AUDIO_SIGNING_SECRET =
+      "test-audio-signing-secret-with-sufficient-entropy";
+    const t = convexTest(schema, modules);
+    const ids = await seedTwoOrgs(t);
+    const conversationId = await t.run(async (ctx) => {
+      const audioStorageId = await ctx.storage.store(
+        new Blob(["private audio"], { type: "audio/webm" }),
+      );
+      return await ctx.db.insert("conversations", {
+        processId: ids.procA,
+        clerkOrgId: ORG_A,
+        contributorName: "Alice",
+        inputMode: "voiceRecord",
+        audioStorageId,
+        audioMimeType: "audio/webm",
+        status: "done",
+      });
+    });
+
+    const mintedAt = Date.now();
+    const token = await t
+      .withIdentity(identityForOrgA())
+      .action(api.postCall.getAudioPlaybackToken, { conversationId });
+    expect(token).not.toBeNull();
+    expect(token!.clerkOrgId).toBe(ORG_A);
+    expect(token!.exp).toBeGreaterThan(mintedAt);
+    expect(token!.exp).toBeLessThanOrEqual(mintedAt + 5 * 60 * 1000 + 1_000);
+
+    const params = new URLSearchParams({
+      exp: String(token!.exp),
+      mid: token!.membershipId,
+      sig: token!.sig,
+    });
+    const audioPath = `/audio/${ORG_A}/${conversationId}?${params.toString()}`;
+    const beforeRemoval = await t.fetch(audioPath);
+    expect(beforeRemoval.status).toBe(200);
+    expect(beforeRemoval.headers.get("cache-control")).toBe(
+      "private, no-store",
+    );
+    expect(beforeRemoval.headers.get("referrer-policy")).toBe("no-referrer");
+    expect(await beforeRemoval.text()).toBe("private audio");
+
+    const expiredParams = new URLSearchParams(params);
+    expiredParams.set("exp", String(Date.now() - 1));
+    const expired = await t.fetch(
+      `/audio/${ORG_A}/${conversationId}?${expiredParams.toString()}`,
+    );
+    expect(expired.status).toBe(404);
+
+    await t.run(async (ctx) => {
+      await ctx.db.delete(token!.membershipId);
+    });
+
+    const afterRemoval = await t.fetch(audioPath);
+    expect(afterRemoval.status).toBe(404);
+  });
+
   test("identity with orgId but no membership throws", async () => {
     const t = convexTest(schema, modules);
     await seedTwoOrgs(t);
